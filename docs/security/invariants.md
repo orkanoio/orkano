@@ -25,13 +25,13 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 ## INV-02 — Builds run as hostile code
 
-**Statement.** Build pods never mount a ServiceAccount token, always run under the `restricted` Pod Security level, and can egress only to GitHub and the image registry.
+**Statement.** Build pods never mount a ServiceAccount token, always run rootless under the `baseline` Pod Security level confined by the dedicated `orkano-buildkit` AppArmor profile (amended from `restricted` by ADR-0012 — `restricted` is unreachable for rootless BuildKit; the deviations are enumerated and compensated there), and can egress only to their source and the image registry.
 
 **Rationale.** Builds execute arbitrary code from user repositories by design; the sandbox, not trust in the code, is the security boundary.
 
-**Enforced by.** `automountServiceAccountToken: false` on every build Job; Pod Security Admission enforcing `restricted` on the build namespace; a NetworkPolicy egress allowlist covering only GitHub and the in-cluster registry; hard CPU, memory, and wall-clock limits per Job.
+**Enforced by.** `automountServiceAccountToken: false` on every build Job; Pod Security Admission enforcing `baseline` on the build namespace plus the Localhost AppArmor profile (grants `userns` and `mount`, keeps the rest of the default confinement); a default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (enforcement proven live in the M0.5 spike); hard CPU, memory, and wall-clock limits per Job.
 
-**Verified by.** `build.canary-isolation` (planned) — runs a canary build Job that asserts from inside the pod: no token exists under `/var/run/secrets/kubernetes.io/serviceaccount`, a connection to a non-allowlisted host actually fails, and GitHub and the registry stay reachable. Separately submits a privileged pod spec to the build namespace and asserts admission rejects it.
+**Verified by.** `build.canary-isolation` (planned) — runs a canary build Job that asserts from inside the pod: no token exists under `/var/run/secrets/kubernetes.io/serviceaccount`, a connection to a non-allowlisted host actually fails, and the source host and registry stay reachable. Separately submits a privileged pod spec to the build namespace and asserts admission rejects it. `build.apparmor-profile-loaded` (planned) — probes that the `orkano-buildkit` profile is loaded on every node, because its absence fails silently (ADR-0012).
 
 ## INV-03 — Secret values never persist in the database
 

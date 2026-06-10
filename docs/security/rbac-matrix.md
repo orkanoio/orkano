@@ -38,7 +38,7 @@ No Kubernetes permissions at all: `automountServiceAccountToken: false`, no Role
 
 ## Build job ServiceAccount
 
-No Kubernetes permissions and no token mounted (`automountServiceAccountToken: false`), `restricted` Pod Security level on `orkano-builds`, egress allowlisted to source + registry only (INV-02). Registry push credentials are per-build, injected as a Secret-backed env/file, never a SA token.
+No Kubernetes permissions and no token mounted (`automountServiceAccountToken: false`), `baseline` Pod Security level on `orkano-builds` with the dedicated AppArmor profile (ADR-0012), egress allowlisted to source + registry only (INV-02). Registry push credentials are per-build, injected as a Secret-backed env/file, never a SA token.
 
 ## Human roles (used via dashboard impersonation, bindable to OIDC identities)
 

@@ -17,11 +17,11 @@ This catalogue is a set of concrete attacker stories checked against the archite
 
 **Mitigations**
 
-- INV-02: build pods mount no ServiceAccount token, run under the `restricted` Pod Security level, and can egress only to GitHub and the registry — there are no cluster credentials to steal and nowhere else to send data.
+- INV-02: build pods mount no ServiceAccount token, run rootless at PSA `baseline` confined by the dedicated AppArmor profile (ADR-0012), and can egress only to their source and the registry — there are no cluster credentials to steal and nowhere else to send data.
 - Hard CPU/memory/time limits time-box mining to one bounded Job.
 - Rootless BuildKit, never a Docker socket (no daemon to pivot through).
 
-**Verdict:** Partially mitigated — the design is sound, but rootless BuildKit under restricted PSA is unproven until the M0.5 spike lands (risk #2 in the project risk register); fallbacks (tainted build node pool, gVisor/Kata) are documented but unbuilt.
+**Verdict:** Partially mitigated — the sandbox is now proven live (M0.5 spike: no token, egress allowlist capability-probed both ways, limits + deadline enforced; ADR-0012 records the baseline-not-restricted concession); the remaining residual is container escape via kernel bug, with gVisor/Kata documented but unbuilt.
 
 **Detection:** The doctor's NetworkPolicy probe verifies the build-namespace egress deny actually blocks traffic; repeated `Build` CRs killed at the CPU or time ceiling surface in deploy history and the audit log.
 
