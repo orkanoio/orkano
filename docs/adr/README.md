@@ -14,3 +14,4 @@ Rules:
 | [0005](0005-api-group-naming-scoping.md) | API group orkano.io with namespaced kinds | Accepted |
 | [0006](0006-domain-cr-and-tls.md) | Model domains as a separate CR with always-on TLS | Accepted |
 | [0009](0009-monorepo-layout-and-module-strategy.md) | Monorepo layout with a separate api module | Accepted |
+| [0010](0010-cel-only-validation-no-webhook.md) | Validate with OpenAPI and CEL only — no admission webhook in v1alpha1 | Accepted |
