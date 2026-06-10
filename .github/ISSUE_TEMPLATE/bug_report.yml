@@ -1,0 +1,42 @@
+name: Bug report
+description: Something is broken
+labels: ["kind/bug", "triage/needs-triage"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Orkano version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: cluster
+    attributes:
+      label: Cluster type
+      options:
+        - orkano init (k3s)
+        - bring-your-own cluster
+        - kind / dev
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - amd64
+        - arm64
+        - mixed
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what happened, what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell

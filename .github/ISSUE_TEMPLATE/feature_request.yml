@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose an improvement
+labels: ["kind/feature", "triage/needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I checked PRD.md Non-Goals and this is not on that list
+          required: true
