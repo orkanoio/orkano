@@ -1,0 +1,24 @@
+# A static site: build output served as-is. Smallest possible App.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: blog
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/blog
+  build:
+    strategy: Static
+    static:
+      dir: public
+---
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: blog-example-com
+  namespace: orkano-apps
+spec:
+  host: blog.example.com
+  appRef:
+    name: blog

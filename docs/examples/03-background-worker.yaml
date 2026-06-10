@@ -1,0 +1,22 @@
+# A background worker: no port, no health endpoint, no domain — just a
+# process. type: Worker makes that explicit and the schema forbids
+# web-only fields on it.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: mailer
+  namespace: orkano-apps
+spec:
+  type: Worker
+  source:
+    github:
+      repo: alice/api
+      ref: main
+  build:
+    strategy: Dockerfile
+  command: ["node", "worker.js"]
+  env:
+    - name: DATABASE_URL
+      secretRef:
+        name: api-db
+        key: uri

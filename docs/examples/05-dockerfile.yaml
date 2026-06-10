@@ -1,0 +1,25 @@
+# A raw Dockerfile at a non-default path: full control, zero magic.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: imageproc
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/imageproc
+  build:
+    strategy: Dockerfile
+    dockerfile:
+      path: deploy/prod.Dockerfile
+  port: 8080
+---
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: img-example-com
+  namespace: orkano-apps
+spec:
+  host: img.example.com
+  appRef:
+    name: imageproc

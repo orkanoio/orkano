@@ -1,0 +1,39 @@
+# A web service with a database: the flagship Heroku-replacement shape.
+# DATABASE_URL is a reference to a Kubernetes Secret produced by the
+# Postgres catalog service — the value never appears in the App.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: api
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/api
+      ref: main
+  build:
+    strategy: Dockerfile
+  port: 3000
+  replicas: 2
+  env:
+    - name: NODE_ENV
+      value: production
+    - name: DATABASE_URL
+      secretRef:
+        name: api-db
+        key: uri
+  healthCheck:
+    path: /healthz
+  resources:
+    cpu: 250m
+    memory: 512Mi
+---
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: api-example-com
+  namespace: orkano-apps
+spec:
+  host: api.example.com
+  appRef:
+    name: api

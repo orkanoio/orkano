@@ -1,0 +1,15 @@
+# One service out of a monorepo: subPath scopes the checkout, and the
+# Dockerfile is resolved relative to it.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: billing
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: acme/platform
+      ref: main
+    subPath: services/billing
+  build:
+    strategy: Dockerfile
