@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: sigstore/cosign-installer@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Gate per supply-chain.md: CRITICAL/HIGH with a fix available fail the
+      # release after artifacts exist but while the tag can still be yanked.
+      - uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ghcr.io/orkanoio/orkano-operator:${{ github.ref_name }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ghcr.io/orkanoio/orkano-receiver:${{ github.ref_name }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/checksums.txt
+
+      # Image digests come from goreleaser's manifest of published artifacts;
+      # field paths verified during the throwaway v0.0.1 run.
+      - id: digests
+        run: |
+          {
+            echo "operator=$(jq -r '[.[] | select(.type == "Docker Manifest") | select(.name | contains("orkano-operator"))][0].extra.Digest' dist/artifacts.json)"
+            echo "receiver=$(jq -r '[.[] | select(.type == "Docker Manifest") | select(.name | contains("orkano-receiver"))][0].extra.Digest' dist/artifacts.json)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/orkanoio/orkano-operator
+          subject-digest: ${{ steps.digests.outputs.operator }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/orkanoio/orkano-receiver
+          subject-digest: ${{ steps.digests.outputs.receiver }}
+          push-to-registry: true

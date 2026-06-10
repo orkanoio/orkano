@@ -1,0 +1,118 @@
+version: 2
+
+project_name: orkano
+
+builds:
+  - id: orkano
+    main: ./cli
+    binary: orkano
+    env: [CGO_ENABLED=0, GOWORK=off]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+  - id: orkano-operator
+    main: ./operator
+    binary: orkano-operator
+    env: [CGO_ENABLED=0, GOWORK=off]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+  - id: orkano-receiver
+    main: ./receiver
+    binary: orkano-receiver
+    env: [CGO_ENABLED=0, GOWORK=off]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+
+archives:
+  - id: cli
+    ids: [orkano]
+    formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+dockers:
+  - id: operator-amd64
+    ids: [orkano-operator]
+    goarch: amd64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-operator:{{ .Version }}-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --build-arg=BINARY=orkano-operator
+  - id: operator-arm64
+    ids: [orkano-operator]
+    goarch: arm64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-operator:{{ .Version }}-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --build-arg=BINARY=orkano-operator
+  - id: receiver-amd64
+    ids: [orkano-receiver]
+    goarch: amd64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --build-arg=BINARY=orkano-receiver
+  - id: receiver-arm64
+    ids: [orkano-receiver]
+    goarch: arm64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --build-arg=BINARY=orkano-receiver
+
+docker_manifests:
+  - name_template: ghcr.io/orkanoio/orkano-operator:{{ .Version }}
+    image_templates:
+      - ghcr.io/orkanoio/orkano-operator:{{ .Version }}-amd64
+      - ghcr.io/orkanoio/orkano-operator:{{ .Version }}-arm64
+  - name_template: ghcr.io/orkanoio/orkano-receiver:{{ .Version }}
+    image_templates:
+      - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-amd64
+      - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-arm64
+
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+docker_signs:
+  - cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
+    artifacts: images
+
+release:
+  prerelease: auto
+  github:
+    owner: orkanoio
+    name: orkano
