@@ -1,0 +1,10 @@
+# Violates: DomainSpec.host OpenAPI pattern — not a DNS hostname.
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: invalid-host
+  namespace: orkano-apps
+spec:
+  host: Not_A_Host!
+  appRef:
+    name: api

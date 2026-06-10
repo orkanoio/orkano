@@ -1,0 +1,14 @@
+# Violates: AppSpec CEL — Worker apps cannot set port or healthCheck.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-worker
+  namespace: orkano-apps
+spec:
+  type: Worker
+  source:
+    github:
+      repo: alice/app
+  build:
+    strategy: Dockerfile
+  port: 8080

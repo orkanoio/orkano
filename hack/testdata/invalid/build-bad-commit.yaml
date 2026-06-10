@@ -1,0 +1,14 @@
+# Violates: BuildSpec.commit OpenAPI pattern — must be a full 40-hex SHA.
+apiVersion: orkano.io/v1alpha1
+kind: Build
+metadata:
+  name: invalid-commit
+  namespace: orkano-apps
+spec:
+  appName: api
+  commit: abc123
+  source:
+    github:
+      repo: alice/app
+  strategy:
+    strategy: Dockerfile

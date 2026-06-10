@@ -1,0 +1,25 @@
+# Valid objects created for real (not dry-run) so the validation harness can
+# prove the CEL transition rules reject mutation.
+apiVersion: orkano.io/v1alpha1
+kind: Build
+metadata:
+  name: immutable-probe
+  namespace: orkano-apps
+spec:
+  appName: api
+  commit: 0123456789abcdef0123456789abcdef01234567
+  source:
+    github:
+      repo: alice/app
+  strategy:
+    strategy: Dockerfile
+---
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: immutable-probe
+  namespace: orkano-apps
+spec:
+  host: probe.example.com
+  appRef:
+    name: api

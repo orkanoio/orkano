@@ -1,0 +1,14 @@
+# Violates: BuildStrategy CEL — members must match the chosen strategy.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-strategy
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/app
+  build:
+    strategy: Dockerfile
+    static:
+      dir: public
