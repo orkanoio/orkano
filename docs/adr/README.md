@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 Rules:
-- Numbers are assigned at proposal time; gaps are expected (TASKS.md pre-reserves 0001–0008).
+- Numbers are assigned at proposal time; gaps are expected (the Phase 0 plan pre-reserved 0001–0008).
 - Statuses: `Proposed` · `Accepted` · `Superseded by ADR-NNNN`.
 - Accepted ADRs are immutable — supersede, never edit.
 

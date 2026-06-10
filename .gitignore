@@ -3,3 +3,10 @@ coverage.out
 .DS_Store
 hack/spikes/*/out/
 dist/
+
+# Internal planning docs and assistant config — private, never committed.
+/PRD.md
+/PLANNING.md
+/TASKS.md
+/CLAUDE.md
+.claude/

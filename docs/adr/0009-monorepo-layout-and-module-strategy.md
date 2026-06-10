@@ -5,7 +5,7 @@
 
 ## Context
 
-TASKS.md prescribes a monorepo (`/api`, `/operator`, `/cli`, `/receiver`, `/dashboard`, `/docs`, `/hack`) with `/api` importable by third parties. Importability is a dependency-graph question as much as a license question: anyone importing the CRD types or the doctor check contract must not inherit controller-runtime, chi, or the rest of the product's dependency tree through Go's minimal version selection.
+The Phase 0 plan prescribes a monorepo (`/api`, `/operator`, `/cli`, `/receiver`, `/dashboard`, `/docs`, `/hack`) with `/api` importable by third parties. Importability is a dependency-graph question as much as a license question: anyone importing the CRD types or the doctor check contract must not inherit controller-runtime, chi, or the rest of the product's dependency tree through Go's minimal version selection.
 
 ## Decision
 

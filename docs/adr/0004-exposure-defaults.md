@@ -5,7 +5,7 @@
 
 ## Context
 
-PLANNING.md risk #3: users expose admin panels publicly no matter what the docs say — Shodan is full of exposed panels of exactly this product class, and a PaaS control plane holds Git credentials and executes code from repositories by design. The PRD makes secure-by-default a product requirement, not deployment advice, and security invariant INV-05 makes it testable: the dashboard is unreachable from the internet unless explicitly exposed with SSO/MFA enforced. Defaults are the only mitigation that works on people who do not read documentation.
+A top documented project risk: users expose admin panels publicly no matter what the docs say — Shodan is full of exposed panels of exactly this product class, and a PaaS control plane holds Git credentials and executes code from repositories by design. Secure-by-default is a product requirement, not deployment advice, and security invariant INV-05 makes it testable: the dashboard is unreachable from the internet unless explicitly exposed with SSO/MFA enforced. Defaults are the only mitigation that works on people who do not read documentation.
 
 ## Decision
 

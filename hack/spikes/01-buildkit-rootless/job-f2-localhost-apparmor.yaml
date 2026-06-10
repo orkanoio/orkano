@@ -1,0 +1,74 @@
+# Attempt F2 — THE MINIMAL WORKING, BASELINE-ADMITTABLE CONFIGURATION.
+# E plus appArmorProfile Localhost/orkano-buildkit instead of Unconfined.
+# Localhost profiles are legal under PSA baseline; the node must have the
+# profile loaded first (see apparmor-orkano-buildkit.profile / run.sh):
+#   limactl shell orkano-spike -- sudo apparmor_parser -r /etc/apparmor.d/orkano-buildkit
+# Deviations from restricted, all empirically load-bearing:
+#   - seccompProfile omitted (nil = unconfined on k3s; RuntimeDefault blocks
+#     clone(CLONE_NEWUSER) -> attempt A's "fork/exec /proc/self/exe" EPERM)
+#   - allowPrivilegeEscalation: true (newuidmap/newgidmap are file-caps
+#     binaries; NoNewPrivs makes their exec fail EPERM -> attempts B/C/D)
+#   - capabilities add SETUID,SETGID (bounding set must honor those file caps)
+#   - apparmor Localhost profile with userns+mount (cri default profile
+#     silently denies mount(2) -> attempt E's "failed to share mount point: /")
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-f2
+  namespace: orkano-build-spike
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit:v0.30.0-rootless
+          command: ["buildctl-daemonless.sh"]
+          args:
+            - build
+            - --frontend=dockerfile.v0
+            - --local=context=/workspace
+            - --local=dockerfile=/workspace
+            - --output=type=image,name=registry.orkano-spike-infra.svc.cluster.local:5000/spike:f2,push=true,registry.insecure=true
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: [ALL]
+              add: [SETUID, SETGID]
+            appArmorProfile:
+              type: Localhost
+              localhostProfile: orkano-buildkit
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: buildkitd
+              mountPath: /home/user/.local/share/buildkit
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          configMap:
+            name: build-context
+        - name: buildkitd
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

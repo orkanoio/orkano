@@ -1,6 +1,6 @@
 # Orkano Threat Model (v1)
 
-A PaaS control plane holds Git credentials and runs code from the internet by design. This document is the honest accounting of what can go wrong and what we do about it. Security invariants INV-01 through INV-08 map 1:1, in order, to the eight numbered invariants in [PLANNING.md](../../PLANNING.md#security-invariants).
+A PaaS control plane holds Git credentials and runs code from the internet by design. This document is the honest accounting of what can go wrong and what we do about it. Security invariants INV-01 through INV-08 are defined in [invariants.md](invariants.md).
 
 Found a hole? Email contact@orkano.io (see SECURITY.md for the disclosure process).
 
@@ -14,7 +14,7 @@ Found a hole? Email contact@orkano.io (see SECURITY.md for the disclosure proces
 
 ## Trust zones
 
-The architecture diagram in [PLANNING.md](../../PLANNING.md#architecture) shows where everything sits; this is the trust reading of it.
+The trust reading of the architecture: four zones, with threats living at the boundaries between them.
 
 - **Z1 — Internet.** Anonymous and hostile. Exactly one Orkano component listens here: the webhook receiver (INV-04, INV-05).
 - **Z2 — Private admin network.** The dashboard, reachable only via `orkano proxy`, Tailscale, or an identity-aware proxy unless explicitly exposed with SSO+MFA (ADR-0004).
@@ -102,7 +102,7 @@ Residual risks we consciously accept at this stage, so nobody has to discover th
 1. **Public dashboard exposure with SSO+MFA.** A user may override the private-by-default exposure (ADR-0004). We refuse without SSO+MFA and the doctor nags forever, but a publicly reachable panel is inherently more exposed than one behind `orkano proxy` or Tailscale.
 2. **Egress allowlist granularity.** "GitHub + registry" is coarse — a malicious build can exfiltrate data to anywhere on GitHub (gists, attacker repos). Tighter scoping is pending the M0.5 BuildKit spike findings.
 3. **Single shared `orkano-apps` namespace (ADR-0005).** No inter-app isolation in v1: a compromised app can reach its neighbors. Acceptable because v1 is single-tenant by scope — all apps belong to the same admin. Per-app namespaces are the v2 path alongside team RBAC.
-4. **Build container escape.** Rootless BuildKit under restricted PSA is strong but not a hypervisor boundary. Risk rated medium/high in PLANNING.md; final posture (and any gVisor/Kata fallback) decided after the M0.5 spike.
+4. **Build container escape.** Rootless BuildKit under restricted PSA is strong but not a hypervisor boundary. Rated medium likelihood, high impact in the project risk register; final posture (and any gVisor/Kata fallback) decided after the M0.5 spike.
 5. **On-box audit log.** Until the ship-off-box option is configured, a full control-plane compromise could tamper with local audit history despite append-only semantics (INV-08).
 6. **Manual GitHub App key rotation.** Installation tokens are ≤1 h (INV-07), but the App private key itself rotates manually in v1; a stolen key is valid until the admin rotates it.
 7. **Metadata disclosure from Postgres.** The DB never holds secret values (INV-03), but a DB compromise still reveals who deployed what, when — metadata we accept storing because the audit trail requires it.

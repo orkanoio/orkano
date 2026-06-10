@@ -1,0 +1,17 @@
+# orkano-build-spike starts at the restricted PSA level — the level under test.
+# The run script relabels it downward only as the attempt ladder requires,
+# and the achieved level is recorded in FINDINGS.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-build-spike
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# Registry infra is not the thing under test; it gets no PSA restriction.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-spike-infra

@@ -5,7 +5,7 @@
 
 ## Context
 
-PLANNING.md proposed this stack; this ADR confirms it through the lens that actually matters for an open-source project with a 10-external-contributors launch goal: who do we want as contributors, and what stack lets a stranger ship a useful dashboard PR in one evening that one maintainer can review in minutes?
+The original planning notes proposed this stack; this ADR confirms it through the lens that actually matters for an open-source project with a 10-external-contributors launch goal: who do we want as contributors, and what stack lets a stranger ship a useful dashboard PR in one evening that one maintainer can review in minutes?
 
 ## Decision
 

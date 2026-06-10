@@ -14,7 +14,7 @@ Please include:
 
 - The Orkano version or commit hash you tested against.
 - The affected component (dashboard, webhook receiver, operator, build jobs, registry, installer/CLI).
-- The impact as you understand it — what an attacker gains. If the flaw breaks one of the documented security invariants (INV-01 through INV-08 in `PLANNING.md`), say which one; that fast-tracks triage.
+- The impact as you understand it — what an attacker gains. If the flaw breaks one of the documented security invariants (INV-01 through INV-08 in [docs/security/invariants.md](docs/security/invariants.md)), say which one; that fast-tracks triage.
 - Reproduction steps or a proof of concept. A minimal repro is worth more than a long writeup.
 
 ## Scope

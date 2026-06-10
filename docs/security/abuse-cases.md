@@ -21,7 +21,7 @@ This catalogue is a set of concrete attacker stories checked against the archite
 - Hard CPU/memory/time limits time-box mining to one bounded Job.
 - Rootless BuildKit, never a Docker socket (no daemon to pivot through).
 
-**Verdict:** Partially mitigated — the design is sound, but rootless BuildKit under restricted PSA is unproven until the M0.5 spike lands (Risk #2 in PLANNING.md); fallbacks (tainted build node pool, gVisor/Kata) are documented but unbuilt.
+**Verdict:** Partially mitigated — the design is sound, but rootless BuildKit under restricted PSA is unproven until the M0.5 spike lands (risk #2 in the project risk register); fallbacks (tainted build node pool, gVisor/Kata) are documented but unbuilt.
 
 **Detection:** The doctor's NetworkPolicy probe verifies the build-namespace egress deny actually blocks traffic; repeated `Build` CRs killed at the CPU or time ceiling surface in deploy history and the audit log.
 

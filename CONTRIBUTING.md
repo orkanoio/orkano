@@ -23,8 +23,8 @@ PRs with unsigned commits cannot be merged. No CLA — see [ADR-0002](docs/adr/0
 
 ## Pull requests
 
-- One TASKS.md item or issue per PR; small PRs get reviewed, large ones wait.
-- Reference the task or issue in the description, and note any implementation calls you made.
+- One issue per PR; small PRs get reviewed, large ones wait.
+- Reference the issue in the description, and note any implementation calls you made.
 - Prefer integration tests over heavily mocked unit tests, especially around the Kubernetes API.
 - Match the existing code style: idiomatic Go, `gofmt`, errors wrapped with `%w`, contexts threaded through, comments only where the *why* is non-obvious.
 - Anything touching architecture, public API, security posture, or scope needs an ADR — open an issue to discuss before writing code.
@@ -35,7 +35,7 @@ Doctor checks are the designated good-first-issue surface: each check is a small
 
 ## Before you file an issue
 
-1. Check [PRD.md](PRD.md) Non-Goals — feature requests outside v1 scope go to the TASKS.md backlog, not the issue tracker.
+1. Check ["What Orkano is not"](README.md#what-orkano-is-not) — feature requests outside v1 scope will be closed with a pointer there.
 2. Search existing issues, including closed ones.
 3. For bugs: include the Orkano commit/version, platform (k3s or BYO, amd64/arm64), and what you expected.
 4. For security issues: **never open a public issue** — see [SECURITY.md](SECURITY.md).

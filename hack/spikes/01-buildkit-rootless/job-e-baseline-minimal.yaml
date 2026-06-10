@@ -1,0 +1,68 @@
+# Attempt E — the empirically minimal deviation from restricted, derived from
+# the A–D failures. Admittable under PSA *baseline* (not restricted):
+#   - seccompProfile omitted: nil is baseline-legal; on k3s (SeccompDefault off)
+#     nil means seccomp-unconfined at runtime, which RootlessKit needs for
+#     clone(CLONE_NEWUSER). Explicit "Unconfined" would be rejected by baseline.
+#   - allowPrivilegeEscalation: true — newuidmap/newgidmap in the rootless image
+#     are file-capability binaries; exec under NoNewPrivs fails with EPERM.
+#   - capabilities add [SETUID, SETGID] — required in the bounding set for the
+#     newuidmap/newgidmap file caps to be honored; both in baseline's allowed set.
+#   - apparmor: runtime/default (untouched) — proven non-blocking in attempt B.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-e
+  namespace: orkano-build-spike
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit:v0.30.0-rootless
+          command: ["buildctl-daemonless.sh"]
+          args:
+            - build
+            - --frontend=dockerfile.v0
+            - --local=context=/workspace
+            - --local=dockerfile=/workspace
+            - --output=type=image,name=registry.orkano-spike-infra.svc.cluster.local:5000/spike:e,push=true,registry.insecure=true
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: [ALL]
+              add: [SETUID, SETGID]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: buildkitd
+              mountPath: /home/user/.local/share/buildkit
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          configMap:
+            name: build-context
+        - name: buildkitd
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

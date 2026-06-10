@@ -18,5 +18,5 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: I checked PRD.md Non-Goals and this is not on that list
+        - label: I checked "What Orkano is not" in the README and this is not on that list
           required: true

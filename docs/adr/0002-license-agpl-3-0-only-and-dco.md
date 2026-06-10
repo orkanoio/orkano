@@ -5,7 +5,7 @@
 
 ## Context
 
-The license is the single most irreversible decision in the project: once external contributions land, relicensing requires every contributor's consent. PRD.md carried Apache-2.0 as a working default, flagged for conscious confirmation before the repo goes public. The product category sharpens the question — a self-hosted PaaS control plane is exactly the kind of software a company can take, harden privately, and resell as a hosted service without contributing anything back. Network copyleft is the only license mechanism that addresses that.
+The license is the single most irreversible decision in the project: once external contributions land, relicensing requires every contributor's consent. The product brief carried Apache-2.0 as a working default, flagged for conscious confirmation before the repo goes public. The product category sharpens the question — a self-hosted PaaS control plane is exactly the kind of software a company can take, harden privately, and resell as a hosted service without contributing anything back. Network copyleft is the only license mechanism that addresses that.
 
 ## Decision
 

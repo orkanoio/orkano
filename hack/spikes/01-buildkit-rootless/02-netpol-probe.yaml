@@ -1,0 +1,54 @@
+# Probe target + client for verifying that NetworkPolicy is actually enforced
+# (project rule: probe capabilities, never read configs).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-server
+  namespace: orkano-build-spike
+  labels:
+    app: probe-server
+spec:
+  containers:
+    - name: web
+      image: nginxinc/nginx-unprivileged:1.27-alpine
+      ports:
+        - containerPort: 8080
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe-server
+  namespace: orkano-build-spike
+spec:
+  selector:
+    app: probe-server
+  ports:
+    - port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-client
+  namespace: orkano-build-spike
+spec:
+  restartPolicy: Never
+  containers:
+    - name: client
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault

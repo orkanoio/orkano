@@ -1,6 +1,6 @@
 ## What & why
 
-<!-- Which TASKS.md item or issue does this close? What implementation calls did you make? -->
+<!-- Which issue does this close? What implementation calls did you make? -->
 
 ## Tests
 

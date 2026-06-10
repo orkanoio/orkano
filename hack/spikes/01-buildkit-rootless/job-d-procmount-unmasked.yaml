@@ -1,0 +1,65 @@
+# Attempt D — C plus unmasked /proc inside a user-namespaced pod
+# (hostUsers: false). procMount Unmasked requires user namespaces.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-d
+  namespace: orkano-build-spike
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: buildkit
+      annotations:
+        container.apparmor.security.beta.kubernetes.io/buildkit: unconfined
+    spec:
+      restartPolicy: Never
+      hostUsers: false
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit:v0.30.0-rootless
+          command: ["buildctl-daemonless.sh"]
+          args:
+            - build
+            - --frontend=dockerfile.v0
+            - --local=context=/workspace
+            - --local=dockerfile=/workspace
+            - --output=type=image,name=registry.orkano-spike-infra.svc.cluster.local:5000/spike:d,push=true,registry.insecure=true
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: Unconfined
+            procMount: Unmasked
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: buildkitd
+              mountPath: /home/user/.local/share/buildkit
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          configMap:
+            name: build-context
+        - name: buildkitd
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

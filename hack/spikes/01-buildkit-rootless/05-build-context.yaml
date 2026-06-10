@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: build-context
+  namespace: orkano-build-spike
+data:
+  Dockerfile: |
+    FROM alpine:3.22
+    RUN echo "built by rootless buildkit under PSA" > /hello
+    CMD ["cat", "/hello"]
