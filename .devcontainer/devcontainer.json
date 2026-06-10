@@ -1,0 +1,10 @@
+{
+  "name": "orkano",
+  "image": "mcr.microsoft.com/devcontainers/go:1",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  },
+  "postCreateCommand": "make all"
+}

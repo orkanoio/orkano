@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - nolintlint
+    - sqlclosecheck
+    - unconvert
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
