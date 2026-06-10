@@ -16,6 +16,8 @@ const (
 // BuildSpec is a record of one build attempt: source and strategy are
 // snapshots taken from the App at trigger time, so the record stays honest
 // after the App changes. Retrying means creating a new Build.
+//
+// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="build spec is immutable; retry by creating a new Build"
 type BuildSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	AppName string `json:"appName"`

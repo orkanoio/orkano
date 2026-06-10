@@ -10,6 +10,7 @@ type DomainSpec struct {
 	// (ADR-0006).
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="host is immutable; re-pointing a hostname is delete-and-recreate"
 	Host string `json:"host"`
 
 	AppRef LocalObjectRef `json:"appRef"`

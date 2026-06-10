@@ -26,6 +26,7 @@ type GitHubSource struct {
 	Ref string `json:"ref,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? !has(self.static) : (has(self.static) && !has(self.dockerfile))",message="build members must match the chosen strategy"
 type BuildStrategy struct {
 	// +kubebuilder:validation:Enum=Dockerfile;Static
 	Strategy string `json:"strategy"`
@@ -53,6 +54,7 @@ type StaticBuild struct {
 	Dir string `json:"dir"`
 }
 
+// +kubebuilder:validation:XValidation:rule="has(self.value) != has(self.secretRef)",message="exactly one of value or secretRef must be set"
 type EnvVar struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
 	// +kubebuilder:validation:MaxLength=253

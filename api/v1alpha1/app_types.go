@@ -14,6 +14,7 @@ const (
 // ConditionReady is the summary condition on every Orkano kind.
 const ConditionReady = "Ready"
 
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'Worker' || (!has(self.port) && !has(self.healthCheck))",message="Worker apps cannot set port or healthCheck"
 type AppSpec struct {
 	Source Source `json:"source"`
 
