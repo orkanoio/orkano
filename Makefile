@@ -31,3 +31,14 @@ vulncheck:
 	@for m in $(MODULES); do \
 		echo "vulncheck $$m" && (cd $$m && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...) || exit 1; \
 	done
+
+.PHONY: generate manifests validate-examples
+
+generate:
+	go tool controller-gen object paths=./api/...
+
+manifests:
+	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=config/crd
+
+validate-examples: manifests
+	hack/validate-examples.sh
