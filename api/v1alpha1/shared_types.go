@@ -38,8 +38,9 @@ type BuildStrategy struct {
 	Static *StaticBuild `json:"static,omitempty"`
 }
 
-// DockerfileBuild's remaining fields (build args, target stage, cache
-// configuration) freeze after the M0.5 BuildKit spike findings.
+// DockerfileBuild is deliberately path-only in v1alpha1: buildArgs and
+// target were deferred by ADR-0012 after the BuildKit spike — each widens
+// the hostile-input surface without being needed for the core loop.
 type DockerfileBuild struct {
 	// Path to the Dockerfile, relative to source.subPath when set.
 	// +kubebuilder:validation:MaxLength=512

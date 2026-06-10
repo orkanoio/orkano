@@ -59,8 +59,9 @@ spec:
                 properties:
                   dockerfile:
                     description: |-
-                      DockerfileBuild's remaining fields (build args, target stage, cache
-                      configuration) freeze after the M0.5 BuildKit spike findings.
+                      DockerfileBuild is deliberately path-only in v1alpha1: buildArgs and
+                      target were deferred by ADR-0012 after the BuildKit spike — each widens
+                      the hostile-input surface without being needed for the core loop.
                     properties:
                       path:
                         description: Path to the Dockerfile, relative to source.subPath
