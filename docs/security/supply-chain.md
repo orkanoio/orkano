@@ -16,16 +16,24 @@ Every release from v0.0.1 ships:
 - **syft SBOMs** (SPDX) per archive and per image.
 - **SLSA provenance** at **Build L2** via GitHub native artifact attestations (`actions/attest-build-provenance`). The L3 upgrade (slsa-github-generator's isolated builder, or its successor) is a Phase 5 launch-hardening task — L2 now is one first-party step; L3 today is multi-job choreography with a history of breaking releases, the maintenance a solo project cannot pay.
 
-Verification commands users can run:
+Verification commands users can run (exercised for real against v0.0.1):
 
 ```sh
 cosign verify \
-  --certificate-identity-regexp 'github.com/orkanoio/orkano' \
+  --certificate-identity-regexp 'https://github.com/orkanoio/orkano' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/orkanoio/orkano-operator:<tag>
+  ghcr.io/orkanoio/orkano-operator:<version>
 
-gh attestation verify oci://ghcr.io/orkanoio/orkano-operator:<tag> --owner orkanoio
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/orkanoio/orkano' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+gh attestation verify checksums.txt --owner orkanoio
+gh attestation verify oci://ghcr.io/orkanoio/orkano-operator:<version> --owner orkanoio
 ```
+
+Note: goreleaser image tags carry the version without the `v` prefix.
 
 ## Rules that keep the pipeline honest
 
