@@ -1,0 +1,12 @@
+Orkano
+Copyright 2026 The Orkano Authors
+
+Licensed under the GNU Affero General Public License, version 3 only
+(AGPL-3.0-only). See LICENSE. Decision recorded in docs/adr/0002.
+
+Name reservation record (M0.1):
+- GitHub org "orkanoio"        — pending (user action)
+- ghcr.io/orkanoio namespace   — pending (user action; follows org creation)
+- Domain orkano.io             — pending (user action; gates the first public
+                                 tag, see docs/adr/0005)
+- Trademark search             — pending (user action)

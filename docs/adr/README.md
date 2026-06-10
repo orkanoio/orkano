@@ -8,3 +8,4 @@ Rules:
 | ADR | Title | Status |
 |-----|-------|--------|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
+| [0002](0002-license-agpl-3-0-only-and-dco.md) | License under AGPL-3.0-only with DCO sign-offs | Accepted |
