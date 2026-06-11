@@ -35,7 +35,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go test -race ./... && cd api && go test -race ./...
+      - run: make test
+        env:
+          GOFLAGS: -race
 
   build:
     runs-on: ubuntu-latest
