@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestMain(m *testing.M) {
 	os.Exit(run(m))
 }
 
-func run(m *testing.M) int {
+func run(m *testing.M) (code int) {
 	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.UseDevMode(true)))
 
 	testEnv := &envtest.Environment{
@@ -85,14 +86,24 @@ func run(m *testing.M) int {
 		return 1
 	}
 
+	// Registered after the testEnv.Stop defer, so LIFO ordering joins the
+	// manager (lease released against a live apiserver) before teardown.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		if err := mgr.Start(ctx); err != nil {
+	mgrErr := make(chan error, 1)
+	defer func() {
+		cancel()
+		if err := <-mgrErr; err != nil {
 			fmt.Fprintf(os.Stderr, "manager exited: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
 		}
 	}()
-	if !mgr.GetCache().WaitForCacheSync(ctx) {
+	go func() { mgrErr <- mgr.Start(ctx) }()
+
+	syncCtx, syncCancel := context.WithTimeout(ctx, time.Minute)
+	defer syncCancel()
+	if !mgr.GetCache().WaitForCacheSync(syncCtx) {
 		fmt.Fprintln(os.Stderr, "cache failed to sync")
 		return 1
 	}
@@ -148,6 +159,12 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		t.Fatalf("schema default not applied: spec.type = %q, want %q", got.Spec.Type, orkanov1alpha1.WorkloadWeb)
 	}
 
+	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}} {
+		if err := k8sClient.List(ctx, list); err != nil {
+			t.Fatalf("failed to list %T: %v", list, err)
+		}
+	}
+
 	port := int32(8080)
 	worker := &orkanov1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-worker", Namespace: "default"},
@@ -160,7 +177,8 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 			Port:  &port,
 		},
 	}
-	if err := k8sClient.Create(ctx, worker); !apierrors.IsInvalid(err) {
-		t.Fatalf("expected CEL rejection for Worker with port, got: %v", err)
+	err := k8sClient.Create(ctx, worker)
+	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Worker apps cannot set port or healthCheck") {
+		t.Fatalf("expected the Worker CEL rule to reject, got: %v", err)
 	}
 }

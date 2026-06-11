@@ -38,7 +38,7 @@ Note: goreleaser image tags carry the version without the `v` prefix.
 ## Rules that keep the pipeline honest
 
 - **No `RUN` steps in product Dockerfiles.** Images are `COPY` of a prebuilt binary onto a digest-pinned distroless base (ADR-0007). This is what lets CI cross-compile linux/arm64 without qemu; a PR adding a `RUN` step must justify adding emulation.
-- **Workspace off at release:** goreleaser builds run with `GOWORK=off` so published binaries resolve dependencies from `go.mod` alone (ADR-0009).
+- **Workspace off at release:** goreleaser builds run with `GOWORK=off` so published binaries resolve third-party dependencies from `go.mod`/`go.sum` alone; the first-party `api` module comes from the same tagged source tree via a directory replace (ADR-0009).
 - **Actions pinned:** authored at major tags; Renovate (`config:best-practices`) rewrites them to SHA-pins-with-comment once installed.
 
 ## Renovate (not Dependabot)

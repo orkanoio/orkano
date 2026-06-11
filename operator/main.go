@@ -19,12 +19,9 @@ var version = "dev"
 
 func main() {
 	var (
-		metricsAddr             string
 		probeAddr               string
 		leaderElectionNamespace string
 	)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0",
-		`The address the metrics endpoint binds to; "0" disables it.`)
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081",
 		"The address the healthz/readyz endpoints bind to.")
 	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "orkano-system",
@@ -42,8 +39,10 @@ func main() {
 	utilruntime.Must(orkanov1alpha1.AddToScheme(scheme))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                  scheme,
-		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
+		Scheme: scheme,
+		// No metrics endpoint until a task wires SecureServing + authn/authz
+		// filters; a bind flag here would only ever enable plaintext HTTP.
+		Metrics:                 metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress:  probeAddr,
 		LeaderElection:          true,
 		LeaderElectionID:        "orkano-operator.orkano.io",

@@ -21,6 +21,7 @@ Directories materialize when their first real content lands; their contracts are
 - Third parties can depend on `api` without pulling product dependencies; per ADR-0002 they must still be AGPL-compatible.
 - Two `go.mod` files to maintain and tag; accepted as the minimum that satisfies the importability contract (module-per-directory was the alternative that doesn't).
 - The committed `go.work` makes fresh-clone `make all` work with zero setup, at the cost of the `GOWORK=off` discipline at release time, recorded here for the release pipeline.
+- The root module requires `api` through a directory replace (`replace … => ./api`), so `GOWORK=off` release builds compile `api` from the release checkout rather than a sum-verified module version, and `go install github.com/orkanoio/orkano/cli@<version>` is not supported — the CLI ships via release archives. The alternative (tagging `api/vX.Y.Z` in lockstep and dropping the replace) can be revisited if `go install` support ever matters.
 
 ## Alternatives considered
 

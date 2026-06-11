@@ -35,6 +35,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - run: make generate manifests && git diff --exit-code
       - run: make test
         env:
           GOFLAGS: -race
