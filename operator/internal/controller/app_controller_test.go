@@ -1,7 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,7 +16,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -29,7 +36,7 @@ func quantity(t *testing.T, s string) *resource.Quantity {
 	return &q
 }
 
-func createWebApp(t *testing.T, name string, mutate func(*orkanov1alpha1.App)) *orkanov1alpha1.App {
+func createApp(t *testing.T, name string, mutate func(*orkanov1alpha1.App)) *orkanov1alpha1.App {
 	t.Helper()
 	ctx := context.Background()
 	app := &orkanov1alpha1.App{
@@ -53,16 +60,23 @@ func createWebApp(t *testing.T, name string, mutate func(*orkanov1alpha1.App)) *
 
 func setImage(t *testing.T, app *orkanov1alpha1.App, image string) {
 	t.Helper()
-	ctx := context.Background()
 	key := types.NamespacedName{Name: app.Name, Namespace: app.Namespace}
-	var fresh orkanov1alpha1.App
-	if err := k8sClient.Get(ctx, key, &fresh); err != nil {
-		t.Fatalf("failed to refetch App: %v", err)
-	}
-	fresh.Status.Image = image
-	if err := k8sClient.Status().Update(ctx, &fresh); err != nil {
-		t.Fatalf("failed to set status.image: %v", err)
-	}
+	// Retried because the controller writes status (WaitingForBuild) the
+	// moment an App exists, racing this helper's update.
+	eventually(t, "status.image to be set on "+app.Name, func(ctx context.Context) (bool, error) {
+		var fresh orkanov1alpha1.App
+		if err := k8sClient.Get(ctx, key, &fresh); err != nil {
+			return false, err
+		}
+		fresh.Status.Image = image
+		if err := k8sClient.Status().Update(ctx, &fresh); err != nil {
+			if apierrors.IsConflict(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 func getDeployment(t *testing.T, name string) *appsv1.Deployment {
@@ -84,7 +98,7 @@ func getDeployment(t *testing.T, name string) *appsv1.Deployment {
 func TestWebAppRendersDeploymentAndService(t *testing.T) {
 	replicas := int32(2)
 	port := int32(3000)
-	app := createWebApp(t, "web-full", func(a *orkanov1alpha1.App) {
+	app := createApp(t, "web-full", func(a *orkanov1alpha1.App) {
 		a.Spec.Port = &port
 		a.Spec.Replicas = &replicas
 		a.Spec.Command = []string{"/bin/server"}
@@ -180,7 +194,7 @@ func TestWebAppRendersDeploymentAndService(t *testing.T) {
 }
 
 func TestWebAppDefaultsPortAndTCPProbe(t *testing.T) {
-	app := createWebApp(t, "web-defaults", nil)
+	app := createApp(t, "web-defaults", nil)
 	setImage(t, app, testImage)
 
 	deploy := getDeployment(t, app.Name)
@@ -207,7 +221,7 @@ func TestWebAppDefaultsPortAndTCPProbe(t *testing.T) {
 }
 
 func TestAppWithoutImageRendersNothing(t *testing.T) {
-	app := createWebApp(t, "web-no-image", nil)
+	app := createApp(t, "web-no-image", nil)
 
 	time.Sleep(1500 * time.Millisecond)
 	var deploy appsv1.Deployment
@@ -226,7 +240,7 @@ func TestAppWithoutImageRendersNothing(t *testing.T) {
 
 func TestWebAppHealsDriftAndStaysStable(t *testing.T) {
 	ctx := context.Background()
-	app := createWebApp(t, "web-drift", nil)
+	app := createApp(t, "web-drift", nil)
 	setImage(t, app, testImage)
 	deploy := getDeployment(t, app.Name)
 
@@ -280,7 +294,7 @@ func TestWebAppHealsDriftAndStaysStable(t *testing.T) {
 }
 
 func TestWebAppUserPortEnvWinsOverInjection(t *testing.T) {
-	app := createWebApp(t, "web-user-port", func(a *orkanov1alpha1.App) {
+	app := createApp(t, "web-user-port", func(a *orkanov1alpha1.App) {
 		a.Spec.Env = []orkanov1alpha1.EnvVar{{Name: "PORT", Value: "9000"}}
 	})
 	setImage(t, app, testImage)
@@ -303,7 +317,7 @@ func TestWebAppUserPortEnvWinsOverInjection(t *testing.T) {
 
 func TestTypeFlipToWorkerDeletesService(t *testing.T) {
 	ctx := context.Background()
-	app := createWebApp(t, "web-to-worker", nil)
+	app := createApp(t, "web-to-worker", nil)
 	setImage(t, app, testImage)
 	getDeployment(t, app.Name)
 
@@ -331,4 +345,180 @@ func TestTypeFlipToWorkerDeletesService(t *testing.T) {
 		}
 		return false, err
 	})
+}
+
+// applyExample creates every document of a docs/examples file, exactly as
+// kubectl apply would — the acceptance bar for the archetype tasks is the
+// real contract files, not Go specs that approximate them.
+func applyExample(t *testing.T, file string) {
+	t.Helper()
+	ctx := context.Background()
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "examples", file))
+	if err != nil {
+		t.Fatalf("failed to read example %s: %v", file, err)
+	}
+	dec := yamlutil.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+	for {
+		obj := &unstructured.Unstructured{}
+		if err := dec.Decode(obj); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("failed to decode %s: %v", file, err)
+		}
+		if len(obj.Object) == 0 {
+			continue
+		}
+		if err := k8sClient.Create(ctx, obj); err != nil {
+			t.Fatalf("failed to create %s %s from %s: %v", obj.GetKind(), obj.GetName(), file, err)
+		}
+		t.Cleanup(func() { _ = k8sClient.Delete(ctx, obj) })
+	}
+}
+
+func TestWorkerExampleRendersDeploymentOnly(t *testing.T) {
+	ctx := context.Background()
+	applyExample(t, "03-background-worker.yaml")
+	app := &orkanov1alpha1.App{ObjectMeta: metav1.ObjectMeta{Name: "mailer", Namespace: appsNamespace}}
+	setImage(t, app, testImage)
+
+	deploy := getDeployment(t, app.Name)
+	owner := metav1.GetControllerOf(deploy)
+	if owner == nil || owner.Kind != "App" || owner.Name != app.Name {
+		t.Fatalf("Deployment not controller-owned by the App: %+v", owner)
+	}
+	if *deploy.Spec.Replicas != 1 {
+		t.Errorf("replicas = %d, want default 1", *deploy.Spec.Replicas)
+	}
+
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if c.Image != testImage {
+		t.Errorf("image = %q, want %q", c.Image, testImage)
+	}
+	if len(c.Command) != 2 || c.Command[0] != "node" || c.Command[1] != "worker.js" {
+		t.Errorf("command = %v, want [node worker.js]", c.Command)
+	}
+	if len(c.Ports) != 0 {
+		t.Errorf("ports = %+v, want none on a Worker", c.Ports)
+	}
+	if c.ReadinessProbe != nil || c.LivenessProbe != nil {
+		t.Errorf("probes = %+v / %+v, want none on a Worker", c.ReadinessProbe, c.LivenessProbe)
+	}
+	if len(c.Env) != 1 {
+		t.Fatalf("env = %+v, want exactly DATABASE_URL (no PORT injection on a Worker)", c.Env)
+	}
+	dbURL := c.Env[0]
+	if dbURL.Name != "DATABASE_URL" || dbURL.ValueFrom == nil || dbURL.ValueFrom.SecretKeyRef == nil ||
+		dbURL.ValueFrom.SecretKeyRef.Name != "api-db" || dbURL.ValueFrom.SecretKeyRef.Key != "uri" {
+		t.Errorf("env[0] = %+v, want DATABASE_URL from secretKeyRef api-db/uri", dbURL)
+	}
+
+	// The reconcile that rendered the Deployment also walked the Service
+	// branch; settle briefly, then prove no Service was ever created.
+	time.Sleep(1500 * time.Millisecond)
+	var svc corev1.Service
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: appsNamespace}, &svc)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected no Service for a Worker app, got: %v (svc: %+v)", err, svc)
+	}
+}
+
+func TestStaticExampleRendersLikeWeb(t *testing.T) {
+	applyExample(t, "01-static-site.yaml")
+	app := &orkanov1alpha1.App{ObjectMeta: metav1.ObjectMeta{Name: "blog", Namespace: appsNamespace}}
+	setImage(t, app, testImage)
+
+	deploy := getDeployment(t, app.Name)
+	owner := metav1.GetControllerOf(deploy)
+	if owner == nil || owner.Kind != "App" || owner.Name != app.Name {
+		t.Fatalf("Deployment not controller-owned by the App: %+v", owner)
+	}
+	if *deploy.Spec.Replicas != 1 {
+		t.Errorf("replicas = %d, want default 1", *deploy.Spec.Replicas)
+	}
+
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if c.Image != testImage {
+		t.Errorf("image = %q, want %q", c.Image, testImage)
+	}
+	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != defaultWebPort || c.Ports[0].Name != servicePortName {
+		t.Errorf("ports = %+v, want named port %q on default %d", c.Ports, servicePortName, defaultWebPort)
+	}
+	var portEnv string
+	for _, e := range c.Env {
+		if e.Name == "PORT" {
+			portEnv = e.Value
+		}
+	}
+	if portEnv != "8080" {
+		t.Errorf("PORT env = %q, want 8080", portEnv)
+	}
+	if c.ReadinessProbe == nil || c.ReadinessProbe.TCPSocket == nil ||
+		c.ReadinessProbe.TCPSocket.Port.IntValue() != int(defaultWebPort) {
+		t.Errorf("readiness probe = %+v, want TCPSocket on %d", c.ReadinessProbe, defaultWebPort)
+	}
+	if c.LivenessProbe != nil {
+		t.Errorf("liveness probe = %+v, want none without healthCheck", c.LivenessProbe)
+	}
+
+	var svc corev1.Service
+	key := types.NamespacedName{Name: app.Name, Namespace: appsNamespace}
+	eventually(t, "Service", func(ctx context.Context) (bool, error) {
+		err := k8sClient.Get(ctx, key, &svc)
+		return err == nil, client.IgnoreNotFound(err)
+	})
+	if svcOwner := metav1.GetControllerOf(&svc); svcOwner == nil || svcOwner.Name != app.Name {
+		t.Fatalf("Service not controller-owned by the App: %+v", svcOwner)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.String() != servicePortName {
+		t.Errorf("service ports = %+v, want 80 -> named port %q", svc.Spec.Ports, servicePortName)
+	}
+	if !equality.Semantic.DeepEqual(svc.Spec.Selector, deploy.Spec.Template.Labels) {
+		t.Errorf("service selector %+v does not match pod template labels %+v", svc.Spec.Selector, deploy.Spec.Template.Labels)
+	}
+}
+
+func TestWorkerWithoutEnvStaysStable(t *testing.T) {
+	ctx := context.Background()
+	app := createApp(t, "worker-minimal", func(a *orkanov1alpha1.App) {
+		a.Spec.Type = orkanov1alpha1.WorkloadWorker
+	})
+	setImage(t, app, testImage)
+	getDeployment(t, app.Name)
+
+	// An env-less Worker is the only shape that renders a fully empty env
+	// list (Web always injects PORT), so it pins the mutate closure's
+	// stability for the no-op edge none of the Web tests can reach.
+	r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	var fresh orkanov1alpha1.App
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: appsNamespace}, &fresh); err != nil {
+		t.Fatalf("failed to refetch App: %v", err)
+	}
+	var stored appsv1.Deployment
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: appsNamespace}, &stored); err != nil {
+		t.Fatalf("failed to refetch Deployment: %v", err)
+	}
+
+	// Pin the rendered shape before the idempotency check: both sides of
+	// that comparison come from the same code, so a deterministic wrong
+	// shape (PORT injected, stray ports or probes) would still be stable.
+	c := stored.Spec.Template.Spec.Containers[0]
+	if len(c.Env) != 0 {
+		t.Errorf("env-less Worker rendered env = %+v, want empty", c.Env)
+	}
+	if len(c.Ports) != 0 {
+		t.Errorf("ports = %+v, want none on a Worker", c.Ports)
+	}
+	if c.ReadinessProbe != nil || c.LivenessProbe != nil {
+		t.Errorf("probes = %+v / %+v, want none on a Worker", c.ReadinessProbe, c.LivenessProbe)
+	}
+
+	before := stored.DeepCopy()
+	r.mutateDeployment(&fresh, &stored)
+	if err := controllerutil.SetControllerReference(&fresh, &stored, r.Scheme); err != nil {
+		t.Fatalf("failed to set controller reference: %v", err)
+	}
+	if !equality.Semantic.DeepEqual(before, &stored) {
+		t.Errorf("Worker mutate closure is not stable against the stored object:\nbefore: %+v\nafter:  %+v", before, &stored)
+	}
 }

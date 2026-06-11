@@ -18,6 +18,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -34,7 +35,10 @@ const (
 	appsNamespace    = "orkano-apps"
 )
 
-var k8sClient client.Client
+var (
+	k8sClient  client.Client
+	restConfig *rest.Config
+)
 
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
@@ -52,6 +56,7 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to start envtest: %v\n", err)
 		return 1
 	}
+	restConfig = cfg
 	defer func() {
 		if err := testEnv.Stop(); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to stop envtest: %v\n", err)
