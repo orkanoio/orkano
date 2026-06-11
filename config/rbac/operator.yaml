@@ -1,0 +1,114 @@
+# Operator ServiceAccount permissions — docs/security/rbac-matrix.md made
+# literal. The most privileged Orkano identity still holds no cluster-admin,
+# no exec, and nothing outside its three namespaces.
+#
+# The GitHub App PEM read (a Secret in orkano-system, INV-07) lands with
+# M1.3's token minting — that grant is added to the matrix doc and here in
+# the same commit, or the rbac-matrix test fails.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-apps
+rules:
+  - apiGroups: ["orkano.io"]
+    resources:
+      - apps
+      - apps/status
+      - apps/finalizers
+      - builds
+      - builds/status
+      - builds/finalizers
+      - domains
+      - domains/status
+      - domains/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-builds
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-builds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system
