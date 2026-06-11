@@ -96,6 +96,7 @@ type HealthCheck struct {
 }
 
 type LocalObjectRef struct {
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 }

@@ -48,7 +48,12 @@ func run(m *testing.M) (code int) {
 	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.UseDevMode(true)))
 
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "config", "crd"),
+			// Stand-in cert-manager Certificate CRD: the Domain controller
+			// watches Certificates, and tests play the part of ingress-shim.
+			filepath.Join("..", "..", "..", "hack", "testdata", "crds"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := testEnv.Start()
@@ -96,6 +101,10 @@ func run(m *testing.M) (code int) {
 
 	if err := (&AppReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to set up App controller: %v\n", err)
+		return 1
+	}
+	if err := (&DomainReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(), ClusterIssuer: testClusterIssuer}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up Domain controller: %v\n", err)
 		return 1
 	}
 

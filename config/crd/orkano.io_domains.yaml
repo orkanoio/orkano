@@ -53,13 +53,20 @@ spec:
           spec:
             properties:
               appRef:
+                description: |-
+                  AppRef is immutable for the same reason as host: re-pointing leaves
+                  no event that would ever heal the old App's derived status.url.
                 properties:
                   name:
                     maxLength: 253
+                    minLength: 1
                     type: string
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: appRef is immutable; re-pointing a domain is delete-and-recreate
+                  rule: self == oldSelf
               host:
                 description: |-
                   Host is immutable: re-pointing a hostname is delete-and-recreate,
@@ -144,6 +151,10 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: domain name must be at most 249 characters so the derived TLS secret
+            name fits the 253-character limit
+          rule: self.metadata.name.size() <= 249
     served: true
     storage: true
     subresources:

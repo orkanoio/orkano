@@ -22,11 +22,14 @@ func main() {
 	var (
 		probeAddr               string
 		leaderElectionNamespace string
+		clusterIssuer           string
 	)
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081",
 		"The address the healthz/readyz endpoints bind to.")
 	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "orkano-system",
 		"Namespace the leader-election Lease lives in.")
+	flag.StringVar(&clusterIssuer, "cluster-issuer", "orkano-platform",
+		"Name of the cert-manager ClusterIssuer every Domain Ingress is annotated with.")
 	zapOpts := zap.Options{}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -59,6 +62,10 @@ func main() {
 
 	if err := (&controller.AppReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up App controller")
+		os.Exit(1)
+	}
+	if err := (&controller.DomainReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(), ClusterIssuer: clusterIssuer}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up Domain controller")
 		os.Exit(1)
 	}
 
