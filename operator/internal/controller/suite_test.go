@@ -1,0 +1,166 @@
+package controller
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+)
+
+const (
+	leaderElectionID = "orkano-operator.orkano.io"
+	systemNamespace  = "orkano-system"
+)
+
+var k8sClient client.Client
+
+func TestMain(m *testing.M) {
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.UseDevMode(true)))
+
+	testEnv := &envtest.Environment{
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd")},
+		ErrorIfCRDPathMissing: true,
+	}
+	cfg, err := testEnv.Start()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start envtest: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := testEnv.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to stop envtest: %v\n", err)
+		}
+	}()
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(orkanov1alpha1.AddToScheme(scheme))
+
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create client: %v\n", err)
+		return 1
+	}
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: systemNamespace}}
+	if err := k8sClient.Create(context.Background(), ns); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create %s namespace: %v\n", systemNamespace, err)
+		return 1
+	}
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                        scheme,
+		Metrics:                       metricsserver.Options{BindAddress: "0"},
+		LeaderElection:                true,
+		LeaderElectionID:              leaderElectionID,
+		LeaderElectionNamespace:       systemNamespace,
+		LeaderElectionReleaseOnCancel: true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create manager: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "manager exited: %v\n", err)
+		}
+	}()
+	if !mgr.GetCache().WaitForCacheSync(ctx) {
+		fmt.Fprintln(os.Stderr, "cache failed to sync")
+		return 1
+	}
+
+	return m.Run()
+}
+
+func eventually(t *testing.T, desc string, cond func(ctx context.Context) (bool, error)) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, cond); err != nil {
+		t.Fatalf("timed out waiting for %s: %v", desc, err)
+	}
+}
+
+func TestManagerAcquiresLeaderLease(t *testing.T) {
+	key := types.NamespacedName{Namespace: systemNamespace, Name: leaderElectionID}
+	eventually(t, "leader lease to be held", func(ctx context.Context) (bool, error) {
+		var lease coordinationv1.Lease
+		if err := k8sClient.Get(ctx, key, &lease); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity != "", nil
+	})
+}
+
+func TestSchemeServesOrkanoKinds(t *testing.T) {
+	ctx := context.Background()
+
+	app := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "scheme-smoke", Namespace: "default"},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{
+				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+			},
+			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("failed to create valid App: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, app) })
+
+	var got orkanov1alpha1.App
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "scheme-smoke", Namespace: "default"}, &got); err != nil {
+		t.Fatalf("failed to get App back: %v", err)
+	}
+	if got.Spec.Type != orkanov1alpha1.WorkloadWeb {
+		t.Fatalf("schema default not applied: spec.type = %q, want %q", got.Spec.Type, orkanov1alpha1.WorkloadWeb)
+	}
+
+	port := int32(8080)
+	worker := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "invalid-worker", Namespace: "default"},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{
+				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+			},
+			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
+			Type:  orkanov1alpha1.WorkloadWorker,
+			Port:  &port,
+		},
+	}
+	if err := k8sClient.Create(ctx, worker); !apierrors.IsInvalid(err) {
+		t.Fatalf("expected CEL rejection for Worker with port, got: %v", err)
+	}
+}

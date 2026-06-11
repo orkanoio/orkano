@@ -1,5 +1,6 @@
 GOLANGCI_LINT_VERSION := v2.12.2
 GOVULNCHECK_VERSION   := v1.3.0
+ENVTEST_K8S_VERSION   := 1.36.0
 MODULES               := . api
 BIN                   := $(CURDIR)/bin
 
@@ -18,7 +19,8 @@ lint: $(BIN)/golangci-lint
 	done
 
 test:
-	@for m in $(MODULES); do \
+	@KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)"; export KUBEBUILDER_ASSETS; \
+	for m in $(MODULES); do \
 		echo "test $$m" && (cd $$m && go test ./...) || exit 1; \
 	done
 
