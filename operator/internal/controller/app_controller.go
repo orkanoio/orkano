@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -19,6 +20,8 @@ import (
 )
 
 const (
+	// appLabel is written into every Deployment's immutable spec.selector;
+	// renaming it breaks every existing app without a migration.
 	appLabel        = "app.orkano.io/app"
 	managedByLabel  = "app.kubernetes.io/managed-by"
 	managedByValue  = "orkano"
@@ -58,6 +61,11 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: app.Namespace}}
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		// Never adopt an object Orkano didn't create: mutating a foreign
+		// Deployment hits the immutable selector and loops forever.
+		if !deploy.CreationTimestamp.IsZero() && metav1.GetControllerOf(deploy) == nil {
+			return fmt.Errorf("existing Deployment %s/%s is not managed by Orkano; rename the App or delete the Deployment", deploy.Namespace, deploy.Name)
+		}
 		r.mutateDeployment(&app, deploy)
 		return controllerutil.SetControllerReference(&app, deploy, r.Scheme)
 	})
@@ -68,12 +76,30 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.Info("reconciled Deployment", "operation", op)
 	}
 
+	// A type flip away from Web must take the Service down with it.
 	if workloadType(&app) != orkanov1alpha1.WorkloadWeb {
+		var svc corev1.Service
+		err := r.Get(ctx, req.NamespacedName, &svc)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking Service for non-Web app: %w", err)
+		}
+		if metav1.IsControlledBy(&svc, &app) {
+			if err := r.Delete(ctx, &svc); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, fmt.Errorf("deleting Service for non-Web app: %w", err)
+			}
+			log.Info("deleted Service for non-Web app")
+		}
 		return ctrl.Result{}, nil
 	}
 
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: app.Namespace}}
 	op, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if !svc.CreationTimestamp.IsZero() && metav1.GetControllerOf(svc) == nil {
+			return fmt.Errorf("existing Service %s/%s is not managed by Orkano; rename the App or delete the Service", svc.Namespace, svc.Name)
+		}
 		mutateService(&app, svc)
 		return controllerutil.SetControllerReference(&app, svc, r.Scheme)
 	})
@@ -240,11 +266,16 @@ func mutateService(app *orkanov1alpha1.App, svc *corev1.Service) {
 	svc.Labels[appLabel] = app.Name
 	svc.Labels[managedByLabel] = managedByValue
 
+	// ClusterIP is pinned so exposure drift (a tampered NodePort or
+	// LoadBalancer) is healed; all external traffic goes through Ingress.
+	svc.Spec.Type = corev1.ServiceTypeClusterIP
 	svc.Spec.Selector = selectorLabels(app)
+	// The named target keeps routing correct mid-rollout when spec.port
+	// changes: old and new pods each resolve "http" to their own port.
 	svc.Spec.Ports = []corev1.ServicePort{{
 		Name:       servicePortName,
 		Port:       80,
-		TargetPort: intstr.FromInt32(webPort(app)),
+		TargetPort: intstr.FromString(servicePortName),
 		Protocol:   corev1.ProtocolTCP,
 	}}
 }

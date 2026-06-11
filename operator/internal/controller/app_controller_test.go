@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 )
@@ -86,6 +87,7 @@ func TestWebAppRendersDeploymentAndService(t *testing.T) {
 	app := createWebApp(t, "web-full", func(a *orkanov1alpha1.App) {
 		a.Spec.Port = &port
 		a.Spec.Replicas = &replicas
+		a.Spec.Command = []string{"/bin/server"}
 		a.Spec.Env = []orkanov1alpha1.EnvVar{
 			{Name: "DATABASE_URL", SecretRef: &orkanov1alpha1.SecretKeyRef{Name: "api-db", Key: "url"}},
 			{Name: "NODE_ENV", Value: "production"},
@@ -114,6 +116,9 @@ func TestWebAppRendersDeploymentAndService(t *testing.T) {
 	}
 	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != port {
 		t.Errorf("ports = %+v, want one port %d", c.Ports, port)
+	}
+	if len(c.Command) != 1 || c.Command[0] != "/bin/server" {
+		t.Errorf("command = %v, want [/bin/server]", c.Command)
 	}
 
 	envByName := map[string]corev1.EnvVar{}
@@ -145,11 +150,13 @@ func TestWebAppRendersDeploymentAndService(t *testing.T) {
 		t.Errorf("cpu limit set, want none: %+v", c.Resources.Limits)
 	}
 
-	if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet == nil || c.ReadinessProbe.HTTPGet.Path != "/healthz" {
-		t.Errorf("readiness probe = %+v, want HTTP GET /healthz", c.ReadinessProbe)
+	if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet == nil || c.ReadinessProbe.HTTPGet.Path != "/healthz" ||
+		c.ReadinessProbe.HTTPGet.Port.IntValue() != int(port) {
+		t.Errorf("readiness probe = %+v, want HTTP GET /healthz on %d", c.ReadinessProbe, port)
 	}
-	if c.LivenessProbe == nil || c.LivenessProbe.HTTPGet == nil || c.LivenessProbe.HTTPGet.Path != "/healthz" {
-		t.Errorf("liveness probe = %+v, want HTTP GET /healthz", c.LivenessProbe)
+	if c.LivenessProbe == nil || c.LivenessProbe.HTTPGet == nil || c.LivenessProbe.HTTPGet.Path != "/healthz" ||
+		c.LivenessProbe.HTTPGet.Port.IntValue() != int(port) {
+		t.Errorf("liveness probe = %+v, want HTTP GET /healthz on %d", c.LivenessProbe, port)
 	}
 
 	var svc corev1.Service
@@ -161,11 +168,14 @@ func TestWebAppRendersDeploymentAndService(t *testing.T) {
 	if svcOwner := metav1.GetControllerOf(&svc); svcOwner == nil || svcOwner.Name != app.Name {
 		t.Fatalf("Service not controller-owned by the App: %+v", svcOwner)
 	}
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != int(port) {
-		t.Errorf("service ports = %+v, want 80 -> %d", svc.Spec.Ports, port)
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.String() != servicePortName {
+		t.Errorf("service ports = %+v, want 80 -> named port %q", svc.Spec.Ports, servicePortName)
 	}
 	if svc.Spec.Selector[appLabel] != app.Name {
 		t.Errorf("service selector = %+v, want %s=%s", svc.Spec.Selector, appLabel, app.Name)
+	}
+	if !equality.Semantic.DeepEqual(svc.Spec.Selector, deploy.Spec.Template.Labels) {
+		t.Errorf("service selector %+v does not match pod template labels %+v", svc.Spec.Selector, deploy.Spec.Template.Labels)
 	}
 }
 
@@ -187,8 +197,9 @@ func TestWebAppDefaultsPortAndTCPProbe(t *testing.T) {
 	if portEnv != "8080" {
 		t.Errorf("PORT env = %q, want 8080", portEnv)
 	}
-	if c.ReadinessProbe == nil || c.ReadinessProbe.TCPSocket == nil {
-		t.Errorf("readiness probe = %+v, want TCPSocket", c.ReadinessProbe)
+	if c.ReadinessProbe == nil || c.ReadinessProbe.TCPSocket == nil ||
+		c.ReadinessProbe.TCPSocket.Port.IntValue() != int(defaultWebPort) {
+		t.Errorf("readiness probe = %+v, want TCPSocket on %d", c.ReadinessProbe, defaultWebPort)
 	}
 	if c.LivenessProbe != nil {
 		t.Errorf("liveness probe = %+v, want none without healthCheck", c.LivenessProbe)
@@ -233,8 +244,10 @@ func TestWebAppHealsDriftAndStaysStable(t *testing.T) {
 		return *got.Spec.Replicas == 1, nil
 	})
 
-	// The mutate must be a no-op against the server-defaulted object,
-	// otherwise every reconcile issues a spurious update.
+	// The full mutate closures must be no-ops against the server-defaulted
+	// stored objects — CreateOrUpdate compares whole objects, metadata
+	// included, and any diff means a spurious update every reconcile.
+	r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 	var fresh orkanov1alpha1.App
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: appsNamespace}, &fresh); err != nil {
 		t.Fatalf("failed to refetch App: %v", err)
@@ -244,8 +257,78 @@ func TestWebAppHealsDriftAndStaysStable(t *testing.T) {
 		t.Fatalf("failed to refetch Deployment: %v", err)
 	}
 	before := stored.DeepCopy()
-	(&AppReconciler{Client: k8sClient}).mutateDeployment(&fresh, &stored)
-	if !equality.Semantic.DeepEqual(before.Spec, stored.Spec) || !equality.Semantic.DeepEqual(before.Labels, stored.Labels) {
-		t.Errorf("mutateDeployment is not stable against the stored object:\nbefore: %+v\nafter:  %+v", before.Spec, stored.Spec)
+	r.mutateDeployment(&fresh, &stored)
+	if err := controllerutil.SetControllerReference(&fresh, &stored, r.Scheme); err != nil {
+		t.Fatalf("failed to set controller reference: %v", err)
 	}
+	if !equality.Semantic.DeepEqual(before, &stored) {
+		t.Errorf("Deployment mutate closure is not stable against the stored object:\nbefore: %+v\nafter:  %+v", before, &stored)
+	}
+
+	var storedSvc corev1.Service
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: appsNamespace}, &storedSvc); err != nil {
+		t.Fatalf("failed to refetch Service: %v", err)
+	}
+	beforeSvc := storedSvc.DeepCopy()
+	mutateService(&fresh, &storedSvc)
+	if err := controllerutil.SetControllerReference(&fresh, &storedSvc, r.Scheme); err != nil {
+		t.Fatalf("failed to set controller reference: %v", err)
+	}
+	if !equality.Semantic.DeepEqual(beforeSvc, &storedSvc) {
+		t.Errorf("Service mutate closure is not stable against the stored object:\nbefore: %+v\nafter:  %+v", beforeSvc, &storedSvc)
+	}
+}
+
+func TestWebAppUserPortEnvWinsOverInjection(t *testing.T) {
+	app := createWebApp(t, "web-user-port", func(a *orkanov1alpha1.App) {
+		a.Spec.Env = []orkanov1alpha1.EnvVar{{Name: "PORT", Value: "9000"}}
+	})
+	setImage(t, app, testImage)
+
+	deploy := getDeployment(t, app.Name)
+	c := deploy.Spec.Template.Spec.Containers[0]
+	if len(c.Ports) != 1 || c.Ports[0].ContainerPort != defaultWebPort {
+		t.Errorf("ports = %+v, want default %d", c.Ports, defaultWebPort)
+	}
+	var portValues []string
+	for _, e := range c.Env {
+		if e.Name == "PORT" {
+			portValues = append(portValues, e.Value)
+		}
+	}
+	if len(portValues) != 1 || portValues[0] != "9000" {
+		t.Errorf("PORT env entries = %v, want exactly one entry with value 9000", portValues)
+	}
+}
+
+func TestTypeFlipToWorkerDeletesService(t *testing.T) {
+	ctx := context.Background()
+	app := createWebApp(t, "web-to-worker", nil)
+	setImage(t, app, testImage)
+	getDeployment(t, app.Name)
+
+	key := types.NamespacedName{Name: app.Name, Namespace: appsNamespace}
+	var svc corev1.Service
+	eventually(t, "Service to exist", func(ctx context.Context) (bool, error) {
+		err := k8sClient.Get(ctx, key, &svc)
+		return err == nil, client.IgnoreNotFound(err)
+	})
+
+	var fresh orkanov1alpha1.App
+	if err := k8sClient.Get(ctx, key, &fresh); err != nil {
+		t.Fatalf("failed to refetch App: %v", err)
+	}
+	fresh.Spec.Type = orkanov1alpha1.WorkloadWorker
+	fresh.Spec.Env = nil
+	if err := k8sClient.Update(ctx, &fresh); err != nil {
+		t.Fatalf("failed to flip App to Worker: %v", err)
+	}
+
+	eventually(t, "Service to be deleted", func(ctx context.Context) (bool, error) {
+		err := k8sClient.Get(ctx, key, &svc)
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	})
 }
