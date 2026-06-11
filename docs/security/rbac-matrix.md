@@ -28,7 +28,7 @@ Impersonation is cluster-scoped by necessity (the verb cannot be namespace-bound
 | secrets (core) | get, create, update | `orkano-apps` — catalog connection secrets, registry pull secrets |
 | certificates (cert-manager.io) | get, list, watch | `orkano-apps` — mirrors readiness into Domain status |
 | leases (coordination.k8s.io) | get, create, update | `orkano-system` — leader election |
-| events (core) | create, patch | `orkano-apps`, `orkano-builds` |
+| events (core) | create, patch | `orkano-apps`, `orkano-builds`, `orkano-system` — last scope is the leader-election events controller-runtime emits on the Lease |
 
 The operator is the most privileged Orkano identity and still holds no cluster-admin, no exec, no access outside its three namespaces. It is also the only identity that reads the GitHub App private key (a Secret in `orkano-system`) to mint ≤1 h installation tokens (INV-07).
 

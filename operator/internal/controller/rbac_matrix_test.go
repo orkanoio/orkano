@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	serializerjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -98,11 +99,12 @@ func parseRBACMatrixDoc(t *testing.T) map[rbacTuple]bool {
 	tuples := map[rbacTuple]bool{}
 	identity := ""
 	humanTable := false
+	zeroPermSection := false
 	lastRole := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if heading, ok := strings.CutPrefix(line, "## "); ok {
-			identity, humanTable, lastRole = "", false, ""
+			identity, humanTable, zeroPermSection, lastRole = "", false, false, ""
 			switch {
 			case strings.HasPrefix(heading, "Dashboard ServiceAccount"):
 				identity = dashboardIdentity
@@ -110,13 +112,19 @@ func parseRBACMatrixDoc(t *testing.T) map[rbacTuple]bool {
 				identity = operatorIdentity
 			case strings.HasPrefix(heading, "Receiver ServiceAccount"),
 				strings.HasPrefix(heading, "Build job ServiceAccount"):
-				// Zero-permission identities: prose sections, no tuples.
+				// Zero-permission identities: prose sections, no tuples. A
+				// permission table appearing here is doc drift the manifests
+				// would never reflect — fail rather than silently ignore it.
+				zeroPermSection = true
 			case strings.HasPrefix(heading, "Human roles"):
 				humanTable = true
 			default:
 				t.Fatalf("rbac-matrix.md has an unrecognized section %q — teach this parser about it so coverage is not silently dropped", heading)
 			}
 			continue
+		}
+		if zeroPermSection && strings.HasPrefix(line, "|") {
+			t.Fatalf("rbac-matrix.md has a table row under a zero-permission section but those identities hold no grants: %q", line)
 		}
 		if !strings.HasPrefix(line, "|") || (identity == "" && !humanTable) {
 			continue
@@ -299,9 +307,23 @@ func loadRBACManifests(t *testing.T) *rbacManifests {
 		clusterRoles:    map[string]*rbacv1.ClusterRole{},
 	}
 	for _, dir := range []string{"namespaces", "rbac"} {
-		files, err := filepath.Glob(filepath.Join("..", "..", "..", "config", dir, "*.yaml"))
-		if err != nil || len(files) == 0 {
+		// List the whole directory rather than glob *.yaml: a stray .yml or
+		// .json that `kubectl apply -f config/rbac/` would deploy must fail
+		// the test, not slip past both the structural compare and the SAR
+		// walk. Only .yaml is permitted; anything else is a loud error.
+		entries, err := os.ReadDir(filepath.Join("..", "..", "..", "config", dir))
+		if err != nil || len(entries) == 0 {
 			t.Fatalf("no manifests under config/%s: %v", dir, err)
+		}
+		var files []string
+		for _, e := range entries {
+			if e.IsDir() {
+				t.Fatalf("config/%s/%s is a directory; RBAC manifests must be flat .yaml files", dir, e.Name())
+			}
+			if filepath.Ext(e.Name()) != ".yaml" {
+				t.Fatalf("config/%s/%s is not a .yaml file; kubectl apply would deploy it but this test would not see it", dir, e.Name())
+			}
+			files = append(files, filepath.Join("..", "..", "..", "config", dir, e.Name()))
 		}
 		sort.Strings(files)
 		for _, file := range files {
@@ -335,6 +357,15 @@ func loadRBACManifests(t *testing.T) *rbacManifests {
 				case *rbacv1.RoleBinding:
 					m.roleBindings = append(m.roleBindings, typed)
 				case *rbacv1.ClusterRole:
+					// An aggregationRule's effective rules are filled in at
+					// runtime by the cluster-role-aggregation controller, which
+					// envtest does not run — so the rules read as empty here and
+					// the role expands to zero tuples, passing the structural
+					// compare while granting (e.g. aggregate-to-admin) in a real
+					// cluster. Refuse to load such a role rather than vouch for it.
+					if typed.AggregationRule != nil {
+						t.Fatalf("ClusterRole %s carries an aggregationRule; its effective permissions cannot be statically verified", typed.Name)
+					}
 					m.clusterRoles[typed.Name] = typed
 				case *rbacv1.ClusterRoleBinding:
 					m.clusterRoleBindings = append(m.clusterRoleBindings, typed)
@@ -549,11 +580,30 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	docTuples := parseRBACMatrixDoc(t)
 	manifests := loadRBACManifests(t)
 
+	// suite_test.go runs one apiserver + manager for the whole package and
+	// pre-creates orkano-system/orkano-apps unlabeled. Applying PSA labels here
+	// changes admission for every test that runs afterward (envtest keeps
+	// PodSecurity admission live), so undo it on cleanup: strip the labels we
+	// add and delete the RBAC objects. Namespaces are not deleted — envtest
+	// runs no namespace controller, so a deleted namespace would wedge in
+	// Terminating; stripping labels restores the permissive pre-test state.
 	for _, obj := range manifests.applyOrder {
 		if err := k8sClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj),
 			client.FieldOwner("rbac-matrix-test"), client.ForceOwnership); err != nil {
 			t.Fatalf("failed to apply %s %s: %v", obj.GetKind(), obj.GetName(), err)
 		}
+		t.Cleanup(func() {
+			bg := context.Background()
+			if obj.GetKind() == "Namespace" {
+				patch := []byte(`{"metadata":{"labels":{` +
+					`"pod-security.kubernetes.io/enforce":null,` +
+					`"pod-security.kubernetes.io/warn":null,` +
+					`"pod-security.kubernetes.io/audit":null}}}`)
+				_ = k8sClient.Patch(bg, obj, client.RawPatch(types.MergePatchType, patch))
+				return
+			}
+			_ = k8sClient.Delete(bg, obj)
+		})
 	}
 	for name := range orkanoNamespaces {
 		ns := &corev1.Namespace{}
