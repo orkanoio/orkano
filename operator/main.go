@@ -13,6 +13,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/operator/internal/controller"
 )
 
 var version = "dev"
@@ -53,6 +54,11 @@ func main() {
 	})
 	if err != nil {
 		log.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
+
+	if err := (&controller.AppReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up App controller")
 		os.Exit(1)
 	}
 

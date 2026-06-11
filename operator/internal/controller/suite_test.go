@@ -31,6 +31,7 @@ import (
 const (
 	leaderElectionID = "orkano-operator.orkano.io"
 	systemNamespace  = "orkano-system"
+	appsNamespace    = "orkano-apps"
 )
 
 var k8sClient client.Client
@@ -67,10 +68,12 @@ func run(m *testing.M) (code int) {
 		return 1
 	}
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: systemNamespace}}
-	if err := k8sClient.Create(context.Background(), ns); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create %s namespace: %v\n", systemNamespace, err)
-		return 1
+	for _, name := range []string{systemNamespace, appsNamespace} {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		if err := k8sClient.Create(context.Background(), ns); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create %s namespace: %v\n", name, err)
+			return 1
+		}
 	}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -83,6 +86,11 @@ func run(m *testing.M) (code int) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create manager: %v\n", err)
+		return 1
+	}
+
+	if err := (&AppReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up App controller: %v\n", err)
 		return 1
 	}
 
