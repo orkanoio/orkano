@@ -19,7 +19,12 @@
 #      from build pods — and the cross-node kubelet-pull path works through
 #      the per-node /32 allow that init renders at install (rehearsed here;
 #      kindnet blocks cross-node host traffic without it — found
-#      empirically), while the kubelet's own health probes keep passing.
+#      empirically), while the kubelet's own health probes keep passing,
+#   6. the product build Job template (operator/internal/buildjob, golden
+#      copy 09-build-job-template.yaml pinned by unit test) admits at PSA
+#      baseline and builds + TLS-pushes a public repo under the full
+#      lockdown — the M1.2 Job-template acceptance's end-to-end half (the
+#      zero-warnings half lives in envtest).
 # Probe numbering: probe 1 is the prerequisite control (baseline connectivity
 # before any policy — guards probe 2 against a broken cluster passing as
 # "enforced"); probe 3 proves claims 1+2; probes 2+4 prove claim 3; probe 5
@@ -28,7 +33,7 @@
 # its deny legs — each isolating exactly ONE policy, and doubling as the
 # CNI-propagation barrier so probe 8 cannot false-pass before the rules hit
 # the kernel — probe 8 its allow leg (probe 5 re-run under the policies),
-# probe 9 its node-originated leg.
+# probe 9 its node-originated leg; probe 10 proves claim 6.
 # Runs in CI (Linux, sudo) and locally (macOS + colima: the profile loads inside
 # the colima VM, whose kernel the kind node containers share).
 # Local teardown: kind delete cluster --name orkano-substrate-smoke
@@ -70,6 +75,9 @@ dump_state() {
     echo "--- $j:"
     kubectl logs "job/$j" -n "$BUILD_NS" --tail=40 2>/dev/null
   done
+  echo '--- dump: product template job (orkano-builds)'
+  kubectl describe job template-smoke -n orkano-builds 2>/dev/null
+  kubectl logs job/template-smoke -n orkano-builds --tail=40 2>/dev/null
   echo '--- dump: product registry (orkano-system)'
   kubectl get pods,certificate -n orkano-system -o wide
   kubectl get events -n orkano-system --sort-by=.lastTimestamp | tail -20
@@ -99,10 +107,10 @@ connect_ok() {
 # kubectl wait can only watch one condition; a failed job would block a
 # wait-for-complete until its full timeout, so poll both terminal conditions.
 job_outcome() {
-  local name=$1 deadline=$(( $(date +%s) + $2 )) c f
+  local name=$1 deadline=$(( $(date +%s) + $2 )) ns=${3:-$BUILD_NS} c f
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    c=$(kubectl get job "$name" -n "$BUILD_NS" -o 'jsonpath={.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
-    f=$(kubectl get job "$name" -n "$BUILD_NS" -o 'jsonpath={.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
+    c=$(kubectl get job "$name" -n "$ns" -o 'jsonpath={.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
+    f=$(kubectl get job "$name" -n "$ns" -o 'jsonpath={.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
     [ "$c" = "True" ] && { echo complete; return; }
     [ "$f" = "True" ] && { echo failed; return; }
     sleep 5
@@ -217,6 +225,7 @@ kubectl delete -f "$REPO_ROOT/config/netpol/" --ignore-not-found
 kubectl delete networkpolicy orkano-registry-ingress-nodes -n orkano-system --ignore-not-found
 kubectl delete pod probe-server probe-client -n "$BUILD_NS" --ignore-not-found --grace-period=1
 kubectl delete job buildkit-smoke buildkit-smoke-denied -n "$BUILD_NS" --ignore-not-found
+kubectl delete job template-smoke -n orkano-builds --ignore-not-found
 kubectl apply -f "$DIR/01-registry.yaml" -f "$DIR/02-netpol-probe.yaml"
 kubectl wait --for=condition=Ready pod/probe-server pod/probe-client -n "$BUILD_NS" --timeout=300s
 kubectl wait --for=condition=Available deploy/registry -n "$INFRA_NS" --timeout=300s
@@ -290,6 +299,7 @@ kubectl wait deploy --all -n cert-manager --for=condition=Available --timeout=30
 
 log "apply product namespaces + config/registry (restricted PSA enforced for real)"
 kubectl apply -f "$REPO_ROOT/config/namespaces/namespaces.yaml"
+kubectl apply -f "$REPO_ROOT/config/buildkit/"
 # The first CR apply races cert-manager's webhook reaching serving readiness;
 # Available on the deploy is not that. Retry instead of sleeping.
 applied=""
@@ -423,6 +433,19 @@ kubectl delete pod node-pull-probe -n "$INFRA_NS" --grace-period=1
 kubectl wait --for=condition=Available deploy/orkano-registry -n orkano-system --timeout=60s >/dev/null \
   || fatal "registry went unready under the ingress policy — kubelet probe traffic is being blocked"
 echo "OK: node-originated pull path and kubelet probes survive the lockdown"
+
+log "probe 10: product build Job template — git-context build + TLS push under the full lockdown"
+# The golden file is the Go template's exact output (pinned by the unit test
+# in operator/internal/buildjob); applying it here is the end-to-end half of
+# the Job-template acceptance: baseline PSA admits it for real, the AppArmor
+# profile confines it, the lockdown allows exactly its traffic, and the push
+# rides TLS through the projected CA via buildkitd.toml.
+apply_job "$DIR/09-build-job-template.yaml"
+outcome="$(job_outcome template-smoke 600 orkano-builds)"
+[ "$outcome" = "complete" ] \
+  || fatal "template build $outcome (expected complete) — the rendered product Job cannot build+push under the lockdown"
+kubectl logs job/template-smoke -n orkano-builds --tail=5
+echo "OK: the rendered product build Job builds a public repo and TLS-pushes to the registry"
 
 log "PASS — substrate facts"
 echo "cluster: $CLUSTER ($(kind version))"

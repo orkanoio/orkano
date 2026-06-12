@@ -1,0 +1,19 @@
+# BuildKit daemon config projected into every build Job (rendered by
+# operator/internal/buildjob, which passes --config via BUILDKITD_FLAGS).
+# The single entry teaches buildkitd's registry client to trust the
+# cluster-internal CA for the canonical image host, so pushes ride TLS end
+# to end — registry.insecure is a spike artifact and never ships (ADR-0012).
+# The ca path points into the orkano-registry-ca ConfigMap mount, the same
+# projection the substrate smoke's TLS probe uses; install publishes that
+# ConfigMap from the registry's TLS Secret (M1.5 contract). A unit test in
+# operator/internal/buildjob pins this manifest against the template's
+# mount paths and registry host, so the two cannot drift apart silently.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orkano-buildkit-config
+  namespace: orkano-builds
+data:
+  buildkitd.toml: |
+    [registry."orkano-registry.orkano-system.svc.cluster.local"]
+      ca = ["/orkano-registry-ca/ca.crt"]

@@ -24,6 +24,7 @@ on:
       - config/registry/**
       - config/namespaces/**
       - config/netpol/**
+      - config/buildkit/**
       - .github/workflows/substrate-smoke.yml
 
 permissions:
