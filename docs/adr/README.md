@@ -19,3 +19,4 @@ Rules:
 | [0010](0010-cel-only-validation-no-webhook.md) | Validate with OpenAPI and CEL only — no admission webhook in v1alpha1 | Accepted |
 | [0011](0011-api-versioning-deprecation.md) | API versioning and deprecation policy | Accepted |
 | [0012](0012-build-namespace-psa-baseline.md) | Build namespace runs at PSA baseline with AppArmor confinement | Accepted |
+| [0013](0013-dashboard-value-blind-secrets-no-impersonation.md) | Make dashboard secret writes value-blind and defer impersonation to Phase 2 | Accepted |

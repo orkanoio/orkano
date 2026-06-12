@@ -10,12 +10,11 @@ Namespaces (ADR-0005): user apps live in `orkano-apps`, builds run in `orkano-bu
 |---|---|---|
 | apps, domains (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | builds (orkano.io) | get, list, watch, create, delete | `orkano-apps` — create is the manual-redeploy button; delete is cancel/cleanup |
-| secrets (core) | **create, patch — no get, list, or watch** | `orkano-apps` |
-| users, groups (authentication) | impersonate | cluster-scoped, see compensating control below |
+| secrets (core) | **create, update — no get, list, watch, patch, or delete** | `orkano-apps` |
 
-The write-only secrets row is the most load-bearing line in this document. The env editor must be able to store a secret value the admin types in, but nothing about editing requires reading values back — existing keys can be listed from the App's `secretRef`s, and a changed value is a blind overwrite. With `create`+`patch` but no read verbs, a fully compromised dashboard can corrupt app secrets (visible, recoverable) but cannot exfiltrate them (silent, unrecoverable). This is what makes INV-01's "cannot dump cluster secrets" hold even for app-level secrets in the dashboard's own namespace.
+The value-blind secrets row is the most load-bearing line in this document. The env editor must be able to store a secret value the admin types in, but nothing about editing requires reading values back — existing keys can be listed from the App's `secretRef`s, and a changed value is a blind whole-object replace. `create` and `update` are exactly the mutation verbs whose response bodies provably return nothing beyond the caller's own payload; `patch` is excluded because a PATCH response returns the stored object, values included, even for a patch that touches only a label, and `delete` is excluded because the dashboard has no business destroying secrets it didn't create (ADR-0013; the response-body behavior is pinned against the live apiserver by `TestSecretVerbValueBlindness`). With this set, a fully compromised dashboard can corrupt app secrets (visible, recoverable) but cannot exfiltrate them (silent, unrecoverable). This is what makes INV-01's "cannot dump cluster secrets" hold even for app-level secrets in the dashboard's own namespace.
 
-Impersonation is cluster-scoped by necessity (the verb cannot be namespace-bound for users/groups). Compensating control: every identity the dashboard may impersonate is bound only to the viewer role below, so impersonated reads can never exceed read-only access in `orkano-apps` — and the human identity, not the SA, lands in the Kubernetes audit log.
+The dashboard holds no impersonation grant in Phase 1 (ADR-0013): an unrestricted `impersonate` verb can name `system:masters` — cluster-admin — and only `resourceNames` can restrict its targets. Phase 2 reintroduces impersonation together with its consumer, pinned to a dedicated viewer group, and teaches the matrix test to express `resourceNames` in the same commit.
 
 ## Operator ServiceAccount
 
@@ -40,7 +39,7 @@ No Kubernetes permissions at all: `automountServiceAccountToken: false`, no Role
 
 No Kubernetes permissions and no token mounted (`automountServiceAccountToken: false`), `baseline` Pod Security level on `orkano-builds` with the dedicated AppArmor profile (ADR-0012), egress allowlisted to source + registry only (INV-02). Registry push credentials are per-build, injected as a Secret-backed env/file, never a SA token.
 
-## Human roles (used via dashboard impersonation, bindable to OIDC identities)
+## Human roles (bindable to OIDC identities; consumed via the dashboard's Phase 2 impersonation)
 
 | Role | Resources | Verbs | Scope |
 |---|---|---|---|
@@ -48,4 +47,4 @@ No Kubernetes permissions and no token mounted (`automountServiceAccountToken: f
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
 | orkano-viewer | apps, builds, domains (orkano.io); pods, pods/log (core) | get, list, watch | `orkano-apps` |
 
-Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's write-only path, and values are never displayed.
+Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.

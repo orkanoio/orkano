@@ -15,13 +15,13 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 ## INV-01 — The dashboard never holds cluster-admin
 
-**Statement.** The dashboard's entire Kubernetes permission set is CRUD on Orkano CRDs (`App`, `Build`, `Domain`) in app namespaces, plus impersonation for read views. It can never exec into pods, read cluster Secrets, or mutate workloads directly.
+**Statement.** The dashboard's entire Kubernetes permission set is CRUD on Orkano CRDs (`App`, `Build`, `Domain`) in app namespaces, plus value-blind Secret writes (`create`+`update`, the verbs whose responses provably return nothing beyond the caller's own payload — ADR-0013). It can never exec into pods, read or delete Secrets, impersonate other identities, or mutate workloads directly.
 
 **Rationale.** The dashboard is the biggest attack surface, so a full compromise must be contained to "can deploy an app" — which admission policy (INV-06) further constrains.
 
-**Enforced by.** RBAC: the dashboard ServiceAccount is bound to a Role scoped to `orkano.io` resources in the shared `orkano-apps` namespace (ADR-0005), plus the `impersonate` verb — and nothing else. Code structure: the dashboard API has no client code paths that touch Deployments, Pods, or Secrets.
+**Enforced by.** RBAC: the dashboard ServiceAccount is bound to a single Role scoped to `orkano.io` resources plus `create`/`update` on Secrets in the shared `orkano-apps` namespace (ADR-0005) — and nothing else; it holds no cluster-scoped grant at all. Phase 2 reintroduces impersonation for read views pinned via `resourceNames` (ADR-0013). Code structure: the dashboard API has no client code paths that touch Deployments, Pods, or Secret reads.
 
-**Verified by.** `rbac.dashboard-blast-radius` (planned) — authenticates as the dashboard's actual ServiceAccount (no impersonation headers) and attempts `pods/exec`, Secret reads, and cluster-scoped writes, asserting every one is forbidden; then asserts `App` CRUD in `orkano-apps` still succeeds.
+**Verified by.** Today: `rbac_matrix_test.go`'s SubjectAccessReview walk (every grant allowed, every other combination — including `impersonate` on users and groups — denied) and `TestSecretVerbValueBlindness` (the granted verbs' response bodies leak nothing). `rbac.dashboard-blast-radius` (planned) — authenticates as the dashboard's actual ServiceAccount and attempts `pods/exec`, Secret reads and patches, impersonation headers, and cluster-scoped writes, asserting every one is forbidden; then asserts `App` CRUD in `orkano-apps` still succeeds.
 
 ## INV-02 — Builds run as hostile code
 
@@ -89,6 +89,6 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 **Rationale.** After an incident the audit log is the only honest narrator, so no Orkano component may be able to rewrite it.
 
-**Enforced by.** A Postgres audit table whose application roles hold `INSERT` only — no `UPDATE` or `DELETE` grants; dashboard reads go through Kubernetes impersonation so cluster audit entries carry the human identity, not a service account; optional off-box shipping so even a database compromise cannot erase history.
+**Enforced by.** A Postgres audit table whose application roles hold `INSERT` only — no `UPDATE` or `DELETE` grants; from Phase 2, dashboard reads go through Kubernetes impersonation (ADR-0013) so cluster audit entries carry the human identity — in Phase 1 the dashboard's cluster calls are attributed to its ServiceAccount, and Orkano's own audit log is the human-identity record; optional off-box shipping so even a database compromise cannot erase history.
 
 **Verified by.** `audit.append-only` (planned) — performs a privileged action (deleting a throwaway app) and asserts a matching audit row appears; then attempts `UPDATE` and `DELETE` on that row with every application database role and asserts both are denied.

@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -26,14 +27,17 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializerjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -208,12 +212,9 @@ func parseResourcesCell(t *testing.T, cell string) []groupResources {
 			t.Fatalf("resources clause %q does not match `resources (group)`", clause)
 		}
 		group := m[2]
-		switch group {
-		case "core":
-			group = ""
-		case "authentication":
-			// The doc's label for impersonation targets; users and groups
-			// live in the core API group as far as RBAC is concerned.
+		// Phase 2's impersonation row must label users/groups "(core)" —
+		// that is their API group as far as RBAC is concerned.
+		if group == "core" {
 			group = ""
 		}
 		resourcesPart := m[1]
@@ -642,7 +643,7 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	// per binding before walking, so the walk itself is deterministic.
 	canaries := []rbacTuple{
 		{dashboardIdentity, appsNamespace, "orkano.io", "apps", "get"},
-		{dashboardIdentity, "", "", "users", "impersonate"},
+		{dashboardIdentity, appsNamespace, "", "secrets", "create"},
 		{operatorIdentity, appsNamespace, "apps", "deployments", "get"},
 		{operatorIdentity, buildsNamespace, "batch", "jobs", "get"},
 		{operatorIdentity, systemNamespace, "coordination.k8s.io", "leases", "get"},
@@ -665,8 +666,9 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	// The denied walk: every combination of the identities, the doc's
 	// resource universe plus high-value canaries, every verb, every scope —
 	// minus what the doc grants — must be denied. A cluster-scoped grant
-	// (impersonation) also authorizes namespaced requests, so it suppresses
-	// its namespaced combinations.
+	// also authorizes namespaced requests, so it suppresses its namespaced
+	// combinations (no such grant exists since ADR-0013; the suppression
+	// stays for when one returns).
 	identities := []string{dashboardIdentity, operatorIdentity, receiverIdentity, buildIdentity}
 	for name := range humanRoles {
 		identities = append(identities, humanIdentityPrefix+name)
@@ -678,6 +680,11 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{"", "nodes"}:                                 true,
 		{"rbac.authorization.k8s.io", "roles"}:        true,
 		{"rbac.authorization.k8s.io", "rolebindings"}: true,
+		// Impersonation was dropped from the dashboard by ADR-0013 because an
+		// unrestricted impersonate can name system:masters; the walk keeps
+		// probing it so the grant cannot quietly return without resourceNames.
+		{"", "users"}:  true,
+		{"", "groups"}: true,
 	}
 	clusterGrants := map[string]map[groupResource]map[string]bool{}
 	for tu := range docTuples {
@@ -718,4 +725,63 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		}
 	}
 	t.Logf("denied walk: %d/%d combinations correctly denied", denied, walked)
+}
+
+// TestSecretVerbValueBlindness pins the apiserver behavior ADR-0013 rests on:
+// of the Secret mutation verbs, create and update respond with nothing beyond
+// the caller's own payload, while patch returns the stored object — values
+// included — even when the patch touches only a label. The dashboard's secret
+// grant is exactly the value-blind pair; if a Kubernetes upgrade changes any
+// of these response shapes, this fails and the verb set must be reconsidered.
+func TestSecretVerbValueBlindness(t *testing.T) {
+	ctx := context.Background()
+	const sentinel = "verb-probe-sentinel-3c9d"
+	encoded := base64.StdEncoding.EncodeToString([]byte(sentinel))
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "verb-probe", Namespace: appsNamespace},
+		StringData: map[string]string{"password": sentinel},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("failed to create probe Secret: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), secret) })
+
+	cfg := rest.CopyConfig(restConfig)
+	cfg.GroupVersion = &schema.GroupVersion{Version: "v1"}
+	cfg.APIPath = "/api"
+	cfg.NegotiatedSerializer = clientgoscheme.Codecs.WithoutConversion()
+	rc, err := rest.RESTClientFor(cfg)
+	if err != nil {
+		t.Fatalf("failed to build REST client: %v", err)
+	}
+
+	raw, err := rc.Patch(types.MergePatchType).Resource("secrets").Namespace(appsNamespace).Name(secret.Name).
+		Body([]byte(`{"metadata":{"labels":{"probe":"x"}}}`)).DoRaw(ctx)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	if !strings.Contains(string(raw), encoded) {
+		t.Errorf("a label-only PATCH no longer returns stored values — patch may have become grantable, revisit ADR-0013")
+	}
+
+	raw, err = rc.Post().Resource("secrets").Namespace(appsNamespace).
+		Body([]byte(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"` + secret.Name + `","namespace":"` + appsNamespace + `"},"stringData":{"k":"v"}}`)).
+		DoRaw(ctx)
+	if !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("expected AlreadyExists from CREATE on an existing Secret, got: %v", err)
+	}
+	if strings.Contains(string(raw), encoded) {
+		t.Errorf("CREATE conflict response leaks stored values: %s", raw)
+	}
+
+	raw, err = rc.Put().Resource("secrets").Namespace(appsNamespace).Name(secret.Name).
+		Body([]byte(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"` + secret.Name + `","namespace":"` + appsNamespace + `"},"stringData":{"rotated":"replacement"}}`)).
+		DoRaw(ctx)
+	if err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	if strings.Contains(string(raw), encoded) {
+		t.Errorf("UPDATE response leaks the pre-update value — the blind-overwrite premise of ADR-0013 no longer holds")
+	}
 }

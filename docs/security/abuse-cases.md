@@ -47,7 +47,7 @@ This catalogue is a set of concrete attacker stories checked against the archite
 
 **Verdict:** Partially mitigated — preventing cookie theft on the admin's endpoint is out of scope; what Orkano controls (instant revocation, step-up gates, bounded blast radius) is in place.
 
-**Detection:** Audit-log entries tied to the session — actions from an unfamiliar IP or at unusual hours are the signal; impersonated reads also land in the Kubernetes audit log under the human identity.
+**Detection:** Audit-log entries tied to the session — actions from an unfamiliar IP or at unusual hours are the signal. In Phase 1 the dashboard's Kubernetes calls land in the cluster audit log under the dashboard SA; once Phase 2 reintroduces impersonation (ADR-0013), reads land there under the human identity.
 
 ## AC-03 — Compromised npm dependency in the dashboard frontend
 
@@ -64,7 +64,7 @@ This catalogue is a set of concrete attacker stories checked against the archite
 
 **Mitigations**
 
-- INV-01: the dashboard holds no cluster-admin and only write-only RBAC on secrets, so even total frontend compromise cannot read secret values or touch workloads directly.
+- INV-01: the dashboard holds no cluster-admin and only value-blind RBAC on secrets (ADR-0013), so even total frontend compromise cannot read secret values or touch workloads directly.
 - Lockfiles plus Renovate keep the dependency tree pinned, scanned, and current.
 - A Content-Security-Policy to constrain exfiltration is planned for Phase 2.
 

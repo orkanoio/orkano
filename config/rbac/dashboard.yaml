@@ -1,7 +1,12 @@
 # Dashboard ServiceAccount permissions — docs/security/rbac-matrix.md made
-# literal (INV-01). The write-only secrets rule is the most load-bearing line:
-# create+patch with no read verbs means a compromised dashboard can corrupt
-# app secrets (visible, recoverable) but never exfiltrate them.
+# literal (INV-01). The value-blind secrets rule is the most load-bearing
+# line: create+update are the two mutation verbs whose response bodies return
+# nothing beyond the caller's own payload (probed by
+# TestSecretVerbValueBlindness), so a compromised dashboard can corrupt app
+# secrets (visible, recoverable) but never exfiltrate them. patch is never
+# granted: a PATCH response returns the stored object, values included
+# (ADR-0013). No impersonation grant until Phase 2 ships its consumer pinned
+# via resourceNames — unrestricted impersonate can name system:masters.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -16,7 +21,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "patch"]
+    verbs: ["create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -27,32 +32,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: orkano-dashboard
-subjects:
-  - kind: ServiceAccount
-    name: orkano-dashboard
-    namespace: orkano-system
----
-# Impersonation cannot be namespace-bound for users/groups, so this is the
-# dashboard's only cluster-scoped grant. Compensating control: every identity
-# the dashboard may impersonate is bound only to orkano-viewer, so
-# impersonated reads can never exceed read-only access in orkano-apps.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: orkano-dashboard-impersonation
-rules:
-  - apiGroups: [""]
-    resources: ["users", "groups"]
-    verbs: ["impersonate"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: orkano-dashboard-impersonation
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: orkano-dashboard-impersonation
 subjects:
   - kind: ServiceAccount
     name: orkano-dashboard

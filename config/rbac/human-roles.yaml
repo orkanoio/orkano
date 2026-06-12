@@ -1,7 +1,8 @@
-# Human roles, used via dashboard impersonation and bindable to OIDC
-# identities (bindings are created at install/Phase 2, not shipped here).
-# Humans get no secrets verbs at all in v1 — secret writes flow through the
-# dashboard SA's write-only path, and values are never displayed.
+# Human roles, bindable to OIDC identities and consumed via the dashboard's
+# Phase 2 impersonation (ADR-0013; bindings are created at install/Phase 2,
+# not shipped here). Humans get no secrets verbs at all in v1 — secret writes
+# flow through the dashboard SA's value-blind path, and values are never
+# displayed.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

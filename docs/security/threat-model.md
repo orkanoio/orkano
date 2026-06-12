@@ -53,9 +53,9 @@ What an attacker wants, roughly in order of how bad losing it would be:
 | STRIDE | Threat | Mitigation | Residual risk |
 |---|---|---|---|
 | Spoofing | Stolen or brute-forced admin login | Forced TOTP on bootstrap admin, lockout + rate limits, OIDC recommended (ADR-0003) | Phished TOTP within its validity window |
-| Tampering | Compromised dashboard mutates workloads or escalates | Writes Orkano CRDs only; no cluster-admin, ever (INV-01); reads via impersonation | Can still create `App` CRs — i.e. deploy apps — contained by signed-image admission (INV-06) |
-| Repudiation | Admin denies a destructive action | Impersonation puts the human identity in the K8s audit trail; every privileged action lands in the append-only audit log (INV-08) | On-box audit log until ship-off-box is configured |
-| Information disclosure | Dashboard or its DB dumps secrets | Secret values never persist in Orkano's database (INV-03); DB holds metadata only | DB compromise still leaks deploy history, user list, audit entries |
+| Tampering | Compromised dashboard mutates workloads or escalates | Writes Orkano CRDs only; no cluster-admin, ever (INV-01); no impersonation grant until Phase 2 pins its targets via resourceNames (ADR-0013) | Can still create `App` CRs — i.e. deploy apps — contained by signed-image admission (INV-06) |
+| Repudiation | Admin denies a destructive action | Impersonation (Phase 2, ADR-0013) puts the human identity in the K8s audit trail; every privileged action lands in the append-only audit log (INV-08) | On-box audit log until ship-off-box is configured |
+| Information disclosure | Dashboard or its DB dumps secrets | Secret values never persist in Orkano's database (INV-03); DB holds metadata only; secret writes are value-blind create+update — no verb whose response returns stored values (ADR-0013) | DB compromise still leaks deploy history, user list, audit entries |
 | Denial of service | Internet-facing panel attacked (the Coolify-class failure) | ClusterIP-only by default; `--expose public` refuses without SSO+MFA (INV-05, ADR-0004); doctor check flags exposure | Users who explicitly expose it — accepted risk #1 |
 | Elevation | Hijacked session performs destructive actions | Opaque server-side sessions revocable instantly; step-up re-auth for delete/rotate (ADR-0003, INV-07) | Non-destructive actions possible until the session is revoked |
 
