@@ -9,11 +9,17 @@
 # projection — the pod consumes the product contract, not a copy of it.
 # crane:debug is digest-pinned: the tag is mutable and gcr publishes no
 # versioned tags for it.
+# The build label makes this pod the allow-leg stand-in for a real build pod
+# once the lockdown policies (config/netpol/) apply: probe 7 re-runs it under
+# them, exercising the DNS + registry egress rules and the registry's
+# ingress-from-builds rule end to end.
 apiVersion: v1
 kind: Pod
 metadata:
   name: registry-tls-probe
   namespace: orkano-builds
+  labels:
+    app.kubernetes.io/name: orkano-build
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false

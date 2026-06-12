@@ -12,11 +12,23 @@
 #      orkano-system's restricted PSA, serve TLS from the cluster-internal CA,
 #      and a test pod TLS-pushes + pulls with the projected CA bundle — and
 #      cannot without it (M1.2 registry acceptance; registry.insecure never
-#      ships, ADR-0012).
+#      ships, ADR-0012),
+#   5. the M1.2 lockdown manifests (config/netpol/) hold on the real
+#      substrate: a build-labeled pod keeps DNS + registry + 443, everything
+#      else in orkano-builds has nothing, the registry accepts ingress only
+#      from build pods — and the cross-node kubelet-pull path works through
+#      the per-node /32 allow that init renders at install (rehearsed here;
+#      kindnet blocks cross-node host traffic without it — found
+#      empirically), while the kubelet's own health probes keep passing.
 # Probe numbering: probe 1 is the prerequisite control (baseline connectivity
 # before any policy — guards probe 2 against a broken cluster passing as
 # "enforced"); probe 3 proves claims 1+2; probes 2+4 prove claim 3; probe 5
-# proves claim 4 (its two TLS legs are the both-directions capability probe).
+# proves claim 4 (its two TLS legs are the both-directions capability probe);
+# probe 6 is claim 5's no-policy controls (same pattern as probe 1), probe 7
+# its deny legs — each isolating exactly ONE policy, and doubling as the
+# CNI-propagation barrier so probe 8 cannot false-pass before the rules hit
+# the kernel — probe 8 its allow leg (probe 5 re-run under the policies),
+# probe 9 its node-originated leg.
 # Runs in CI (Linux, sudo) and locally (macOS + colima: the profile loads inside
 # the colima VM, whose kernel the kind node containers share).
 # Local teardown: kind delete cluster --name orkano-substrate-smoke
@@ -41,6 +53,7 @@ dump_state() {
   echo '--- dump: pods'
   kubectl get pods -A -o wide
   echo '--- dump: networkpolicies'
+  kubectl get networkpolicy -A
   kubectl get networkpolicy -n "$BUILD_NS" -o yaml
   echo '--- dump: jobs'
   kubectl describe job -n "$BUILD_NS"
@@ -62,6 +75,12 @@ dump_state() {
   kubectl get events -n orkano-system --sort-by=.lastTimestamp | tail -20
   echo '--- dump: registry-tls-probe logs'
   kubectl logs registry-tls-probe -n orkano-builds --tail=20 2>/dev/null
+  echo '--- dump: lockdown probes (orkano-apps / orkano-builds / node probe)'
+  kubectl get events -n orkano-apps --sort-by=.lastTimestamp | tail -15
+  kubectl get events -n orkano-builds --sort-by=.lastTimestamp | tail -15
+  kubectl describe pod lockdown-canary-apps -n orkano-apps 2>/dev/null
+  kubectl describe pod lockdown-canary-build registry-tls-probe -n orkano-builds 2>/dev/null
+  kubectl describe pod node-pull-probe -n "$INFRA_NS" 2>/dev/null
   set -e
 }
 
@@ -89,6 +108,42 @@ job_outcome() {
     sleep 5
   done
   echo timeout
+}
+
+# Poll a run-to-completion pod's both terminal phases (same reason as
+# job_outcome): a wait-for-Succeeded blocks its full timeout on a Failed pod
+# and surfaces a generic timeout instead of the real outcome.
+pod_outcome() {
+  local name=$1 ns=$2 deadline=$(( $(date +%s) + $3 )) p
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    p=$(kubectl get pod "$name" -n "$ns" -o 'jsonpath={.status.phase}' 2>/dev/null || true)
+    if [ "$p" = "Succeeded" ] || [ "$p" = "Failed" ]; then echo "$p"; return; fi
+    sleep 3
+  done
+  echo timeout
+}
+
+# Shared by probes 5 and 8: the identical TLS probe pod must pass both before
+# the lockdown applies (acceptance of the registry itself) and after it (the
+# lockdown's allow leg). $1 names the failure context.
+run_tls_probe() {
+  local outcome
+  kubectl delete pod registry-tls-probe -n orkano-builds --ignore-not-found --grace-period=1
+  kubectl apply -f "$DIR/07-registry-tls-probe.yaml"
+  outcome="$(pod_outcome registry-tls-probe orkano-builds 240)"
+  [ "$outcome" = "Succeeded" ] \
+    || fatal "registry-tls-probe outcome=$outcome — $1"
+  kubectl logs registry-tls-probe -n orkano-builds | grep -q 'OK: tls-verified push+pull' \
+    || fatal "registry-tls-probe succeeded but the OK line is missing from its logs"
+  kubectl logs registry-tls-probe -n orkano-builds | tail -3
+  kubectl delete pod registry-tls-probe -n orkano-builds --grace-period=1
+}
+
+# Exec-based connect check from a long-lived canary pod (the probe-client
+# pattern): exec rides the kubelet, not the pod network, so it works under
+# any NetworkPolicy. $1 ns, $2 pod, $3 ip, $4 port.
+canary_connect() {
+  kubectl exec "$2" -n "$1" -- timeout 8 nc -z -w 5 "$3" "$4" >/dev/null 2>&1
 }
 
 apply_job() {
@@ -127,14 +182,20 @@ export KUBECONFIG="$KCFG"
 trap 'rm -f "$KCFG"' EXIT
 trap 'dump_state >&2' ERR
 
-# Reuse is only safe if the node carries both AppArmor mounts from
-# kind-config.yaml; a cluster created without them can never enforce AppArmor.
+# Reuse is only safe if every node carries both AppArmor mounts from
+# kind-config.yaml (a cluster created without them can never enforce AppArmor)
+# and the worker exists (probe 9 needs the cross-node topology).
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-  if docker exec "$CLUSTER-control-plane" sh -c 'test -d /sys/kernel/security/apparmor && test -e /sbin/apparmor_parser' 2>/dev/null; then
+  reusable=yes
+  for node in "$CLUSTER-control-plane" "$CLUSTER-worker"; do
+    docker exec "$node" sh -c 'test -d /sys/kernel/security/apparmor && test -e /sbin/apparmor_parser' 2>/dev/null \
+      || reusable=""
+  done
+  if [ -n "$reusable" ]; then
     log "reuse kind cluster $CLUSTER"
     kind export kubeconfig --name "$CLUSTER" --kubeconfig "$KCFG"
   else
-    log "recreate kind cluster $CLUSTER (node lacks the securityfs mount)"
+    log "recreate kind cluster $CLUSTER (missing worker node or securityfs mount)"
     kind delete cluster --name "$CLUSTER"
   fi
 fi
@@ -150,6 +211,10 @@ fi
 log "apply namespaces, registry, probe pods (idempotent re-run: clear old state)"
 kubectl apply -f "$DIR/00-namespaces.yaml"
 kubectl delete -f "$DIR/03-deny-all.yaml" -f "$DIR/04-egress-allowlist.yaml" --ignore-not-found
+# Probe 6 (the no-policy control) needs the lockdown absent; a previous run
+# left it applied — including the rehearsed init-owned node allow.
+kubectl delete -f "$REPO_ROOT/config/netpol/" --ignore-not-found
+kubectl delete networkpolicy orkano-registry-ingress-nodes -n orkano-system --ignore-not-found
 kubectl delete pod probe-server probe-client -n "$BUILD_NS" --ignore-not-found --grace-period=1
 kubectl delete job buildkit-smoke buildkit-smoke-denied -n "$BUILD_NS" --ignore-not-found
 kubectl apply -f "$DIR/01-registry.yaml" -f "$DIR/02-netpol-probe.yaml"
@@ -247,21 +312,117 @@ kubectl create configmap orkano-registry-ca -n orkano-builds --from-file=ca.crt=
 rm -f "$ca_tmp"
 
 log "probe 5: TLS push + pull from a test pod (must fail without the CA, succeed with it)"
-kubectl delete pod registry-tls-probe -n orkano-builds --ignore-not-found --grace-period=1
-kubectl apply -f "$DIR/07-registry-tls-probe.yaml"
-phase=""
-deadline=$(( $(date +%s) + 240 ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  phase=$(kubectl get pod registry-tls-probe -n orkano-builds -o 'jsonpath={.status.phase}' 2>/dev/null || true)
-  if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ]; then break; fi
-  sleep 3
-done
-[ "$phase" = "Succeeded" ] || fatal "registry-tls-probe phase=${phase:-unknown} — TLS push/pull acceptance failed"
-kubectl logs registry-tls-probe -n orkano-builds | grep -q 'OK: tls-verified push+pull' \
-  || fatal "registry-tls-probe succeeded but the OK line is missing from its logs"
-kubectl logs registry-tls-probe -n orkano-builds | tail -3
-kubectl delete pod registry-tls-probe -n orkano-builds --grace-period=1
+run_tls_probe "TLS push/pull acceptance failed"
 echo "OK: product registry serves TLS from the internal CA; projected bundle verified both ways"
+
+log "probe 6: lockdown controls — both deny-leg paths work while no policy exists"
+REGISTRY_IP="$(kubectl get svc orkano-registry -n orkano-system -o 'jsonpath={.spec.clusterIP}')"
+[ -n "$REGISTRY_IP" ] || fatal "orkano-registry Service has no ClusterIP"
+INFRA_REGISTRY_IP="$(kubectl get svc registry -n "$INFRA_NS" -o 'jsonpath={.spec.clusterIP}')"
+[ -n "$INFRA_REGISTRY_IP" ] || fatal "smoke registry Service has no ClusterIP"
+# Canaries are exec targets, so each later denial is observed on the same pod
+# that just proved the path open. The orkano-apps one draws PSA warnings
+# (warn=restricted there) — harmless: it simulates exactly the plain user pod
+# that warn label exists for.
+kubectl delete pod lockdown-canary-apps -n orkano-apps --ignore-not-found --grace-period=1
+kubectl delete pod lockdown-canary-build -n orkano-builds --ignore-not-found --grace-period=1
+kubectl run lockdown-canary-apps -n orkano-apps --image=busybox:1.37 --restart=Never --command -- sleep 3600
+kubectl run lockdown-canary-build -n orkano-builds --image=busybox:1.37 --restart=Never --command -- sleep 3600
+kubectl wait --for=condition=Ready pod/lockdown-canary-apps -n orkano-apps --timeout=120s
+kubectl wait --for=condition=Ready pod/lockdown-canary-build -n orkano-builds --timeout=120s
+ctl_apps="" ctl_build=""
+for _ in 1 2 3 4 5 6; do
+  [ -z "$ctl_apps" ] && canary_connect orkano-apps lockdown-canary-apps "$REGISTRY_IP" 443 && ctl_apps=yes
+  [ -z "$ctl_build" ] && canary_connect orkano-builds lockdown-canary-build "$INFRA_REGISTRY_IP" 5000 && ctl_build=yes
+  [ -n "$ctl_apps" ] && [ -n "$ctl_build" ] && break
+  sleep 5
+done
+[ -n "$ctl_apps" ] || fatal "control connect orkano-apps→product registry failed with no lockdown applied — later denials would prove nothing"
+[ -n "$ctl_build" ] || fatal "control connect orkano-builds→policy-free smoke registry failed with no lockdown applied — later denials would prove nothing"
+echo "OK: pre-lockdown controls"
+
+log "apply the M1.2 lockdown manifests (config/netpol/)"
+kubectl apply -f "$REPO_ROOT/config/netpol/"
+
+log "probe 7: lockdown deny legs — each isolates one policy (doubles as the CNI-propagation barrier)"
+# The apps canary targets the product registry: orkano-apps has no egress
+# policies, so only the registry ingress policy can block it. The unlabeled
+# builds canary targets the policy-free smoke registry: nothing guards that
+# ingress, so only orkano-builds' default-deny egress can block it — probing
+# both against the product registry would let a broken default-deny hide
+# behind the registry ingress rule. Waiting until both legs observably deny
+# is also the propagation barrier: probe 8's allow leg would trivially pass
+# against rules not yet in the kernel.
+denied_apps="" denied_build=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  [ -z "$denied_apps" ] && ! canary_connect orkano-apps lockdown-canary-apps "$REGISTRY_IP" 443 && denied_apps=yes
+  [ -z "$denied_build" ] && ! canary_connect orkano-builds lockdown-canary-build "$INFRA_REGISTRY_IP" 5000 && denied_build=yes
+  [ -n "$denied_apps" ] && [ -n "$denied_build" ] && break
+  sleep 5
+done
+[ -n "$denied_apps" ] || fatal "orkano-apps still reaches the registry — the registry ingress lockdown is not enforced"
+[ -n "$denied_build" ] || fatal "an unlabeled orkano-builds pod still has egress to a policy-free target — default-deny is not enforced"
+kubectl delete pod lockdown-canary-apps -n orkano-apps --grace-period=1
+kubectl delete pod lockdown-canary-build -n orkano-builds --grace-period=1
+echo "OK: lockdown denies both directions, one policy per leg"
+
+log "probe 8: lockdown allow leg — the build-labeled pod still TLS-pushes + pulls"
+run_tls_probe "the lockdown's egress allowlist or registry ingress rule breaks real builds"
+echo "OK: build-labeled pod keeps DNS + registry egress under the lockdown"
+
+log "probe 9: node-originated kubelet-pull stand-in (cross-node)"
+# Leg 1, soft: without a node allow, kindnet blocks cross-node host traffic
+# (found empirically — this is why init must render the node allow at all).
+# Logged, not asserted: a CNI that exempts host traffic makes the allow
+# redundant but breaks nothing, and apps pods cannot reach host netns at PSA
+# baseline, so the exemption is not a hole.
+run_node_probe() {
+  kubectl delete pod node-pull-probe -n "$INFRA_NS" --ignore-not-found --grace-period=1 >/dev/null
+  sed -e "s|__REGISTRY_IP__|$REGISTRY_IP|" -e "s|__NODE__|$CLUSTER-control-plane|" \
+    "$DIR/08-node-pull-probe.yaml" | kubectl apply -f - >/dev/null
+  pod_outcome node-pull-probe "$INFRA_NS" 120
+}
+if [ "$(run_node_probe)" = "Succeeded" ]; then
+  echo "substrate fact: this CNI exempts cross-node host traffic from pod selectors (node allow is redundant here)"
+else
+  echo "substrate fact: this CNI subjects cross-node host traffic to the ingress policy (node allow is load-bearing)"
+fi
+
+log "rehearse init's node-pull allow (one /32 per node InternalIP — init owns this at install, M1.5)"
+node_ips="$(kubectl get nodes -o 'jsonpath={.items[*].status.addresses[?(@.type=="InternalIP")].address}')"
+[ -n "$node_ips" ] || fatal "no node InternalIPs found"
+{
+  cat <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orkano-registry-ingress-nodes
+  namespace: orkano-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-registry
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 5000
+          protocol: TCP
+      from:
+EOF
+  for ip in $node_ips; do
+    printf '        - ipBlock:\n            cidr: %s/32\n' "$ip"
+  done
+} | kubectl apply -f -
+outcome="$(run_node_probe)"
+[ "$outcome" = "Succeeded" ] \
+  || fatal "node-pull-probe outcome=$outcome — still blocked despite the per-node allow; kubelet pulls would break, the init contract does not hold on this CNI"
+kubectl delete pod node-pull-probe -n "$INFRA_NS" --grace-period=1
+# Kubelet's readiness/liveness probes are host-originated too; by now the
+# policy has been live for minutes (probes fire every 10s, three failures
+# flip readiness), so Available still holding is part of claim 5.
+kubectl wait --for=condition=Available deploy/orkano-registry -n orkano-system --timeout=60s >/dev/null \
+  || fatal "registry went unready under the ingress policy — kubelet probe traffic is being blocked"
+echo "OK: node-originated pull path and kubelet probes survive the lockdown"
 
 log "PASS — substrate facts"
 echo "cluster: $CLUSTER ($(kind version))"

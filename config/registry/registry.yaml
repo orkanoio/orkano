@@ -9,13 +9,14 @@
 # (kubelet/containerd cannot resolve cluster DNS) are wired by M1.5's init
 # via k3s registries.yaml on every node.
 #
-# Auth: none yet, deliberately — the Service is ClusterIP (nothing outside
-# the cluster reaches it), but ANY in-cluster pod, including user code in
-# orkano-apps, can reach it until per-build credentials and a registry
-# ingress NetworkPolicy land (M1.2 lockdown/Build-controller tasks). Deploys
-# stay digest-pinned and cosign-verified (INV-06), so a tag overwrite cannot
-# affect admitted workloads meanwhile; storage delete is disabled below so an
-# unauthenticated pod cannot break future digest re-pulls either.
+# Auth: none yet, deliberately — per-build credentials land with the Build
+# controller. Until then the registry ingress NetworkPolicy
+# (config/netpol/orkano-system.yaml) keeps everything but build pods off it
+# at the network layer; build pods themselves remain unauthenticated.
+# Deploys stay digest-pinned and cosign-verified (INV-06), so a tag
+# overwrite cannot affect admitted workloads meanwhile; storage delete is
+# disabled below so a rogue build cannot break future digest re-pulls
+# either.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

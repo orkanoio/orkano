@@ -29,7 +29,7 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 **Rationale.** Builds execute arbitrary code from user repositories by design; the sandbox, not trust in the code, is the security boundary.
 
-**Enforced by.** `automountServiceAccountToken: false` on every build Job; Pod Security Admission enforcing `baseline` on the build namespace plus the Localhost AppArmor profile (grants `userns` and `mount`, keeps the rest of the default confinement); a default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (enforcement proven live in the M0.5 spike); hard CPU, memory, and wall-clock limits per Job.
+**Enforced by.** `automountServiceAccountToken: false` on every build Job; Pod Security Admission enforcing `baseline` on the build namespace plus the Localhost AppArmor profile (grants `userns` and `mount`, keeps the rest of the default confinement); a default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (`config/netpol/`; enforcement proven live in the M0.5 spike and capability-probed both directions by the substrate smoke on every main push); hard CPU, memory, and wall-clock limits per Job.
 
 **Verified by.** `build.canary-isolation` (planned) — runs a canary build Job that asserts from inside the pod: no token exists under `/var/run/secrets/kubernetes.io/serviceaccount`, a connection to a non-allowlisted host actually fails, and the source host and registry stay reachable. Separately submits a privileged pod spec to the build namespace and asserts admission rejects it. `build.apparmor-profile-loaded` (planned) — probes that the `orkano-buildkit` profile is loaded on every node, because its absence fails silently (ADR-0012).
 

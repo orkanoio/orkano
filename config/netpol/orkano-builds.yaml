@@ -1,0 +1,83 @@
+# orkano-builds lockdown (M1.2, INV-02): builds are hostile code, so the
+# namespace is default-deny in both directions and only pods carrying the
+# build label get the minimal egress a build needs. PSA baseline plus the
+# orkano-buildkit AppArmor profile are the other halves of the sandbox
+# (ADR-0012); config/namespaces/ owns the PSA labels.
+#
+# Label contract: the Build controller MUST label build Job pods
+# app.kubernetes.io/name: orkano-build — this allowlist and the registry
+# ingress policy (orkano-system.yaml) key on it. A pod without the label
+# gets no network at all (fail closed).
+#
+# Enforcement is never assumed from config: the substrate smoke
+# (hack/ci/substrate-smoke/) capability-probes every leg, allow and deny,
+# on a live cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: orkano-builds
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# DNS, the in-cluster registry, and 443 outbound (git source fetch + base
+# image pulls). Vanilla NetworkPolicy has no FQDN selectors, so "GitHub only"
+# is not expressible — 443-to-public-internet is the honest approximation
+# (spike 1 finding; accepted risk #2 in the threat model).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: build-egress-allowlist
+  namespace: orkano-builds
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-build
+  policyTypes: [Egress]
+  egress:
+    # CoreDNS only, not the whole of kube-system — k3s and kind both label it
+    # k8s-app: kube-dns. The allow leg of the smoke (crane resolving the
+    # registry FQDN) capability-probes that resolution survives this scoping.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # The registry leg: policies match post-DNAT, so this is the pod's port
+    # 5000, not the portless Service's 443 — the smoke pushes through the
+    # Service to prove that assumption holds on the real substrate.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orkano-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orkano-registry
+      ports:
+        - port: 5000
+          protocol: TCP
+    # 443 to the public internet only. The excepts keep builds off everything
+    # that is not the internet: RFC1918 (cluster + LAN services),
+    # 169.254.0.0/16 (link-local; cloud metadata endpoints on the Hetzner/DO
+    # installs the PRD targets), 100.64.0.0/10 (CGNAT; Tailscale tailnets on
+    # homelab installs).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - port: 443
+          protocol: TCP

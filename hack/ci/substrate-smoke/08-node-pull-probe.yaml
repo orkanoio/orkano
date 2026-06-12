@@ -1,0 +1,28 @@
+# Kubelet-pull stand-in for the M1.2 lockdown: node-originated traffic to the
+# registry ClusterIP must survive the registry ingress policy. kubelet/
+# containerd pulls (wired via k3s registries.yaml in M1.5) originate from the
+# host network namespace, not a pod, and CNIs differ on whether such traffic
+# is exempt from pod selectors — so it is capability-probed, never assumed.
+# hostNetwork puts this pod in the host netns (which is why it runs in the
+# policy-free, PSA-unlabelled infra namespace); nodeName pins it to the
+# control-plane node — assignment bypasses the scheduler, so the NoSchedule
+# taint is irrelevant — while the registry runs on the worker, making the
+# probe cross-node: the leg most likely to differ per CNI (on kindnet it is
+# policy-subject, which is why init must render the per-node /32 allow this
+# probe runs against in its second leg). A TCP connect through the Service
+# DNAT is the whole claim here — TLS and registry semantics are probe 5/8's
+# job.
+# __REGISTRY_IP__ and __NODE__ are substituted by run.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-pull-probe
+  namespace: orkano-smoke-infra
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  nodeName: __NODE__
+  containers:
+    - name: probe
+      image: busybox:1.37
+      command: ["timeout", "20", "nc", "-z", "-w", "5", "__REGISTRY_IP__", "443"]

@@ -1,12 +1,14 @@
 # M1.2 substrate smoke: host-loaded AppArmor profile + rootless BuildKit
 # git-URL build at PSA baseline + capability-probed NetworkPolicy enforcement
-# + the product registry's TLS acceptance (config/registry/) on kind
-# (ADR-0012 / INV-02). Separate workflow on purpose: it proves the SUBSTRATE
-# and the cluster-level manifests, not the Go code, so PRs only trigger it
-# when its own inputs change; every push to main re-proves it unconditionally.
-# Known flake source: six anonymous Docker Hub pulls per run (kindest/node,
-# registry ×2 tags, busybox, buildkit, alpine) against shared GHA egress IPs
-# (cert-manager pulls from quay.io, crane from gcr.io — unmetered). If
+# + the product registry's TLS acceptance (config/registry/) + the M1.2
+# lockdown NetworkPolicies (config/netpol/), capability-probed both
+# directions on kind (ADR-0012 / INV-02). Separate workflow on purpose: it
+# proves the SUBSTRATE and the cluster-level manifests, not the Go code, so
+# PRs only trigger it when its own inputs change; every push to main
+# re-proves it unconditionally.
+# Known flake source: seven anonymous Docker Hub pulls per run (kindest/node,
+# registry ×2 tags, busybox ×2 nodes, buildkit, alpine) against shared GHA
+# egress IPs (cert-manager pulls from quay.io, crane from gcr.io). If
 # toomanyrequests shows up in the dump output, the fix is a docker-login step
 # backed by DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets — not added until
 # the flake is real.
@@ -21,6 +23,7 @@ on:
       - config/apparmor/**
       - config/registry/**
       - config/namespaces/**
+      - config/netpol/**
       - .github/workflows/substrate-smoke.yml
 
 permissions:
