@@ -101,6 +101,23 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # Registry TLS rotation: distribution loads its keypair once at startup, so
+  # the operator rolls the registry Deployment when cert-manager bumps the
+  # Certificate's status.revision. Deliberately the Certificate, not the
+  # Secret — the operator holds no secrets read here until M1.3 (INV-07).
+  # The mutating verbs are pinned to the one Deployment the controller owns;
+  # list/watch stay a separate rule because collection requests carry no
+  # object name, so resourceNames can never authorize an informer.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["orkano-registry"]
+    verbs: ["get", "update"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -53,15 +53,17 @@ const (
 )
 
 // rbacTuple is one cell of the matrix: identity may do verb on group/resource
-// in namespace. namespace "" means cluster-scoped. Human roles use the
+// in namespace, optionally pinned to one object by resourceName ("" means
+// unrestricted). namespace "" means cluster-scoped. Human roles use the
 // identity "role:<name>" because they ship unbound — bindings to real OIDC
 // identities are created at install time, not in config/.
 type rbacTuple struct {
-	identity  string
-	namespace string
-	group     string
-	resource  string
-	verb      string
+	identity     string
+	namespace    string
+	group        string
+	resource     string
+	resourceName string
+	verb         string
 }
 
 func (tu rbacTuple) String() string {
@@ -73,13 +75,23 @@ func (tu rbacTuple) String() string {
 	if group == "" {
 		group = "core"
 	}
-	return fmt.Sprintf("%s: %s %s/%s in %s", tu.identity, tu.verb, group, tu.resource, ns)
+	resource := tu.resource
+	if tu.resourceName != "" {
+		resource += "[" + tu.resourceName + "]"
+	}
+	return fmt.Sprintf("%s: %s %s/%s in %s", tu.identity, tu.verb, group, resource, ns)
 }
 
 var rbacKnownVerbs = map[string]bool{
 	"get": true, "list": true, "watch": true, "create": true,
 	"update": true, "patch": true, "delete": true, "impersonate": true,
 }
+
+// Collection requests carry no object name, so a rule combining resourceNames
+// with these verbs is dead under the real authorizer — yet a SubjectAccessReview
+// can be handed a name the request would never have, so the SAR walk alone
+// cannot expose the mistake. Refuse it structurally instead.
+var rbacCollectionVerbs = map[string]bool{"list": true, "watch": true, "create": true}
 
 var orkanoNamespaces = map[string]bool{
 	systemNamespace: true, appsNamespace: true, buildsNamespace: true,
@@ -157,11 +169,12 @@ func parseRBACMatrixDoc(t *testing.T) map[rbacTuple]bool {
 		verbs := parseVerbsCell(t, cells[1])
 		namespaces := parseScopeCell(t, cells[2])
 		for _, gr := range parseResourcesCell(t, cells[0]) {
-			for _, resource := range gr.resources {
-				for _, verb := range verbs {
-					for _, ns := range namespaces {
-						tuples[rbacTuple{rowIdentity, ns, gr.group, resource, verb}] = true
-					}
+			for _, verb := range verbs {
+				if gr.resourceName != "" && rbacCollectionVerbs[verb] {
+					t.Fatalf("matrix row %q grants %q on %s[%s], but resourceNames can never authorize a collection request", line, verb, gr.resource, gr.resourceName)
+				}
+				for _, ns := range namespaces {
+					tuples[rbacTuple{rowIdentity, ns, gr.group, gr.resource, gr.resourceName, verb}] = true
 				}
 			}
 		}
@@ -197,14 +210,17 @@ func isHeaderOrSeparatorRow(cells []string) bool {
 	return true
 }
 
-type groupResources struct {
-	group     string
-	resources []string
+// matrixResource is one (group, resource) the doc grants, optionally pinned to
+// a single object by resourceName via the `resource[name]` syntax.
+type matrixResource struct {
+	group        string
+	resource     string
+	resourceName string
 }
 
-func parseResourcesCell(t *testing.T, cell string) []groupResources {
+func parseResourcesCell(t *testing.T, cell string) []matrixResource {
 	t.Helper()
-	var pairs []groupResources
+	var out []matrixResource
 	for _, clause := range strings.Split(cell, ";") {
 		clause = strings.TrimSpace(clause)
 		m := resourceClauseRe.FindStringSubmatch(clause)
@@ -229,20 +245,29 @@ func parseResourcesCell(t *testing.T, cell string) []groupResources {
 				suffixes = append(suffixes, suffix)
 			}
 		}
-		var resources []string
 		for _, r := range strings.Split(resourcesPart, ",") {
 			r = strings.Trim(strings.TrimSpace(r), "`")
 			if r == "" {
 				t.Fatalf("empty resource in clause %q", clause)
 			}
-			resources = append(resources, r)
+			resource, resourceName := r, ""
+			if base, name, found := strings.Cut(r, "["); found {
+				if !strings.HasSuffix(name, "]") || name == "]" {
+					t.Fatalf("resource %q in clause %q has malformed [resourceName]", r, clause)
+				}
+				if len(suffixes) > 0 {
+					t.Fatalf("resource %q in clause %q mixes a [resourceName] with a subresource suffix; the matrix cannot express that", r, clause)
+				}
+				resource = base
+				resourceName = strings.TrimSuffix(name, "]")
+			}
+			out = append(out, matrixResource{group: group, resource: resource, resourceName: resourceName})
 			for _, suffix := range suffixes {
-				resources = append(resources, r+suffix)
+				out = append(out, matrixResource{group: group, resource: resource + suffix})
 			}
 		}
-		pairs = append(pairs, groupResources{group: group, resources: resources})
 	}
-	return pairs
+	return out
 }
 
 func parseVerbsCell(t *testing.T, cell string) []string {
@@ -394,13 +419,29 @@ func manifestTuples(t *testing.T, m *rbacManifests, humanRoles map[string]bool) 
 
 	expand := func(identity, namespace string, rules []rbacv1.PolicyRule, where string) {
 		for _, rule := range rules {
-			if len(rule.ResourceNames) > 0 || len(rule.NonResourceURLs) > 0 {
-				t.Fatalf("%s uses resourceNames/nonResourceURLs, which the matrix doc cannot express", where)
+			if len(rule.NonResourceURLs) > 0 {
+				t.Fatalf("%s uses nonResourceURLs, which the matrix doc cannot express", where)
+			}
+			// resourceNames pin a rule to named objects; the matrix expresses
+			// that as `resource[name]`. A collection verb under such a rule is
+			// dead (List/Watch/Create requests carry no name), so refuse it —
+			// same guard the doc parser applies, kept symmetric here.
+			names := rule.ResourceNames
+			if len(names) == 0 {
+				names = []string{""}
+			} else {
+				for _, verb := range rule.Verbs {
+					if rbacCollectionVerbs[verb] {
+						t.Fatalf("%s grants collection verb %q on a resourceNames-pinned rule, which can never authorize", where, verb)
+					}
+				}
 			}
 			for _, group := range rule.APIGroups {
 				for _, resource := range rule.Resources {
-					for _, verb := range rule.Verbs {
-						tuples[rbacTuple{identity, namespace, group, resource, verb}] = true
+					for _, name := range names {
+						for _, verb := range rule.Verbs {
+							tuples[rbacTuple{identity, namespace, group, resource, name, verb}] = true
+						}
 					}
 				}
 			}
@@ -548,7 +589,7 @@ func TestZeroPermissionServiceAccounts(t *testing.T) {
 
 // --- behavioral walk via SubjectAccessReview ---
 
-func sarAllowed(t *testing.T, ctx context.Context, user, namespace, group, resource, verb string) bool {
+func sarAllowed(t *testing.T, ctx context.Context, user, namespace, group, resource, resourceName, verb string) bool {
 	t.Helper()
 	res, sub, _ := strings.Cut(resource, "/")
 	sar := &authorizationv1.SubjectAccessReview{
@@ -560,6 +601,7 @@ func sarAllowed(t *testing.T, ctx context.Context, user, namespace, group, resou
 				Group:       group,
 				Resource:    res,
 				Subresource: sub,
+				Name:        resourceName,
 			},
 		},
 	}
@@ -642,24 +684,34 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	// The authorizer reads RBAC through informers; wait for one canary tuple
 	// per binding before walking, so the walk itself is deterministic.
 	canaries := []rbacTuple{
-		{dashboardIdentity, appsNamespace, "orkano.io", "apps", "get"},
-		{dashboardIdentity, appsNamespace, "", "secrets", "create"},
-		{operatorIdentity, appsNamespace, "apps", "deployments", "get"},
-		{operatorIdentity, buildsNamespace, "batch", "jobs", "get"},
-		{operatorIdentity, systemNamespace, "coordination.k8s.io", "leases", "get"},
+		{identity: dashboardIdentity, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"},
+		{identity: dashboardIdentity, namespace: appsNamespace, resource: "secrets", verb: "create"},
+		{identity: operatorIdentity, namespace: appsNamespace, group: "apps", resource: "deployments", verb: "get"},
+		{identity: operatorIdentity, namespace: buildsNamespace, group: "batch", resource: "jobs", verb: "get"},
+		{identity: operatorIdentity, namespace: systemNamespace, group: "coordination.k8s.io", resource: "leases", verb: "get"},
 	}
 	for name := range humanRoles {
-		canaries = append(canaries, rbacTuple{humanIdentityPrefix + name, appsNamespace, "orkano.io", "apps", "get"})
+		canaries = append(canaries, rbacTuple{identity: humanIdentityPrefix + name, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"})
 	}
 	for _, canary := range canaries {
 		eventually(t, fmt.Sprintf("authorizer to allow canary {%s}", canary), func(ctx context.Context) (bool, error) {
-			return sarAllowed(t, ctx, sarUser(canary.identity), canary.namespace, canary.group, canary.resource, canary.verb), nil
+			return sarAllowed(t, ctx, sarUser(canary.identity), canary.namespace, canary.group, canary.resource, canary.resourceName, canary.verb), nil
 		})
 	}
 
 	for _, tu := range sortedTuples(docTuples) {
-		if !sarAllowed(t, ctx, sarUser(tu.identity), tu.namespace, tu.group, tu.resource, tu.verb) {
+		if !sarAllowed(t, ctx, sarUser(tu.identity), tu.namespace, tu.group, tu.resource, tu.resourceName, tu.verb) {
 			t.Errorf("matrix grants {%s} but the authorizer denies it", tu)
+		}
+	}
+
+	// The registry-rotation grant is pinned by resourceNames to orkano-registry:
+	// prove the pin actually binds by naming a peer Deployment the operator must
+	// never touch (the dashboard/receiver live in orkano-system too). The denied
+	// walk already covers the nameless request; this covers the wrong-name one.
+	for _, verb := range []string{"get", "update"} {
+		if sarAllowed(t, ctx, operatorIdentity, systemNamespace, "apps", "deployments", "orkano-dashboard", verb) {
+			t.Errorf("operator may %s deployments/orkano-dashboard in orkano-system, but the resourceNames pin should deny it", verb)
 		}
 	}
 
@@ -710,12 +762,16 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		for gr := range universe {
 			for _, verb := range verbs {
 				for _, scope := range scopes {
-					tu := rbacTuple{identity, scope, gr.group, gr.resource, verb}
+					tu := rbacTuple{identity: identity, namespace: scope, group: gr.group, resource: gr.resource, verb: verb}
 					if docTuples[tu] || clusterGrants[identity][gr][verb] {
 						continue
 					}
+					// resourceName left empty: a name-restricted grant (e.g.
+					// deployments[orkano-registry]) must NOT authorize a
+					// nameless request, so probing without a name proves the
+					// restriction actually binds.
 					walked++
-					if sarAllowed(t, ctx, sarUser(identity), scope, gr.group, gr.resource, verb) {
+					if sarAllowed(t, ctx, sarUser(identity), scope, gr.group, gr.resource, "", verb) {
 						t.Errorf("nothing in the matrix grants {%s}, but the authorizer allows it", tu)
 						continue
 					}

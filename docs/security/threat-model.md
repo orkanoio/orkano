@@ -77,7 +77,7 @@ What an attacker wants, roughly in order of how bad losing it would be:
 | Tampering | Poisoned queue event steers a build | Events are pointers, not payloads; operator re-fetches commit data from GitHub with a ≤1 h installation token (INV-07) | Attacker who can write the queue *and* push to an allowlisted repo deploys their code — same power as a committer |
 | Repudiation | Operator actions untraceable | All reconcile actions and minted tokens land in the audit log (INV-08) | — |
 | Denial of service | Reconcile storm or build-job flood exhausts the cluster | Hard CPU/mem/time limits on build jobs; workqueue rate limiting + backoff in controller-runtime | A flood still delays legitimate builds |
-| Elevation | Operator compromise — the worst Orkano-component case | Narrow RBAC scoped to app namespaces and Orkano CRDs; leader election; no cluster-admin | Highest-value Orkano target: can deploy/modify apps and mint installation tokens until key rotation. Kept survivable, not impossible |
+| Elevation | Operator compromise — the worst Orkano-component case | Narrow RBAC scoped to its three namespaces and Orkano CRDs; leader election; no cluster-admin. The orkano-system Deployment write is pinned by `resourceNames` to `orkano-registry` only (cert-rotation roll), so it cannot mutate the dashboard/receiver Deployments | Highest-value Orkano target: can deploy/modify apps, restart the registry, and mint installation tokens until key rotation. Kept survivable, not impossible |
 
 ### Build job
 

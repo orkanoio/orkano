@@ -124,8 +124,10 @@ spec:
               containerPort: 5000
           # Gotcha: distribution loads the TLS keypair once at startup
           # (tls.LoadX509KeyPair, no hot reload) — cert-manager renewing the
-          # Secret does NOT reach a running pod. Rotation handling is a
-          # tracked M1.2 follow-up task.
+          # Secret does NOT reach a running pod. The operator's registrycert
+          # controller rolls this Deployment when the Certificate's
+          # status.revision advances (an orkano.io/registry-cert-revision
+          # pod-template annotation it owns; do not set it here).
           readinessProbe:
             httpGet:
               path: /v2/

@@ -25,7 +25,9 @@ The dashboard holds no impersonation grant in Phase 1 (ADR-0013): an unrestricte
 | jobs (batch) | create, get, list, watch, delete | `orkano-builds` |
 | pods, pods/log (core) | get, list, watch | `orkano-apps`, `orkano-builds` |
 | secrets (core) | get, create, update | `orkano-apps` — catalog connection secrets, registry pull secrets |
-| certificates (cert-manager.io) | get, list, watch | `orkano-apps` — mirrors readiness into Domain status |
+| certificates (cert-manager.io) | get, list, watch | `orkano-apps`, `orkano-system` — mirrors readiness into Domain status; tracks the registry cert's issuance revision |
+| deployments (apps) | list, watch | `orkano-system` — informer feed for the registry rotation controller; collection requests carry no object name, so resourceNames cannot constrain them |
+| deployments[orkano-registry] (apps) | get, update | `orkano-system` — rolls the registry pod when its TLS cert renews (distribution loads the keypair only at startup); mutation pinned by resourceNames to the one Deployment the controller owns, and deliberately no secrets read |
 | leases (coordination.k8s.io) | get, create, update | `orkano-system` — leader election |
 | events (core) | create, patch | `orkano-apps`, `orkano-builds`, `orkano-system` — last scope is the leader-election events controller-runtime emits on the Lease |
 

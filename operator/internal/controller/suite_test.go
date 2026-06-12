@@ -107,6 +107,10 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to set up Domain controller: %v\n", err)
 		return 1
 	}
+	if err := (&RegistryCertReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up RegistryCert controller: %v\n", err)
+		return 1
+	}
 
 	// Registered after the testEnv.Stop defer, so LIFO ordering joins the
 	// manager (lease released against a live apiserver) before teardown.
