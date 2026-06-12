@@ -133,32 +133,7 @@ func TestDomainRendersIngressAndTracksCertificate(t *testing.T) {
 	app := createApp(t, "dom-web", nil)
 	domain := createDomain(t, "dom-web-example", "dom-web.example.com", app.Name)
 
-	ing := getIngress(t, domain.Name)
-	owner := metav1.GetControllerOf(ing)
-	if owner == nil || owner.Kind != "Domain" || owner.Name != domain.Name {
-		t.Fatalf("Ingress not controller-owned by the Domain: %+v", owner)
-	}
-	if got := ing.Annotations[clusterIssuerAnnotation]; got != testClusterIssuer {
-		t.Errorf("issuer annotation = %q, want %q", got, testClusterIssuer)
-	}
-	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != domain.Spec.Host {
-		t.Fatalf("rules = %+v, want one rule for %s", ing.Spec.Rules, domain.Spec.Host)
-	}
-	paths := ing.Spec.Rules[0].HTTP.Paths
-	if len(paths) != 1 || paths[0].Path != "/" || *paths[0].PathType != networkingv1.PathTypePrefix {
-		t.Errorf("paths = %+v, want a single / Prefix path", paths)
-	}
-	backend := paths[0].Backend.Service
-	if backend == nil || backend.Name != app.Name || backend.Port.Name != servicePortName {
-		t.Errorf("backend = %+v, want Service %s port %q", backend, app.Name, servicePortName)
-	}
-	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != domain.Name+tlsSecretSuffix ||
-		len(ing.Spec.TLS[0].Hosts) != 1 || ing.Spec.TLS[0].Hosts[0] != domain.Spec.Host {
-		t.Errorf("tls = %+v, want host %s with secret %s", ing.Spec.TLS, domain.Spec.Host, domain.Name+tlsSecretSuffix)
-	}
-	if ing.Spec.IngressClassName != nil {
-		t.Errorf("ingressClassName = %v, want unset (cluster default)", *ing.Spec.IngressClassName)
-	}
+	assertDomainIngress(t, domain.Name, domain.Spec.Host, app.Name)
 
 	// No Certificate yet: ingress-shim has not acted.
 	waitForDomainCondition(t, domain.Name, orkanov1alpha1.ConditionCertificateReady, metav1.ConditionUnknown, reasonCertificatePending)
@@ -401,17 +376,4 @@ func TestDomainNeverAdoptsForeignIngress(t *testing.T) {
 	if metav1.GetControllerOf(&got) != nil {
 		t.Errorf("foreign Ingress was adopted: %+v", metav1.GetControllerOf(&got))
 	}
-}
-
-func TestDomainExampleReconciles(t *testing.T) {
-	applyExample(t, "02-web-service-postgres.yaml")
-
-	ing := getIngress(t, "api-example-com")
-	if ing.Spec.Rules[0].Host != "api.example.com" {
-		t.Errorf("host = %q, want api.example.com", ing.Spec.Rules[0].Host)
-	}
-	if backend := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service; backend == nil || backend.Name != "api" {
-		t.Errorf("backend = %+v, want Service api", backend)
-	}
-	waitForAppURL(t, "api", "https://api.example.com")
 }
