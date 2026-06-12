@@ -1,0 +1,57 @@
+# Probe target + client for verifying that NetworkPolicy is actually enforced
+# (project rule: probe capabilities, never read configs).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-server
+  namespace: orkano-smoke-build
+  labels:
+    app: probe-server
+spec:
+  containers:
+    - name: web
+      image: busybox:1.37
+      command: ["sh", "-c", "echo ok > /tmp/index.html && exec httpd -f -p 8080 -h /tmp"]
+      ports:
+        - containerPort: 8080
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe-server
+  namespace: orkano-smoke-build
+spec:
+  selector:
+    app: probe-server
+  ports:
+    - port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-client
+  namespace: orkano-smoke-build
+spec:
+  restartPolicy: Never
+  containers:
+    - name: client
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault

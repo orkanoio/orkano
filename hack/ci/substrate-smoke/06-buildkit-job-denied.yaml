@@ -1,0 +1,60 @@
+# Deny leg of the INV-02 capability probe: identical to 05-buildkit-job.yaml
+# but run AFTER the egress allowlist is deleted, so default-deny-all governs it.
+# Expected outcome is FAILURE at the git source fetch; a completed job means the
+# policy does not constrain build pods. Shorter deadline: failure is the point,
+# don't let a hung DNS lookup squat the CI runner.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-smoke-denied
+  namespace: orkano-smoke-build
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit:v0.30.0-rootless
+          command: ["buildctl-daemonless.sh"]
+          args:
+            - build
+            - --frontend=dockerfile.v0
+            - --opt=context=https://github.com/orkanoio/orkano.git#main:hack/ci/substrate-smoke/fixture
+            - --output=type=image,name=registry.orkano-smoke-infra.svc.cluster.local:5000/smoke:denied,push=true,registry.insecure=true
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: [ALL]
+              add: [SETUID, SETGID]
+            appArmorProfile:
+              type: Localhost
+              localhostProfile: orkano-buildkit
+          volumeMounts:
+            - name: buildkitd
+              mountPath: /home/user/.local/share/buildkit
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: buildkitd
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

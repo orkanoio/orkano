@@ -1,0 +1,29 @@
+# kind node images can't enforce AppArmor out of the box; both gaps were found
+# empirically (each component gates on its own "is AppArmor available" probe):
+#   1. kubelet — via runc's apparmor.IsEnabled(), which stats
+#      /sys/kernel/security/apparmor AND reads
+#      /sys/module/apparmor/parameters/enabled — rejects profile-requesting
+#      pods with "AppArmor is not enabled on the host": securityfs is not
+#      mounted in the node container (the module parameter alone reads Y).
+#   2. containerd — its HostSupports() stats /sbin/apparmor_parser (it never
+#      executes it; profiles are applied by name via runc) — fails container
+#      creation with "failed to generate apparmor spec opts: apparmor is not
+#      supported": the node image ships no apparmor_parser.
+# Bind both from the host: the node shares the host kernel, so host-loaded
+# profiles (orkano-buildkit) become visible and enforceable.
+# securityfs must be WRITABLE: once containerd detects AppArmor support it
+# loads its default cri-containerd.apparmor.d profile (by running
+# apparmor_parser) before starting ANY container — with securityfs read-only
+# that load fails and the control plane itself never comes up (found
+# empirically: kubeadm init timed out at wait-control-plane). Loading the cri
+# default profile into the shared kernel is exactly what every real node does.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /sys/kernel/security
+        containerPath: /sys/kernel/security
+      - hostPath: /sbin/apparmor_parser
+        containerPath: /sbin/apparmor_parser
+        readOnly: true

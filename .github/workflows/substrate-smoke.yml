@@ -1,0 +1,43 @@
+# M1.2 substrate smoke: host-loaded AppArmor profile + rootless BuildKit
+# git-URL build at PSA baseline + capability-probed NetworkPolicy enforcement
+# on kind (ADR-0012 / INV-02). Separate workflow on purpose: it proves the
+# SUBSTRATE, not the Go code, so PRs only trigger it when its own inputs
+# change; every push to main re-proves it unconditionally.
+# Known flake source: five anonymous Docker Hub pulls per run (kindest/node,
+# registry, busybox, buildkit, alpine) against shared GHA egress IPs. If
+# toomanyrequests shows up in the dump output, the fix is a docker-login step
+# backed by DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets — not added until
+# the flake is real.
+name: substrate-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - hack/ci/substrate-smoke/**
+      - config/apparmor/**
+      - .github/workflows/substrate-smoke.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: substrate-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  substrate-smoke:
+    # Pinned to 24.04: the profile uses AppArmor abi/4.0 and the verdict is
+    # only meaningful on a known substrate.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: install kind (pinned)
+        run: |
+          curl -fsSLo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64
+          echo "50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54  kind" | sha256sum -c
+          sudo install -m 0755 kind /usr/local/bin/kind && rm kind
+      - name: run substrate smoke
+        run: hack/ci/substrate-smoke/run.sh

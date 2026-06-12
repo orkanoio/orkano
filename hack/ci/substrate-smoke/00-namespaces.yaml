@@ -1,0 +1,18 @@
+# Build namespace at PSA baseline — the proven minimum for rootless BuildKit
+# (ADR-0012); the F2-shaped Job must admit here with zero warnings.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-smoke-build
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline
+---
+# Registry infra is not the thing under test; no PSA restriction, no policies —
+# it doubles as the control namespace proving denials come from policy, not the
+# cluster being broken.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-smoke-infra

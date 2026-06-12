@@ -1,0 +1,44 @@
+# Egress allowlist for build pods: DNS, the in-cluster registry, and 443
+# outbound (git-URL source fetch + base image pulls). Vanilla NetworkPolicy has
+# no FQDN selectors, so "GitHub only" is not expressible — the 443 rule is the
+# honest approximation (spike 1 finding, recorded in the threat model).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: build-egress-allowlist
+  namespace: orkano-smoke-build
+spec:
+  podSelector:
+    matchLabels:
+      app: buildkit
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orkano-smoke-infra
+          podSelector:
+            matchLabels:
+              app: registry
+      ports:
+        - port: 5000
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

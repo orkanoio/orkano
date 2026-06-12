@@ -1,0 +1,70 @@
+# Spike attempt F2 (the minimal baseline-admittable rootless BuildKit config,
+# ADR-0012) with the one Phase-1 delta: a git-URL context instead of the spike's
+# ConfigMap. Deviations from restricted, all empirically load-bearing (spike 1):
+#   - seccompProfile omitted (nil = unconfined where kubelet seccompDefault is
+#     off; RuntimeDefault blocks rootlesskit's clone(CLONE_NEWUSER))
+#   - allowPrivilegeEscalation: true (newuidmap/newgidmap are file-caps
+#     binaries; NoNewPrivs makes their exec fail EPERM)
+#   - capabilities add SETUID,SETGID (bounding set must honor those file caps)
+#   - apparmor Localhost orkano-buildkit (cri default profile silently denies
+#     mount(2)); the profile must be loaded on the node kernel first.
+# The context points at this repo's main branch, so fixture changes are proven
+# one merge after they land — acceptable for a static fixture. run.sh can
+# override it via SMOKE_GIT_CONTEXT for local rehearsal.
+# Resources are smoke-sized; product build-job defaults (500m/1Gi → 2/4Gi) ship
+# with M1.2's Job template task.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-smoke
+  namespace: orkano-smoke-build
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit:v0.30.0-rootless
+          command: ["buildctl-daemonless.sh"]
+          args:
+            - build
+            - --frontend=dockerfile.v0
+            - --opt=context=https://github.com/orkanoio/orkano.git#main:hack/ci/substrate-smoke/fixture
+            - --output=type=image,name=registry.orkano-smoke-infra.svc.cluster.local:5000/smoke:fixture,push=true,registry.insecure=true
+          env:
+            - name: BUILDKITD_FLAGS
+              value: --oci-worker-no-process-sandbox
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: [ALL]
+              add: [SETUID, SETGID]
+            appArmorProfile:
+              type: Localhost
+              localhostProfile: orkano-buildkit
+          volumeMounts:
+            - name: buildkitd
+              mountPath: /home/user/.local/share/buildkit
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: buildkitd
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
