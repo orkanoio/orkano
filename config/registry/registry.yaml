@@ -1,0 +1,182 @@
+# In-cluster image registry (distribution/distribution) — M1.2.
+#
+# Canonical image host: orkano-registry.orkano-system.svc.cluster.local
+# (portless: the Service listens on 443 so image references carry no port —
+# exactly one canonical form for the INV-06 admission policy to match, no
+# ":443"-vs-portless normalization trap). Build pods push to it over TLS,
+# trusting the internal CA via the orkano-registry-ca ConfigMap that install
+# copies into orkano-builds (see the Certificate below). Node-level pulls
+# (kubelet/containerd cannot resolve cluster DNS) are wired by M1.5's init
+# via k3s registries.yaml on every node.
+#
+# Auth: none yet, deliberately — the Service is ClusterIP (nothing outside
+# the cluster reaches it), but ANY in-cluster pod, including user code in
+# orkano-apps, can reach it until per-build credentials and a registry
+# ingress NetworkPolicy land (M1.2 lockdown/Build-controller tasks). Deploys
+# stay digest-pinned and cosign-verified (INV-06), so a tag overwrite cannot
+# affect admitted workloads meanwhile; storage delete is disabled below so an
+# unauthenticated pod cannot break future digest re-pulls either.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: orkano-registry-tls
+  namespace: orkano-system
+spec:
+  secretName: orkano-registry-tls
+  dnsNames:
+    - orkano-registry.orkano-system.svc
+    - orkano-registry.orkano-system.svc.cluster.local
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    kind: Issuer
+    name: orkano-internal-ca
+---
+# http.secret is deliberately unset: it only matters when multiple replicas
+# share chunked-upload state behind one Service (this runs one replica,
+# strategy Recreate). distribution logs a one-line warning at startup and
+# generates a random one; init can mint a real one if replicas ever grow.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orkano-registry-config
+  namespace: orkano-system
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      level: info
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+      delete:
+        # Off until the GC task: with no auth yet, any in-cluster pod could
+        # otherwise DELETE blobs and break future digest re-pulls.
+        enabled: false
+      cache:
+        blobdescriptor: inmemory
+    http:
+      addr: :5000
+      tls:
+        certificate: /etc/orkano-registry-tls/tls.crt
+        key: /etc/orkano-registry-tls/tls.key
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orkano-registry
+  namespace: orkano-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-registry
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-registry
+spec:
+  replicas: 1
+  # Recreate: the PVC is ReadWriteOnce; a rolling update would deadlock two
+  # pods on one volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-registry
+    spec:
+      # The registry never talks to the Kubernetes API: no token, no Role
+      # (same posture as the receiver in the RBAC matrix).
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry
+          # Upstream multi-arch image, digest-pinned (Renovate keeps the pin
+          # fresh). Explicit command bypasses the image's shell entrypoint:
+          # nothing in it is needed and the binary path is the contract.
+          image: registry:3.1.1@sha256:85347ed2ecde64161c7a4788a4d7d3dcc9d6f86f7be95834022e3c6a423a945a
+          command: ["registry", "serve", "/etc/distribution/config.yml"]
+          ports:
+            - name: https
+              containerPort: 5000
+          # Gotcha: distribution loads the TLS keypair once at startup
+          # (tls.LoadX509KeyPair, no hot reload) — cert-manager renewing the
+          # Secret does NOT reach a running pod. Rotation handling is a
+          # tracked M1.2 follow-up task.
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v2/
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+            - name: config
+              mountPath: /etc/distribution
+            - name: tls
+              mountPath: /etc/orkano-registry-tls
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: orkano-registry
+        - name: config
+          configMap:
+            name: orkano-registry-config
+        - name: tls
+          secret:
+            secretName: orkano-registry-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-registry
+  namespace: orkano-system
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-registry
+  ports:
+    - name: https
+      port: 443
+      targetPort: https

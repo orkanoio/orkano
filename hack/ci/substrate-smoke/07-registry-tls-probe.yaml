@@ -1,0 +1,52 @@
+# M1.2 registry acceptance: TLS push + pull from a test pod, capability-probed
+# in both directions (PRD principle 9):
+#   leg 1 — without the CA, the push must FAIL on TLS verification (x509),
+#           proving the endpoint is really TLS from a non-public CA and not
+#           accidentally plaintext or publicly trusted;
+#   leg 2 — with the projected orkano-registry-ca ConfigMap (the same mount
+#           the build Job template will use), push then pull must succeed.
+# Runs in orkano-builds because that is where the CA bundle is published for
+# projection — the pod consumes the product contract, not a copy of it.
+# crane:debug is digest-pinned: the tag is mutable and gcr publishes no
+# versioned tags for it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: registry-tls-probe
+  namespace: orkano-builds
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: gcr.io/go-containerregistry/crane:debug@sha256:0822c676be1de102abe689aa60f0d24b328e2fdb41005c2ab84231715f89ca2c
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          REG=orkano-registry.orkano-system.svc.cluster.local
+          echo probe > /tmp/f && tar -cf /tmp/layer.tar -C /tmp f
+          echo '-- leg 1: push without the CA must fail TLS verification'
+          if crane append -t "$REG/smoke/tls-probe:v1" -f /tmp/layer.tar 2>/tmp/err; then
+            echo 'FAIL: push succeeded without trusting the internal CA'
+            exit 1
+          fi
+          grep -Eqi 'x509|certificate' /tmp/err || {
+            echo 'FAIL: push failed on something other than TLS verification:'
+            cat /tmp/err
+            exit 1
+          }
+          echo '-- leg 2: with the projected CA, push then pull must succeed'
+          export SSL_CERT_FILE=/orkano-registry-ca/ca.crt
+          crane append -t "$REG/smoke/tls-probe:v1" -f /tmp/layer.tar
+          digest=$(crane digest "$REG/smoke/tls-probe:v1")
+          crane pull "$REG/smoke/tls-probe@$digest" /tmp/pulled.tar
+          echo "OK: tls-verified push+pull ($digest)"
+      volumeMounts:
+        - name: registry-ca
+          mountPath: /orkano-registry-ca
+          readOnly: true
+  volumes:
+    - name: registry-ca
+      configMap:
+        name: orkano-registry-ca

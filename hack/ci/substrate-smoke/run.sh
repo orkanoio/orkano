@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Substrate smoke for the M1.2 build lane (the verdict shapes M1.6's E2E harness).
-# Proves, on the CI substrate (kind), the three claims the build pipeline rests on:
+# Proves, on the CI substrate (kind), the claims the build pipeline rests on:
 #   1. the orkano-buildkit AppArmor profile loaded on the HOST kernel reaches
 #      pods inside kind nodes (kind nodes share the host kernel),
 #   2. rootless BuildKit builds a git-URL context and pushes, admitted at PSA
 #      baseline with the spike-F2 securityContext (ADR-0012),
 #   3. NetworkPolicy is actually enforced, capability-probed in both directions:
 #      probe pods under deny-all, then the build job itself with the egress
-#      allowlist removed (INV-02).
+#      allowlist removed (INV-02),
+#   4. the product registry manifests (config/registry/) admit under
+#      orkano-system's restricted PSA, serve TLS from the cluster-internal CA,
+#      and a test pod TLS-pushes + pulls with the projected CA bundle — and
+#      cannot without it (M1.2 registry acceptance; registry.insecure never
+#      ships, ADR-0012).
 # Probe numbering: probe 1 is the prerequisite control (baseline connectivity
 # before any policy — guards probe 2 against a broken cluster passing as
-# "enforced"); probe 3 proves claims 1+2; probes 2+4 prove claim 3.
+# "enforced"); probe 3 proves claims 1+2; probes 2+4 prove claim 3; probe 5
+# proves claim 4 (its two TLS legs are the both-directions capability probe).
 # Runs in CI (Linux, sudo) and locally (macOS + colima: the profile loads inside
 # the colima VM, whose kernel the kind node containers share).
 # Local teardown: kind delete cluster --name orkano-substrate-smoke
@@ -23,6 +29,10 @@ CLUSTER="${SMOKE_CLUSTER:-orkano-substrate-smoke}"
 NODE_IMAGE="${SMOKE_NODE_IMAGE:-}"
 BUILD_NS=orkano-smoke-build
 INFRA_NS=orkano-smoke-infra
+# Pinned cert-manager for the product-registry phase; the sha256 is of the
+# release-asset cert-manager.yaml, checked before apply (supply-chain duty).
+CERT_MANAGER_VERSION=v1.20.2
+CERT_MANAGER_SHA256=1ce11cae912adecc69e6bb623435fafc9ed21505f9efff98bd71d7b80f01db1f
 
 log() { printf '\n== %s\n' "$*"; }
 
@@ -47,6 +57,11 @@ dump_state() {
     echo "--- $j:"
     kubectl logs "job/$j" -n "$BUILD_NS" --tail=40 2>/dev/null
   done
+  echo '--- dump: product registry (orkano-system)'
+  kubectl get pods,certificate -n orkano-system -o wide
+  kubectl get events -n orkano-system --sort-by=.lastTimestamp | tail -20
+  echo '--- dump: registry-tls-probe logs'
+  kubectl logs registry-tls-probe -n orkano-builds --tail=20 2>/dev/null
   set -e
 }
 
@@ -84,7 +99,7 @@ apply_job() {
   fi
 }
 
-for bin in kind kubectl docker; do
+for bin in kind kubectl docker curl; do
   command -v "$bin" >/dev/null || { printf 'FATAL: %s not found\n' "$bin" >&2; exit 1; }
 done
 
@@ -195,6 +210,58 @@ apply_job "$DIR/06-buildkit-job-denied.yaml"
 outcome="$(job_outcome buildkit-smoke-denied 240)"
 [ "$outcome" = "failed" ] || fatal "deny-leg build $outcome (expected failed) — egress policy does not constrain build pods"
 echo "OK: egress denial constrains the build pod"
+
+log "install cert-manager $CERT_MANAGER_VERSION (pinned + checksummed)"
+CM_YAML="$(mktemp)"
+curl -fsSLo "$CM_YAML" "https://github.com/cert-manager/cert-manager/releases/download/$CERT_MANAGER_VERSION/cert-manager.yaml"
+if command -v sha256sum >/dev/null; then
+  echo "$CERT_MANAGER_SHA256  $CM_YAML" | sha256sum -c - >/dev/null
+else
+  echo "$CERT_MANAGER_SHA256  $CM_YAML" | shasum -a 256 -c - >/dev/null
+fi
+kubectl apply -f "$CM_YAML" >/dev/null
+rm -f "$CM_YAML"
+kubectl wait deploy --all -n cert-manager --for=condition=Available --timeout=300s
+
+log "apply product namespaces + config/registry (restricted PSA enforced for real)"
+kubectl apply -f "$REPO_ROOT/config/namespaces/namespaces.yaml"
+# The first CR apply races cert-manager's webhook reaching serving readiness;
+# Available on the deploy is not that. Retry instead of sleeping.
+applied=""
+apply_err="$(mktemp)"
+for _ in $(seq 1 24); do
+  if kubectl apply -f "$REPO_ROOT/config/registry/" 2>"$apply_err"; then applied=yes; break; fi
+  sleep 5
+done
+[ -n "$applied" ] || { cat "$apply_err" >&2; fatal "config/registry did not apply (cert-manager webhook never became ready?)"; }
+rm -f "$apply_err"
+kubectl wait certificate orkano-registry-tls -n orkano-system --for=condition=Ready --timeout=180s
+kubectl rollout status deploy/orkano-registry -n orkano-system --timeout=300s
+
+log "publish the CA bundle for build-pod projection (init owns this copy at install time)"
+ca_tmp="$(mktemp)"
+kubectl get secret orkano-registry-tls -n orkano-system -o 'jsonpath={.data.ca\.crt}' | base64 --decode > "$ca_tmp"
+[ -s "$ca_tmp" ] || fatal "orkano-registry-tls secret carries no ca.crt to publish"
+kubectl create configmap orkano-registry-ca -n orkano-builds --from-file=ca.crt="$ca_tmp" \
+  --dry-run=client -o yaml | kubectl apply -f -
+rm -f "$ca_tmp"
+
+log "probe 5: TLS push + pull from a test pod (must fail without the CA, succeed with it)"
+kubectl delete pod registry-tls-probe -n orkano-builds --ignore-not-found --grace-period=1
+kubectl apply -f "$DIR/07-registry-tls-probe.yaml"
+phase=""
+deadline=$(( $(date +%s) + 240 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  phase=$(kubectl get pod registry-tls-probe -n orkano-builds -o 'jsonpath={.status.phase}' 2>/dev/null || true)
+  if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ]; then break; fi
+  sleep 3
+done
+[ "$phase" = "Succeeded" ] || fatal "registry-tls-probe phase=${phase:-unknown} — TLS push/pull acceptance failed"
+kubectl logs registry-tls-probe -n orkano-builds | grep -q 'OK: tls-verified push+pull' \
+  || fatal "registry-tls-probe succeeded but the OK line is missing from its logs"
+kubectl logs registry-tls-probe -n orkano-builds | tail -3
+kubectl delete pod registry-tls-probe -n orkano-builds --grace-period=1
+echo "OK: product registry serves TLS from the internal CA; projected bundle verified both ways"
 
 log "PASS — substrate facts"
 echo "cluster: $CLUSTER ($(kind version))"
