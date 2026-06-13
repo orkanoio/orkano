@@ -40,7 +40,9 @@ func (w *warningRecorder) take() []string {
 
 // createPSANamespace labels all three PSA modes at the same level. The
 // namespace is never deleted: envtest runs no namespace controller, and a
-// dedicated name keeps the labels away from every other test.
+// dedicated name keeps the labels away from every other test. The template's
+// orkano-build ServiceAccount is created alongside — the ServiceAccount
+// admission plugin refuses pods whose SA does not exist.
 func createPSANamespace(t *testing.T, ctx context.Context, name, level string) string {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
@@ -53,6 +55,10 @@ func createPSANamespace(t *testing.T, ctx context.Context, name, level string) s
 	}}
 	if err := k8sClient.Create(ctx, ns); err != nil {
 		t.Fatalf("creating %s namespace: %v", name, err)
+	}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "orkano-build", Namespace: name}}
+	if err := k8sClient.Create(ctx, sa); err != nil {
+		t.Fatalf("creating orkano-build ServiceAccount in %s: %v", name, err)
 	}
 	return name
 }

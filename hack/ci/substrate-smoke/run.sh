@@ -16,10 +16,12 @@
 #   5. the M1.2 lockdown manifests (config/netpol/) hold on the real
 #      substrate: a build-labeled pod keeps DNS + registry + 443, everything
 #      else in orkano-builds has nothing, the registry accepts ingress only
-#      from build pods — and the cross-node kubelet-pull path works through
-#      the per-node /32 allow that init renders at install (rehearsed here;
-#      kindnet blocks cross-node host traffic without it — found
-#      empirically), while the kubelet's own health probes keep passing,
+#      from build pods plus operator-labeled pods (the digest-resolution
+#      leg, keyed on the label and not the namespace) — and the cross-node
+#      kubelet-pull path works through the per-node /32 allow that init
+#      renders at install (rehearsed here; kindnet blocks cross-node host
+#      traffic without it — found empirically), while the kubelet's own
+#      health probes keep passing,
 #   6. the product build Job template (operator/internal/buildjob, golden
 #      copy 09-build-job-template.yaml pinned by unit test) admits at PSA
 #      baseline and builds + TLS-pushes a public repo under the full
@@ -32,7 +34,8 @@
 # probe 6 is claim 5's no-policy controls (same pattern as probe 1), probe 7
 # its deny legs — each isolating exactly ONE policy, and doubling as the
 # CNI-propagation barrier so probe 8 cannot false-pass before the rules hit
-# the kernel — probe 8 its allow leg (probe 5 re-run under the policies),
+# the kernel — probe 8 its allow legs (probe 5 re-run under the policies,
+# then the operator-labeled canary with its unlabeled negative control),
 # probe 9 its node-originated leg; probe 10 proves claim 6.
 # Runs in CI (Linux, sudo) and locally (macOS + colima: the profile loads inside
 # the colima VM, whose kernel the kind node containers share).
@@ -224,6 +227,7 @@ kubectl delete -f "$DIR/03-deny-all.yaml" -f "$DIR/04-egress-allowlist.yaml" --i
 kubectl delete -f "$REPO_ROOT/config/netpol/" --ignore-not-found
 kubectl delete networkpolicy orkano-registry-ingress-nodes -n orkano-system --ignore-not-found
 kubectl delete pod probe-server probe-client -n "$BUILD_NS" --ignore-not-found --grace-period=1
+kubectl delete pod operator-canary system-canary -n orkano-system --ignore-not-found --grace-period=1
 kubectl delete job buildkit-smoke buildkit-smoke-denied -n "$BUILD_NS" --ignore-not-found
 kubectl delete job template-smoke -n orkano-builds --ignore-not-found
 kubectl apply -f "$DIR/01-registry.yaml" -f "$DIR/02-netpol-probe.yaml"
@@ -300,6 +304,9 @@ kubectl wait deploy --all -n cert-manager --for=condition=Available --timeout=30
 log "apply product namespaces + config/registry (restricted PSA enforced for real)"
 kubectl apply -f "$REPO_ROOT/config/namespaces/namespaces.yaml"
 kubectl apply -f "$REPO_ROOT/config/buildkit/"
+# The Job template names the orkano-build ServiceAccount; without it the
+# Job controller can never create probe 10's pod.
+kubectl apply -f "$REPO_ROOT/config/rbac/serviceaccounts.yaml"
 # The first CR apply races cert-manager's webhook reaching serving readiness;
 # Available on the deploy is not that. Retry instead of sleeping.
 applied=""
@@ -379,6 +386,29 @@ echo "OK: lockdown denies both directions, one policy per leg"
 log "probe 8: lockdown allow leg — the build-labeled pod still TLS-pushes + pulls"
 run_tls_probe "the lockdown's egress allowlist or registry ingress rule breaks real builds"
 echo "OK: build-labeled pod keeps DNS + registry egress under the lockdown"
+
+log "probe 8b: operator digest-resolution leg — allowed by label, not by namespace"
+# The operator HEADs the registry through the Service (443 → DNAT 5000) to
+# pin digests; its allow is a label contract until M1.5 deploys the real
+# pod. The unlabeled control isolates the leg the same way probe 7 does:
+# without it, a policy accidentally admitting all of orkano-system would
+# pass. No propagation wait is owed — probe 7 already barriered this policy.
+kubectl apply -f "$DIR/10-operator-canary.yaml"
+kubectl wait --for=condition=Ready pod/operator-canary pod/system-canary -n orkano-system --timeout=120s
+op_ok=""
+for _ in 1 2 3 4 5 6; do
+  if canary_connect orkano-system operator-canary "$REGISTRY_IP" 443; then op_ok=yes; break; fi
+  sleep 5
+done
+[ -n "$op_ok" ] || fatal "operator-labeled canary cannot reach the registry — digest resolution would fail under the lockdown"
+sys_denied=""
+for _ in 1 2 3 4 5 6; do
+  if ! canary_connect orkano-system system-canary "$REGISTRY_IP" 443; then sys_denied=yes; break; fi
+  sleep 5
+done
+[ -n "$sys_denied" ] || fatal "an unlabeled orkano-system pod reaches the registry — the operator allow leaks beyond its label"
+kubectl delete pod operator-canary system-canary -n orkano-system --grace-period=1
+echo "OK: registry ingress admits the operator label and nothing else in orkano-system"
 
 log "probe 9: node-originated kubelet-pull stand-in (cross-node)"
 # Leg 1, soft: without a node allow, kindnet blocks cross-node host traffic

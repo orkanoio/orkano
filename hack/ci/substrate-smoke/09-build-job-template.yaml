@@ -9,6 +9,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
+  annotations:
+    orkano.io/build-name: template-smoke
+    orkano.io/build-namespace: orkano-apps
   labels:
     app.kubernetes.io/name: orkano-build
   name: template-smoke
@@ -68,6 +71,7 @@ spec:
           name: buildkit-config
           readOnly: true
       restartPolicy: Never
+      serviceAccountName: orkano-build
       volumes:
       - emptyDir: {}
         name: buildkitd

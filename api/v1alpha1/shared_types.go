@@ -7,8 +7,13 @@ type Source struct {
 
 	// SubPath scopes the build context to a directory of the checkout,
 	// like volumeMount.subPath; the Dockerfile path resolves relative
-	// to it.
+	// to it. The pattern and the no-".." rule mirror volumeMount.subPath:
+	// the value lands in the BuildKit git context URL, where "#" or ":"
+	// would change which ref/directory is built and ".." would escape
+	// the intended directory.
 	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="subPath must not contain '..'"
 	// +optional
 	SubPath string `json:"subPath,omitempty"`
 }

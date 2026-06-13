@@ -201,9 +201,16 @@ spec:
                     description: |-
                       SubPath scopes the build context to a directory of the checkout,
                       like volumeMount.subPath; the Dockerfile path resolves relative
-                      to it.
+                      to it. The pattern and the no-".." rule mirror volumeMount.subPath:
+                      the value lands in the BuildKit git context URL, where "#" or ":"
+                      would change which ref/directory is built and ".." would escape
+                      the intended directory.
                     maxLength: 512
+                    pattern: ^[A-Za-z0-9_./-]+$
                     type: string
+                    x-kubernetes-validations:
+                    - message: subPath must not contain '..'
+                      rule: '!self.contains(''..'')'
                 required:
                 - github
                 type: object

@@ -46,16 +46,21 @@ func createBuild(t *testing.T, name, appName string) *orkanov1alpha1.Build {
 
 func setBuildPhase(t *testing.T, name string, phase orkanov1alpha1.BuildPhase, image string) {
 	t.Helper()
-	ctx := context.Background()
-	var build orkanov1alpha1.Build
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: appsNamespace}, &build); err != nil {
-		t.Fatalf("failed to refetch Build %s: %v", name, err)
-	}
-	build.Status.Phase = phase
-	build.Status.Image = image
-	if err := k8sClient.Status().Update(ctx, &build); err != nil {
-		t.Fatalf("failed to set Build %s status: %v", name, err)
-	}
+	eventually(t, "Build status update for "+name, func(ctx context.Context) (bool, error) {
+		var build orkanov1alpha1.Build
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: appsNamespace}, &build); err != nil {
+			return false, err
+		}
+		build.Status.Phase = phase
+		build.Status.Image = image
+		if err := k8sClient.Status().Update(ctx, &build); err != nil {
+			if apierrors.IsConflict(err) {
+				return false, nil // raced the Build controller; retry
+			}
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // markDeploymentAvailable plays the part of the deployment controller, which

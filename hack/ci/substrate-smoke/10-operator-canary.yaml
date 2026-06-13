@@ -1,0 +1,49 @@
+# Exec-target canaries for the registry ingress policy's operator leg
+# (config/netpol/orkano-system.yaml): operator-canary wears the label
+# contract M1.5's operator Deployment must carry and must connect;
+# system-canary is the negative control proving the allow keys on the
+# label, not on the namespace. orkano-system enforces restricted PSA, so
+# both carry the full restricted securityContext.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: operator-canary
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-operator
+spec:
+  restartPolicy: Never
+  containers:
+    - name: canary
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: system-canary
+  namespace: orkano-system
+spec:
+  restartPolicy: Never
+  containers:
+    - name: canary
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault

@@ -1,0 +1,15 @@
+# Violates: Source.subPath CEL rule — no ".." (and the pattern forbids "#"
+# and ":"): the value lands in the BuildKit git context URL, where it would
+# escape or re-point the directory being built.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-subpath
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/app
+    subPath: services/../../etc
+  build:
+    strategy: Dockerfile

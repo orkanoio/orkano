@@ -71,6 +71,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # The internal CA bundle the install publishes for build pods; the digest
+  # resolver verifies its manifest HEAD against the same trust root. Read
+  # uncached and pinned — no informer, so no list/watch.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["orkano-registry-ca"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

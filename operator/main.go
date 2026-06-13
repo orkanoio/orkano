@@ -14,6 +14,7 @@ import (
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/operator/internal/controller"
+	"github.com/orkanoio/orkano/operator/internal/registry"
 )
 
 var version = "dev"
@@ -70,6 +71,11 @@ func main() {
 	}
 	if err := (&controller.RegistryCertReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up RegistryCert controller")
+		os.Exit(1)
+	}
+	resolver := &registry.Resolver{Reader: mgr.GetAPIReader()}
+	if err := (&controller.BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: resolver.ResolveDigest}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up Build controller")
 		os.Exit(1)
 	}
 

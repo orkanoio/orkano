@@ -4,6 +4,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// ConditionCompleted carries the why behind status.phase: False with reason
+// Pending/Running while in flight, True with reason Succeeded, False with a
+// distinct terminal reason (DeadlineExceeded, OOMKilled, BuildFailed, …) when
+// the build will never produce an image.
+const ConditionCompleted = "Completed"
+
 type BuildPhase string
 
 const (
@@ -19,7 +25,14 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="build spec is immutable; retry by creating a new Build"
 type BuildSpec struct {
+	// AppName references the App this build belongs to, so it carries the
+	// App's own naming rules (DNS-1123 subdomain). The pattern is also
+	// load-bearing for INV-02: the name flows into the BuildKit --output
+	// CSV and the image repository path, where a comma or colon would
+	// inject options (e.g. a second push target).
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	AppName string `json:"appName"`
 
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`

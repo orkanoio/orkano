@@ -33,6 +33,7 @@ const (
 	leaderElectionID = "orkano-operator.orkano.io"
 	systemNamespace  = "orkano-system"
 	appsNamespace    = "orkano-apps"
+	buildNamespace   = "orkano-builds"
 )
 
 var (
@@ -78,7 +79,7 @@ func run(m *testing.M) (code int) {
 		return 1
 	}
 
-	for _, name := range []string{systemNamespace, appsNamespace} {
+	for _, name := range []string{systemNamespace, appsNamespace, buildNamespace} {
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 		if err := k8sClient.Create(context.Background(), ns); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to create %s namespace: %v\n", name, err)
@@ -109,6 +110,13 @@ func run(m *testing.M) (code int) {
 	}
 	if err := (&RegistryCertReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to set up RegistryCert controller: %v\n", err)
+		return 1
+	}
+	// The digest resolver is stubbed: envtest has no registry to HEAD. The
+	// real Resolver's TLS round trip is covered by its own test against a
+	// local TLS server (build_controller_test.go).
+	if err := (&BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: stubResolveDigest}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up Build controller: %v\n", err)
 		return 1
 	}
 

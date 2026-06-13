@@ -115,8 +115,8 @@ func TestRenderTimeoutAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if got := *job.Spec.ActiveDeadlineSeconds; got != defaultTimeoutSeconds {
-		t.Errorf("zero timeoutSeconds rendered activeDeadlineSeconds %d, want the %d default", got, defaultTimeoutSeconds)
+	if got := *job.Spec.ActiveDeadlineSeconds; got != DefaultTimeoutSeconds {
+		t.Errorf("zero timeoutSeconds rendered activeDeadlineSeconds %d, want the %d default", got, DefaultTimeoutSeconds)
 	}
 	if got := job.Spec.Template.Spec.Containers[0].Image; got != DefaultImage {
 		t.Errorf("empty Options.Image rendered %q, want DefaultImage", got)
@@ -135,9 +135,10 @@ func TestRenderTimeoutAndDefaults(t *testing.T) {
 func TestRenderRejectsIncompleteInputs(t *testing.T) {
 	build, opts := goldenInputs()
 	for name, mutate := range map[string]func(*orkanov1alpha1.Build, *Options){
-		"no build name":  func(b *orkanov1alpha1.Build, _ *Options) { b.Name = "" },
-		"no context URL": func(_ *orkanov1alpha1.Build, o *Options) { o.ContextURL = "" },
-		"no image ref":   func(_ *orkanov1alpha1.Build, o *Options) { o.ImageRef = "" },
+		"no build name":      func(b *orkanov1alpha1.Build, _ *Options) { b.Name = "" },
+		"no build namespace": func(b *orkanov1alpha1.Build, _ *Options) { b.Namespace = "" },
+		"no context URL":     func(_ *orkanov1alpha1.Build, o *Options) { o.ContextURL = "" },
+		"no image ref":       func(_ *orkanov1alpha1.Build, o *Options) { o.ImageRef = "" },
 	} {
 		b, o := build.DeepCopy(), opts
 		mutate(b, &o)
@@ -163,15 +164,15 @@ func TestJobName(t *testing.T) {
 			want: strings.Repeat("a", 53) + "-" + "9e5f0c1a",
 		},
 	} {
-		got := jobName(tc.in)
+		got := JobName(tc.in)
 		if tc.want != "" && got != tc.want {
-			t.Errorf("jobName(%q) = %q, want %q", tc.in, got, tc.want)
+			t.Errorf("JobName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 		if len(got) > 63 {
-			t.Errorf("jobName(%q) is %d chars, exceeds the 63-char label limit", tc.in, len(got))
+			t.Errorf("JobName(%q) is %d chars, exceeds the 63-char label limit", tc.in, len(got))
 		}
 	}
-	if jobName(strings.Repeat("y", 64)) == jobName(strings.Repeat("y", 65)) {
+	if JobName(strings.Repeat("y", 64)) == JobName(strings.Repeat("y", 65)) {
 		t.Error("distinct over-long names truncated to the same Job name")
 	}
 }

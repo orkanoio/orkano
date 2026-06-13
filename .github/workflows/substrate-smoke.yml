@@ -25,6 +25,9 @@ on:
       - config/namespaces/**
       - config/netpol/**
       - config/buildkit/**
+      # The golden Job names the orkano-build SA; the smoke applies this
+      # one file from config/rbac (Roles stay envtest's concern).
+      - config/rbac/serviceaccounts.yaml
       - .github/workflows/substrate-smoke.yml
 
 permissions:

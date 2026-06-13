@@ -1,10 +1,14 @@
 # Registry ingress lockdown (M1.2): the registry has no auth yet (per-build
-# credentials land with the Build controller), so until then this policy is
-# the only thing keeping arbitrary in-cluster pods — including user code in
-# orkano-apps — from pushing to or pulling from it. Only build pods may
-# reach it. The Build controller task adds the operator's allow (digest
-# resolution via registry manifest HEAD) in the same commit as the code
-# that needs it.
+# credentials land with the Build controller task group), so until then this
+# policy is the only thing keeping arbitrary in-cluster pods — including
+# user code in orkano-apps — from pushing to or pulling from it. Two peers
+# may reach it: build pods (push/pull) and the operator (digest resolution
+# via registry manifest HEAD, INV-06). The operator peer is a label
+# contract like the build-pod one: M1.5's component deploy MUST label the
+# operator pods app.kubernetes.io/name: orkano-operator or digest
+# resolution fails closed. Capability-probed by the substrate smoke
+# (operator-labeled canary connects, unlabeled orkano-system canary does
+# not — the allow keys on the label, never on the namespace).
 #
 # Node-originated traffic does not match pod selectors and its fate under an
 # ingress policy is CNI-specific: kubelet/containerd image pulls (wired to
@@ -37,6 +41,11 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: orkano-build
+        # A bare podSelector scopes to this policy's own namespace: the
+        # operator runs in orkano-system next to the registry.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orkano-operator
       ports:
         - port: 5000
           protocol: TCP

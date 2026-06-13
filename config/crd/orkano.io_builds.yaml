@@ -60,7 +60,15 @@ spec:
               after the App changes. Retrying means creating a new Build.
             properties:
               appName:
+                description: |-
+                  AppName references the App this build belongs to, so it carries the
+                  App's own naming rules (DNS-1123 subdomain). The pattern is also
+                  load-bearing for INV-02: the name flows into the BuildKit --output
+                  CSV and the image repository path, where a comma or colon would
+                  inject options (e.g. a second push target).
                 maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 type: string
               commit:
                 pattern: ^[0-9a-f]{40}$
@@ -87,9 +95,16 @@ spec:
                     description: |-
                       SubPath scopes the build context to a directory of the checkout,
                       like volumeMount.subPath; the Dockerfile path resolves relative
-                      to it.
+                      to it. The pattern and the no-".." rule mirror volumeMount.subPath:
+                      the value lands in the BuildKit git context URL, where "#" or ":"
+                      would change which ref/directory is built and ".." would escape
+                      the intended directory.
                     maxLength: 512
+                    pattern: ^[A-Za-z0-9_./-]+$
                     type: string
+                    x-kubernetes-validations:
+                    - message: subPath must not contain '..'
+                      rule: '!self.contains(''..'')'
                 required:
                 - github
                 type: object

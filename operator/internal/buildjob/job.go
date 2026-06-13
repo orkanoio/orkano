@@ -44,9 +44,23 @@ const (
 	podLabelKey   = "app.kubernetes.io/name"
 	podLabelValue = "orkano-build"
 
-	// caConfigMapName is published at install from the registry TLS Secret's
-	// ca.crt (M1.5 contract); the smoke's TLS probe uses the same projection.
-	caConfigMapName = "orkano-registry-ca"
+	// serviceAccountName is the no-permission, no-token SA from config/rbac
+	// (INV-02). Naming it beats the namespace default SA: the explicit
+	// automountServiceAccountToken stays, and the RBAC matrix row about
+	// build pods points at an SA the Job actually uses.
+	serviceAccountName = "orkano-build"
+
+	// AnnotationBuildName/Namespace map a Job back to the Build it runs.
+	// Builds and Jobs live in different namespaces, and Kubernetes forbids
+	// cross-namespace ownerReferences, so these annotations are the link the
+	// Build controller's watch inverts (and its foreign-Job refusal checks).
+	AnnotationBuildName      = "orkano.io/build-name"
+	AnnotationBuildNamespace = "orkano.io/build-namespace"
+
+	// CAConfigMapName is published at install from the registry TLS Secret's
+	// ca.crt (M1.5 contract); the smoke's TLS probe uses the same projection,
+	// and the operator's digest resolver reads the same bundle.
+	CAConfigMapName = "orkano-registry-ca"
 	caMountPath     = "/orkano-registry-ca"
 
 	// configConfigMapName carries buildkitd.toml (config/buildkit/), which
@@ -57,7 +71,10 @@ const (
 
 	appArmorProfileName = "orkano-buildkit"
 
-	defaultTimeoutSeconds = 900
+	// DefaultTimeoutSeconds mirrors the CRD's timeoutSeconds default; the
+	// Build controller quotes it in timeout failure messages, so the two
+	// must not drift.
+	DefaultTimeoutSeconds = 900
 )
 
 // Options carries the per-build inputs the template does not derive itself.
@@ -81,8 +98,8 @@ type Options struct {
 // else compensates: no ServiceAccount token, hard resource and time limits,
 // backoffLimit 0, and the orkano-builds lockdown keyed on the pod label.
 func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
-	if build.Name == "" {
-		return nil, errors.New("rendering build Job: Build has no name")
+	if build.Name == "" || build.Namespace == "" {
+		return nil, errors.New("rendering build Job: Build has no name or namespace")
 	}
 	if opts.ContextURL == "" || opts.ImageRef == "" {
 		return nil, fmt.Errorf("rendering build Job for %q: ContextURL and ImageRef are required", build.Name)
@@ -96,14 +113,18 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 		// The CRD defaults timeoutSeconds server-side; this guard keeps a
 		// zero-value Build from rendering activeDeadlineSeconds: 0, which
 		// would deadline the Job instantly.
-		timeout = defaultTimeoutSeconds
+		timeout = DefaultTimeoutSeconds
 	}
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName(build.Name),
+			Name:      JobName(build.Name),
 			Namespace: Namespace,
 			Labels:    map[string]string{podLabelKey: podLabelValue},
+			Annotations: map[string]string{
+				AnnotationBuildName:      build.Name,
+				AnnotationBuildNamespace: build.Namespace,
+			},
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:          ptr.To(int32(0)),
@@ -114,6 +135,7 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           serviceAccountName,
 					AutomountServiceAccountToken: ptr.To(false),
 					Containers: []corev1.Container{{
 						Name:    "buildkit",
@@ -172,7 +194,7 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 						{Name: "buildkitd", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: "registry-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{Name: caConfigMapName},
+							LocalObjectReference: corev1.LocalObjectReference{Name: CAConfigMapName},
 						}}},
 						{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{Name: configConfigMapName},
@@ -184,11 +206,13 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 	}, nil
 }
 
-// jobName caps at 63 characters: the Job controller stamps the name onto
+// JobName caps at 63 characters: the Job controller stamps the name onto
 // pods as the batch.kubernetes.io/job-name label, and label values cannot
 // exceed that. Longer Build names keep a unique tail hashed from the full
-// name; the trim keeps the truncation point DNS-legal.
-func jobName(buildName string) string {
+// name; the trim keeps the truncation point DNS-legal. Exported because the
+// Build controller derives the same name when it has no Job in hand (the
+// finalizer's cancel/cleanup path).
+func JobName(buildName string) string {
 	if len(buildName) <= 63 {
 		return buildName
 	}
