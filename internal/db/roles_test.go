@@ -70,12 +70,17 @@ func TestQueueRolesBlastRadius(t *testing.T) {
 	t.Run("receiver can only INSERT", func(t *testing.T) {
 		recv := connectAs(t, dsn, "orkano_receiver", "recv-pw")
 
-		// The one thing the receiver may do (also proves the GENERATED ALWAYS
-		// identity column needs no sequence grant — INSERT is the only grant).
-		if _, err := recv.Exec(ctx,
-			"INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ($1, $2, $3)",
-			"recv-1", "orkanoio/orkano", "push"); err != nil {
-			t.Fatalf("receiver INSERT should succeed: %v", err)
+		// The one thing the receiver may do — exercised through the ACTUAL
+		// generated query, not a hand-written INSERT: the query's bare
+		// ON CONFLICT DO NOTHING must run under INSERT-only (a named-arbiter
+		// ON CONFLICT would infer the index and need SELECT on delivery_id,
+		// failing here — this is the regression guard for the receiver's
+		// enqueue path). Also proves the GENERATED ALWAYS identity column needs
+		// no sequence grant — INSERT is the only grant.
+		if _, err := db.New(recv).EnqueueDelivery(ctx, db.EnqueueDeliveryParams{
+			DeliveryID: "recv-1", Repo: "orkanoio/orkano", EventType: "push",
+		}); err != nil {
+			t.Fatalf("receiver EnqueueDelivery should succeed: %v", err)
 		}
 
 		// Everything that would let it read or drain the queue is denied.
