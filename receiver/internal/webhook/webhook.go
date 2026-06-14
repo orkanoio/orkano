@@ -36,13 +36,14 @@ const (
 )
 
 // Field length bounds mirror the CHECK constraints in internal/db migration
-// 00001_webhook_deliveries.sql. Validating here turns malformed input into a
-// clean 400 instead of a database error, and keeps the handler decoupled from
-// the DB driver. The migration's CHECKs remain the authoritative guard.
+// 00001_webhook_deliveries.sql for the two attacker-influenced fields the
+// handler forwards. Validating here turns malformed input into a clean 400
+// instead of a database error. event_type is not bounded here because routing
+// constrains it to the literal "push" before enqueue; the migration's CHECKs
+// remain the authoritative guard for every column.
 const (
 	maxDeliveryIDLen = 72
 	maxRepoLen       = 200
-	maxEventTypeLen  = 50
 )
 
 const signatureHeader = "X-Hub-Signature-256"
@@ -114,6 +115,8 @@ func (h *Handler) AllowlistSize() int { return len(h.allowlist) }
 // acted on (INV-04 — distrust until proven authentic).
 func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		// RFC 9110 §15.5.6: a 405 MUST advertise the supported methods.
+		w.Header().Set("Allow", http.MethodPost)
 		h.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -140,18 +143,22 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	case eventPing:
 		// GitHub's creation handshake. App-level pings carry no repository, so
 		// acknowledge without parsing or enqueueing.
-		h.ack(w, r, "pong", event)
+		h.ack(w, "pong", event)
 		return
 	case eventPush:
 		// fall through to enqueue
 	default:
-		h.ack(w, r, "ignored", event)
+		h.ack(w, "ignored", event)
 		return
 	}
 
 	delivery := r.Header.Get("X-GitHub-Delivery")
 	if delivery == "" {
 		h.reject(w, r, http.StatusBadRequest, "missing delivery id")
+		return
+	}
+	if len(delivery) > maxDeliveryIDLen {
+		h.reject(w, r, http.StatusBadRequest, "field too long")
 		return
 	}
 
@@ -171,15 +178,14 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, r, http.StatusBadRequest, "missing repository")
 		return
 	}
+	if len(repo) > maxRepoLen {
+		h.reject(w, r, http.StatusBadRequest, "field too long")
+		return
+	}
 
 	if !h.allowed(repo) {
 		// Drop pre-enqueue: the allowlist is the noise filter (threat model).
 		h.reject(w, r, http.StatusForbidden, "repository not allowed")
-		return
-	}
-
-	if len(delivery) > maxDeliveryIDLen || len(repo) > maxRepoLen || len(event) > maxEventTypeLen {
-		h.reject(w, r, http.StatusBadRequest, "field too long")
 		return
 	}
 
@@ -223,7 +229,7 @@ func (h *Handler) allowed(repo string) bool {
 	return ok
 }
 
-func (h *Handler) ack(w http.ResponseWriter, r *http.Request, msg, event string) {
+func (h *Handler) ack(w http.ResponseWriter, msg, event string) {
 	h.log.Info("delivery acknowledged", "event", event, "result", msg)
 	h.respond(w, http.StatusOK, msg)
 }

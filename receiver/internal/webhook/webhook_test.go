@@ -23,6 +23,9 @@ const (
 
 var testSecret = []byte("orkano-test-secret")
 
+// longRepo is 201 chars (100 + "/" + 100): one over maxRepoLen.
+var longRepo = strings.Repeat("a", 100) + "/" + strings.Repeat("a", 100)
+
 // sign returns the X-Hub-Signature-256 value GitHub would send for body under
 // key — the same construction the handler verifies against.
 func sign(key, body []byte) string {
@@ -60,6 +63,7 @@ func TestWebhook(t *testing.T) {
 		enqErr       error
 		wantStatus   int
 		wantEnqueued bool
+		wantAllow    string // expected Allow header, "" = don't check
 	}{
 		{
 			name:         "valid push enqueued",
@@ -169,6 +173,7 @@ func TestWebhook(t *testing.T) {
 			body:       validBody,
 			allowlist:  []string{validRepo},
 			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  http.MethodPost,
 		},
 		{
 			name:       "ping acknowledged not enqueued",
@@ -224,6 +229,26 @@ func TestWebhook(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name:     "oversize repo",
+			method:   http.MethodPost,
+			event:    "push",
+			delivery: "del-1",
+			body:     `{"repository":{"full_name":"` + longRepo + `"}}`,
+			// Allowlisted, so a 400 (not a 403) proves the length guard runs
+			// before the allowlist gate.
+			allowlist:  []string{longRepo},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "long unrelated event still ignored",
+			method:     http.MethodPost,
+			event:      strings.Repeat("x", 51),
+			delivery:   "del-1",
+			body:       validBody,
+			allowlist:  []string{validRepo},
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:         "enqueue error surfaces as 500",
 			method:       http.MethodPost,
 			event:        "push",
@@ -265,6 +290,9 @@ func TestWebhook(t *testing.T) {
 
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantAllow != "" && rec.Header().Get("Allow") != tc.wantAllow {
+				t.Errorf("Allow header = %q, want %q", rec.Header().Get("Allow"), tc.wantAllow)
 			}
 			if tc.wantEnqueued && len(fake.calls) != 1 {
 				t.Errorf("enqueue calls = %d, want 1", len(fake.calls))
