@@ -97,9 +97,11 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // cross-namespace ownerReferences are forbidden). A same-name Job that is
 // not ours is refused, never adopted, never deleted.
 func (r *BuildReconciler) ensureJob(ctx context.Context, build *orkanov1alpha1.Build) (*batchv1.Job, error) {
+	inv := buildjob.Compose(build)
 	desired, err := buildjob.Render(build, buildjob.Options{
-		ContextURL: contextURL(build),
-		ImageRef:   imageRef(build),
+		ContextURL:     inv.ContextURL,
+		DockerfilePath: inv.DockerfilePath,
+		ImageRef:       inv.ImageRef,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rendering Job: %w", err)
@@ -178,7 +180,7 @@ func (r *BuildReconciler) observeJob(ctx context.Context, build *orkanov1alpha1.
 		failBuild(build, reason, message)
 
 	case jobCondition(job, batchv1.JobComplete) != nil:
-		ref := imageRef(build)
+		ref := buildjob.Compose(build).ImageRef
 		pinned, err := r.ResolveDigest(ctx, ref)
 		if err != nil {
 			// The image is pushed but unpinned: stay Running, record why,
@@ -282,24 +284,6 @@ func (r *BuildReconciler) updateStatus(ctx context.Context, build *orkanov1alpha
 		return fmt.Errorf("updating Build status: %w", err)
 	}
 	return nil
-}
-
-// contextURL and imageRef are the minimal composition the controller needs
-// to hand Render; the invocation-composition task replaces them with the
-// pure, fully-tested function (dockerfile.path, unset-ref default-branch
-// resolution). The git fragment pins the snapshot commit, not the ref, so
-// the record stays honest; the tag is the commit too — two Builds of one
-// commit overwrite each other's tag, but each pins its own digest.
-func contextURL(build *orkanov1alpha1.Build) string {
-	url := "https://github.com/" + build.Spec.Source.GitHub.Repo + ".git#" + build.Spec.Commit
-	if sub := build.Spec.Source.SubPath; sub != "" {
-		url += ":" + sub
-	}
-	return url
-}
-
-func imageRef(build *orkanov1alpha1.Build) string {
-	return buildjob.RegistryHost + "/" + build.Spec.AppName + ":" + build.Spec.Commit
 }
 
 func ownsJob(build *orkanov1alpha1.Build, job *batchv1.Job) bool {

@@ -41,8 +41,9 @@ func goldenInputs() (*orkanov1alpha1.Build, Options) {
 		Spec: orkanov1alpha1.BuildSpec{TimeoutSeconds: 600},
 	}
 	return build, Options{
-		ContextURL: smokeFixtureGitURL,
-		ImageRef:   RegistryHost + "/smoke/template:fixture",
+		ContextURL:     smokeFixtureGitURL,
+		DockerfilePath: DefaultDockerfile,
+		ImageRef:       RegistryHost + "/smoke/template:fixture",
 	}
 }
 

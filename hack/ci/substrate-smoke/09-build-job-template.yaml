@@ -30,6 +30,7 @@ spec:
         - build
         - --frontend=dockerfile.v0
         - --opt=context=https://github.com/orkanoio/orkano.git#main:hack/ci/substrate-smoke/fixture
+        - --opt=filename=Dockerfile
         - --output=type=image,name=orkano-registry.orkano-system.svc.cluster.local/smoke/template:fixture,push=true
         command:
         - buildctl-daemonless.sh

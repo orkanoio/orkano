@@ -31,6 +31,12 @@ type GitHubSource struct {
 	Ref string `json:"ref,omitempty"`
 }
 
+// Build strategy values, kept in sync with the Strategy enum below.
+const (
+	StrategyDockerfile = "Dockerfile"
+	StrategyStatic     = "Static"
+)
+
 // +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? !has(self.static) : (has(self.static) && !has(self.dockerfile))",message="build members must match the chosen strategy"
 type BuildStrategy struct {
 	// +kubebuilder:validation:Enum=Dockerfile;Static
