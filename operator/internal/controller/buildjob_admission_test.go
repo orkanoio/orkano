@@ -80,7 +80,7 @@ func TestBuildJobAdmittedAtBaselineWithZeroWarnings(t *testing.T) {
 		t.Fatalf("building warning-capturing client: %v", err)
 	}
 
-	render := func(name string) *batchv1.Job {
+	render := func(name, generatedDockerfile string) *batchv1.Job {
 		t.Helper()
 		job, err := buildjob.Render(
 			&orkanov1alpha1.Build{
@@ -88,8 +88,9 @@ func TestBuildJobAdmittedAtBaselineWithZeroWarnings(t *testing.T) {
 				Spec:       orkanov1alpha1.BuildSpec{TimeoutSeconds: 600},
 			},
 			buildjob.Options{
-				ContextURL: "https://github.com/orkanoio/orkano.git#main",
-				ImageRef:   buildjob.RegistryHost + "/psa/probe:v1",
+				ContextURL:          "https://github.com/orkanoio/orkano.git#main",
+				GeneratedDockerfile: generatedDockerfile,
+				ImageRef:            buildjob.RegistryHost + "/psa/probe:v1",
 			},
 		)
 		if err != nil {
@@ -104,7 +105,7 @@ func TestBuildJobAdmittedAtBaselineWithZeroWarnings(t *testing.T) {
 	// Enforce leg. PSA enforcement gates Pods, not workload resources, and
 	// envtest runs no Job controller — so admit the pod spec directly, the
 	// same object the Job controller would submit.
-	job := render("psa-probe")
+	job := render("psa-probe", "")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "buildjob-psa-pod", Namespace: baseline, Labels: job.Spec.Template.Labels},
 		Spec:       *job.Spec.Template.Spec.DeepCopy(),
@@ -115,6 +116,31 @@ func TestBuildJobAdmittedAtBaselineWithZeroWarnings(t *testing.T) {
 	}
 	if w := rec.take(); len(w) > 0 {
 		t.Errorf("build pod admitted at baseline but with warnings: %q", w)
+	}
+
+	// Static builds add a render-dockerfile init container; it carries its own
+	// securityContext, so it must clear baseline PSA too (the main container's
+	// rootless deviations are baseline-only; a restricted-grade init container
+	// must not regress that).
+	staticJob := render("psa-probe-static", "FROM x\nCOPY public/ /usr/share/nginx/html/\n")
+	staticPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "buildjob-psa-static-pod", Namespace: baseline, Labels: staticJob.Spec.Template.Labels},
+		Spec:       *staticJob.Spec.Template.Spec.DeepCopy(),
+	}
+	rec.take()
+	if err := c.Create(ctx, staticPod); err != nil {
+		t.Fatalf("static build pod (with init container) rejected at PSA baseline: %v", err)
+	}
+	if w := rec.take(); len(w) > 0 {
+		t.Errorf("static build pod admitted at baseline but with warnings: %q", w)
+	}
+	// Warn mode evaluates the Job's pod template, init containers included.
+	staticJob.Namespace = baseline
+	if err := c.Create(ctx, staticJob); err != nil {
+		t.Fatalf("static build Job rejected in the baseline namespace: %v", err)
+	}
+	if w := rec.take(); len(w) > 0 {
+		t.Errorf("static build Job admitted at baseline but with warnings: %q", w)
 	}
 
 	// Warn leg: PSA warn mode evaluates the Job's pod template.
@@ -130,14 +156,14 @@ func TestBuildJobAdmittedAtBaselineWithZeroWarnings(t *testing.T) {
 	// warn mode must flag the Job, or the asserts above proved nothing.
 	pod2 := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "buildjob-psa-pod", Namespace: restricted},
-		Spec:       *render("psa-probe").Spec.Template.Spec.DeepCopy(),
+		Spec:       *render("psa-probe", "").Spec.Template.Spec.DeepCopy(),
 	}
 	err = c.Create(ctx, pod2)
 	if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "PodSecurity") {
 		t.Fatalf("PodSecurity enforcement is not active in this apiserver (pod create at restricted: %v) — the baseline admission assert is vacuous", err)
 	}
 	rec.take()
-	job2 := render("psa-probe-restricted")
+	job2 := render("psa-probe-restricted", "")
 	job2.Namespace = restricted
 	if err := c.Create(ctx, job2); err != nil {
 		t.Fatalf("creating detector Job at restricted: %v", err)

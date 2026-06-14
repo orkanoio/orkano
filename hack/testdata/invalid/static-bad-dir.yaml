@@ -1,0 +1,16 @@
+# Violates: build.static.dir CEL rule — no ".." (the pattern also forbids
+# newlines and spaces): dir is COPYed into a generated Dockerfile, where ".."
+# would escape the build context and a newline would inject an instruction.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-static-dir
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/blog
+  build:
+    strategy: Static
+    static:
+      dir: ../../etc

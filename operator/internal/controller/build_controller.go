@@ -99,9 +99,10 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 func (r *BuildReconciler) ensureJob(ctx context.Context, build *orkanov1alpha1.Build) (*batchv1.Job, error) {
 	inv := buildjob.Compose(build)
 	desired, err := buildjob.Render(build, buildjob.Options{
-		ContextURL:     inv.ContextURL,
-		DockerfilePath: inv.DockerfilePath,
-		ImageRef:       inv.ImageRef,
+		ContextURL:          inv.ContextURL,
+		DockerfilePath:      inv.DockerfilePath,
+		GeneratedDockerfile: inv.GeneratedDockerfile,
+		ImageRef:            inv.ImageRef,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rendering Job: %w", err)
@@ -224,19 +225,25 @@ func (r *BuildReconciler) failureReason(ctx context.Context, build *orkanov1alph
 		return "", "", fmt.Errorf("listing pods of failed Job %s: %w", job.Name, err)
 	}
 	for i := range pods.Items {
-		for _, cs := range pods.Items[i].Status.ContainerStatuses {
-			term := cs.State.Terminated
-			if term == nil {
-				term = cs.LastTerminationState.Terminated
-			}
-			if term == nil {
-				continue
-			}
-			if term.Reason == "OOMKilled" {
-				return reasonOOMKilled, "build was OOM-killed; it needs more than the 4Gi memory limit or a smaller build", nil
-			}
-			if term.ExitCode != 0 {
-				return reasonBuildFailed, fmt.Sprintf("build exited with code %d; see the Job pod logs (%s/%s)", term.ExitCode, job.Namespace, job.Name), nil
+		pod := &pods.Items[i]
+		// Init container failures (e.g. the static render-dockerfile step)
+		// stop the build before the buildkit container runs, so they surface
+		// only in InitContainerStatuses — scan both lists.
+		for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+			for _, cs := range statuses {
+				term := cs.State.Terminated
+				if term == nil {
+					term = cs.LastTerminationState.Terminated
+				}
+				if term == nil {
+					continue
+				}
+				if term.Reason == "OOMKilled" {
+					return reasonOOMKilled, "build was OOM-killed; it needs more than the 4Gi memory limit or a smaller build", nil
+				}
+				if term.ExitCode != 0 {
+					return reasonBuildFailed, fmt.Sprintf("build exited with code %d; see the Job pod logs (%s/%s)", term.ExitCode, job.Namespace, job.Name), nil
+				}
 			}
 		}
 	}

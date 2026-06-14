@@ -61,8 +61,13 @@ type DockerfileBuild struct {
 
 type StaticBuild struct {
 	// Dir is the directory of build output to serve, relative to the
-	// source root.
+	// source root. It is COPYed into a generated Dockerfile, so it carries
+	// source.subPath's pattern + no-".." rule: a newline would inject a
+	// Dockerfile instruction, and ".." would escape the build context.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="dir must not contain '..'"
 	Dir string `json:"dir"`
 }
 

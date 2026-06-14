@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
@@ -25,17 +27,19 @@ const composeCommit = "0123456789abcdef0123456789abcdef01234567"
 // or strategy shape changes, this test moves with it.
 func TestComposeOverExamplePermutations(t *testing.T) {
 	cases := []struct {
-		file               string
-		wantContextURL     string
-		wantDockerfilePath string
-		wantImageRef       string
+		file                    string
+		wantContextURL          string
+		wantDockerfilePath      string
+		wantGeneratedDockerfile string
+		wantImageRef            string
 	}{
 		{
-			// Static strategy, default branch, no subPath: no Dockerfile is
-			// composed — the static-strategy task generates one.
-			file:           "01-static-site.yaml",
-			wantContextURL: "https://github.com/alice/blog.git#" + composeCommit,
-			wantImageRef:   RegistryHost + "/blog:" + composeCommit,
+			// Static strategy (static.dir: public): no DockerfilePath, but a
+			// COPY-only Dockerfile is generated onto the static server image.
+			file:                    "01-static-site.yaml",
+			wantContextURL:          "https://github.com/alice/blog.git#" + composeCommit,
+			wantGeneratedDockerfile: "FROM " + StaticServerImage + "\nCOPY public/ " + staticServeRoot + "\n",
+			wantImageRef:            RegistryHost + "/blog:" + composeCommit,
 		},
 		{
 			// Dockerfile strategy with no dockerfile block (the valid CEL
@@ -79,6 +83,9 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			}
 			if inv.DockerfilePath != tc.wantDockerfilePath {
 				t.Errorf("DockerfilePath = %q, want %q", inv.DockerfilePath, tc.wantDockerfilePath)
+			}
+			if inv.GeneratedDockerfile != tc.wantGeneratedDockerfile {
+				t.Errorf("GeneratedDockerfile = %q, want %q", inv.GeneratedDockerfile, tc.wantGeneratedDockerfile)
 			}
 			if inv.ImageRef != tc.wantImageRef {
 				t.Errorf("ImageRef = %q, want %q", inv.ImageRef, tc.wantImageRef)
@@ -223,8 +230,139 @@ func TestRenderEmitsDockerfileFilename(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, a := range job.Spec.Template.Spec.Containers[0].Args {
-		if len(a) >= len("--opt=filename=") && a[:len("--opt=filename=")] == "--opt=filename=" {
+		if strings.HasPrefix(a, "--opt=filename=") {
 			t.Errorf("empty DockerfilePath still emitted a filename opt: %q", a)
 		}
 	}
+}
+
+// TestRenderStaticMode pins the Static branch of Render: the dockerfilekey
+// injection flags, the init container that writes the generated Dockerfile from
+// an env var (data, never shell), and the read-only dockerfile mount — none of
+// which a Dockerfile build renders.
+func TestRenderStaticMode(t *testing.T) {
+	build, opts := goldenInputs()
+	opts.DockerfilePath = ""
+	opts.GeneratedDockerfile = "FROM " + StaticServerImage + "\nCOPY public/ " + staticServeRoot + "\n"
+	job, err := Render(build, opts)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+
+	args := pod.Containers[0].Args
+	out := slices.Index(args, "--output=type=image,name="+opts.ImageRef+",push=true")
+	for _, want := range []string{
+		"--local=dockerfile=" + dockerfileMountPath,
+		"--opt=dockerfilekey=" + dockerfileLocalName,
+		"--opt=filename=Dockerfile",
+	} {
+		i := slices.Index(args, want)
+		if i < 0 {
+			t.Errorf("static args %v missing %q", args, want)
+		} else if out >= 0 && i >= out {
+			t.Errorf("%q must precede --output in %v", want, args)
+		}
+	}
+
+	if len(pod.InitContainers) != 1 {
+		t.Fatalf("static build rendered %d init containers, want 1", len(pod.InitContainers))
+	}
+	ini := pod.InitContainers[0]
+	wantCmd := []string{"sh", "-c", `printf '%s' "$ORKANO_DOCKERFILE" > ` + dockerfileMountPath + "/" + DefaultDockerfile}
+	if !slices.Equal(ini.Command, wantCmd) {
+		t.Errorf("init Command = %v, want %v", ini.Command, wantCmd)
+	}
+	if len(ini.Args) != 0 {
+		t.Errorf("init Args = %v, want none (everything is in Command)", ini.Args)
+	}
+	if got := envValue(ini, "ORKANO_DOCKERFILE"); got != opts.GeneratedDockerfile {
+		t.Errorf("init ORKANO_DOCKERFILE = %q, want the generated Dockerfile %q", got, opts.GeneratedDockerfile)
+	}
+	if ini.Image != pod.Containers[0].Image {
+		t.Errorf("init image %q should reuse the build image %q", ini.Image, pod.Containers[0].Image)
+	}
+	// The init container must mount the dockerfile volume writable; a read-only
+	// mount would make the printf write fail at runtime (the build container
+	// mounts the same volume read-only).
+	writable := false
+	for _, m := range ini.VolumeMounts {
+		if m.Name == dockerfileLocalName && m.MountPath == dockerfileMountPath {
+			writable = !m.ReadOnly
+		}
+	}
+	if !writable {
+		t.Error("init container must mount the dockerfile volume writable")
+	}
+	if sc := ini.SecurityContext; sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation ||
+		sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot ||
+		sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault ||
+		sc.Capabilities == nil || !slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) {
+		t.Errorf("init securityContext is not restricted-grade: %+v", ini.SecurityContext)
+	}
+
+	if !hasEmptyDirVolume(pod.Volumes, dockerfileLocalName) {
+		t.Errorf("static build missing the %q emptyDir volume: %+v", dockerfileLocalName, pod.Volumes)
+	}
+	if !hasReadOnlyMount(pod.Containers[0].VolumeMounts, dockerfileLocalName, dockerfileMountPath) {
+		t.Errorf("build container does not read-only-mount the dockerfile volume: %+v", pod.Containers[0].VolumeMounts)
+	}
+
+	// A Dockerfile build renders none of the static machinery.
+	df, dopts := goldenInputs()
+	djob, err := Render(df, dopts)
+	if err != nil {
+		t.Fatalf("Render dockerfile: %v", err)
+	}
+	dpod := djob.Spec.Template.Spec
+	if len(dpod.InitContainers) != 0 {
+		t.Errorf("Dockerfile build rendered %d init containers, want 0", len(dpod.InitContainers))
+	}
+	if hasEmptyDirVolume(dpod.Volumes, dockerfileLocalName) {
+		t.Error("Dockerfile build rendered a dockerfile volume it should not")
+	}
+	for _, a := range dpod.Containers[0].Args {
+		if strings.HasPrefix(a, "--local=") || strings.HasPrefix(a, "--opt=dockerfilekey=") {
+			t.Errorf("Dockerfile build emitted a static-only flag: %q", a)
+		}
+	}
+}
+
+// TestStaticDockerfileNormalizesDir pins that a trailing slash on static.dir
+// (the CRD pattern admits it) yields one canonical COPY, matching the no-slash
+// form — the static analogue of TestComposeNormalizesSubPath.
+func TestStaticDockerfileNormalizesDir(t *testing.T) {
+	want := "FROM " + StaticServerImage + "\nCOPY public/ " + staticServeRoot + "\n"
+	for _, dir := range []string{"public", "public/"} {
+		if got := staticDockerfile(dir); got != want {
+			t.Errorf("staticDockerfile(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}
+
+func envValue(c corev1.Container, name string) string {
+	for _, e := range c.Env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+func hasEmptyDirVolume(vols []corev1.Volume, name string) bool {
+	for _, v := range vols {
+		if v.Name == name && v.EmptyDir != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReadOnlyMount(mounts []corev1.VolumeMount, name, path string) bool {
+	for _, m := range mounts {
+		if m.Name == name && m.MountPath == path && m.ReadOnly {
+			return true
+		}
+	}
+	return false
 }

@@ -127,9 +127,16 @@ spec:
                       dir:
                         description: |-
                           Dir is the directory of build output to serve, relative to the
-                          source root.
+                          source root. It is COPYed into a generated Dockerfile, so it carries
+                          source.subPath's pattern + no-".." rule: a newline would inject a
+                          Dockerfile instruction, and ".." would escape the build context.
                         maxLength: 512
+                        minLength: 1
+                        pattern: ^[A-Za-z0-9_./-]+$
                         type: string
+                        x-kubernetes-validations:
+                        - message: dir must not contain '..'
+                          rule: '!self.contains(''..'')'
                     required:
                     - dir
                     type: object
