@@ -6,9 +6,10 @@
 # proves the SUBSTRATE and the cluster-level manifests, not the Go code, so
 # PRs only trigger it when its own inputs change; every push to main
 # re-proves it unconditionally.
-# Known flake source: seven anonymous Docker Hub pulls per run (kindest/node,
-# registry ×2 tags, busybox ×2 nodes, buildkit, alpine) against shared GHA
-# egress IPs (cert-manager pulls from quay.io, crane from gcr.io). If
+# Known flake source: eight anonymous Docker Hub pulls per run (kindest/node,
+# registry ×2 tags, busybox ×2 nodes, buildkit, alpine, nginx-unprivileged for
+# the static build) against shared GHA egress IPs (cert-manager pulls from
+# quay.io, crane from gcr.io). If
 # toomanyrequests shows up in the dump output, the fix is a docker-login step
 # backed by DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets — not added until
 # the flake is real.

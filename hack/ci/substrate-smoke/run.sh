@@ -26,7 +26,12 @@
 #      copy 09-build-job-template.yaml pinned by unit test) admits at PSA
 #      baseline and builds + TLS-pushes a public repo under the full
 #      lockdown — the M1.2 Job-template acceptance's end-to-end half (the
-#      zero-warnings half lives in envtest).
+#      zero-warnings half lives in envtest),
+#   7. the Static build strategy (golden 11-static-build-job-template.yaml):
+#      an init container injects a generated COPY-only Dockerfile, which
+#      buildkit reads via the dockerfilekey + --local opt while the git URL
+#      stays the COPY context — the in-cluster confirmation of that
+#      undocumented opt on the pinned rootless image, under the full lockdown.
 # Probe numbering: probe 1 is the prerequisite control (baseline connectivity
 # before any policy — guards probe 2 against a broken cluster passing as
 # "enforced"); probe 3 proves claims 1+2; probes 2+4 prove claim 3; probe 5
@@ -36,7 +41,8 @@
 # CNI-propagation barrier so probe 8 cannot false-pass before the rules hit
 # the kernel — probe 8 its allow legs (probe 5 re-run under the policies,
 # then the operator-labeled canary with its unlabeled negative control),
-# probe 9 its node-originated leg; probe 10 proves claim 6.
+# probe 9 its node-originated leg; probe 10 proves claim 6; probe 11 proves
+# claim 7.
 # Runs in CI (Linux, sudo) and locally (macOS + colima: the profile loads inside
 # the colima VM, whose kernel the kind node containers share).
 # Local teardown: kind delete cluster --name orkano-substrate-smoke
@@ -78,9 +84,11 @@ dump_state() {
     echo "--- $j:"
     kubectl logs "job/$j" -n "$BUILD_NS" --tail=40 2>/dev/null
   done
-  echo '--- dump: product template job (orkano-builds)'
-  kubectl describe job template-smoke -n orkano-builds 2>/dev/null
-  kubectl logs job/template-smoke -n orkano-builds --tail=40 2>/dev/null
+  echo '--- dump: product template jobs (orkano-builds)'
+  for j in template-smoke static-template-smoke; do
+    kubectl describe job "$j" -n orkano-builds 2>/dev/null
+    kubectl logs "job/$j" -n orkano-builds --tail=40 --all-containers 2>/dev/null
+  done
   echo '--- dump: product registry (orkano-system)'
   kubectl get pods,certificate -n orkano-system -o wide
   kubectl get events -n orkano-system --sort-by=.lastTimestamp | tail -20
@@ -229,7 +237,7 @@ kubectl delete networkpolicy orkano-registry-ingress-nodes -n orkano-system --ig
 kubectl delete pod probe-server probe-client -n "$BUILD_NS" --ignore-not-found --grace-period=1
 kubectl delete pod operator-canary system-canary -n orkano-system --ignore-not-found --grace-period=1
 kubectl delete job buildkit-smoke buildkit-smoke-denied -n "$BUILD_NS" --ignore-not-found
-kubectl delete job template-smoke -n orkano-builds --ignore-not-found
+kubectl delete job template-smoke static-template-smoke -n orkano-builds --ignore-not-found
 kubectl apply -f "$DIR/01-registry.yaml" -f "$DIR/02-netpol-probe.yaml"
 kubectl wait --for=condition=Ready pod/probe-server pod/probe-client -n "$BUILD_NS" --timeout=300s
 kubectl wait --for=condition=Available deploy/registry -n "$INFRA_NS" --timeout=300s
@@ -476,6 +484,23 @@ outcome="$(job_outcome template-smoke 600 orkano-builds)"
   || fatal "template build $outcome (expected complete) — the rendered product Job cannot build+push under the lockdown"
 kubectl logs job/template-smoke -n orkano-builds --tail=5
 echo "OK: the rendered product build Job builds a public repo and TLS-pushes to the registry"
+
+log "probe 11: static build Job — generated Dockerfile injected (dockerfilekey), COPY from git context, TLS push"
+# The static golden is Render's exact output for a Static build: an init
+# container writes the COPY-only Dockerfile and buildkit reads it via
+# dockerfilekey + --local while the git URL stays the COPY context (the repo
+# has no Dockerfile). This is the static-strategy acceptance and the in-cluster
+# confirmation of the undocumented dockerfilekey opt on the pinned rootless
+# v0.30.0 image. Plain kubectl apply, NOT apply_job: a single shared
+# SMOKE_GIT_CONTEXT can't serve both probe 10 (needs a Dockerfile in the
+# context) and probe 11 (needs a public/ dir), and here the git URL is the COPY
+# source itself — so the static-fixture context is deliberately pinned.
+kubectl apply -f "$DIR/11-static-build-job-template.yaml"
+outcome="$(job_outcome static-template-smoke 600 orkano-builds)"
+[ "$outcome" = "complete" ] \
+  || fatal "static build $outcome (expected complete) — the generated-Dockerfile injection (dockerfilekey) failed under the lockdown"
+kubectl logs job/static-template-smoke -n orkano-builds --tail=5
+echo "OK: the static build Job injects a generated Dockerfile and TLS-pushes the static image"
 
 log "PASS — substrate facts"
 echo "cluster: $CLUSTER ($(kind version))"
