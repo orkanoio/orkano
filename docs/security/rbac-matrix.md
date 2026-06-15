@@ -26,6 +26,7 @@ The dashboard holds no impersonation grant in Phase 1 (ADR-0013): an unrestricte
 | pods, pods/log (core) | get, list, watch | `orkano-apps`, `orkano-builds` |
 | configmaps[orkano-registry-ca] (core) | get | `orkano-builds` — the internal CA bundle published for build pods; the Build controller verifies its registry manifest HEAD (digest resolution, INV-06) against the same trust root, read uncached so no list/watch grant exists |
 | secrets (core) | get, create, update | `orkano-apps` — catalog connection secrets, registry pull secrets |
+| secrets[orkano-github-app] (core) | get | `orkano-system` — the GitHub App private key, read to mint ≤1 h installation tokens (INV-07); resourceNames-pinned so the operator can read no other Secret in its own namespace |
 | certificates (cert-manager.io) | get, list, watch | `orkano-apps`, `orkano-system` — mirrors readiness into Domain status; tracks the registry cert's issuance revision |
 | deployments (apps) | list, watch | `orkano-system` — informer feed for the registry rotation controller; collection requests carry no object name, so resourceNames cannot constrain them |
 | deployments[orkano-registry] (apps) | get, update | `orkano-system` — rolls the registry pod when its TLS cert renews (distribution loads the keypair only at startup); mutation pinned by resourceNames to the one Deployment the controller owns, and deliberately no secrets read |

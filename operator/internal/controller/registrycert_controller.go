@@ -34,8 +34,9 @@ const (
 // exactly once at startup (tls.LoadX509KeyPair, no hot reload), so a renewed
 // Secret never reaches a running pod. The signal is the Certificate's
 // status.revision, which cert-manager bumps on every issuance — deliberately
-// not the Secret itself, so the operator needs no secrets read in
-// orkano-system (that grant is reserved for M1.3's GitHub App key, INV-07).
+// not the Secret itself, so this rotation path reads no Secret. The operator's
+// only Secret read in orkano-system is the GitHub App key (githubapp, INV-07),
+// unrelated to cert rotation.
 type RegistryCertReconciler struct {
 	client.Client
 }
