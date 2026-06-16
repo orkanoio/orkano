@@ -125,11 +125,7 @@ func (s *TokenSource) InstallationToken(ctx context.Context, installationID int6
 		return tok.token, nil
 	}
 
-	creds, err := s.loadCredentials(ctx)
-	if err != nil {
-		return "", err
-	}
-	jwt, err := buildAppJWT(creds.appID, creds.key, s.now())
+	jwt, err := s.mintAppJWT(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -192,6 +188,18 @@ func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("private key is %T, want an RSA key", keyAny)
 	}
 	return key, nil
+}
+
+// mintAppJWT loads the App credentials and signs a short-lived App-level JWT —
+// the auth for App-level endpoints (minting installation tokens, and resolving
+// which installation covers a repo). Each call re-reads the Secret, so key
+// rotation just works.
+func (s *TokenSource) mintAppJWT(ctx context.Context) (string, error) {
+	creds, err := s.loadCredentials(ctx)
+	if err != nil {
+		return "", err
+	}
+	return buildAppJWT(creds.appID, creds.key, s.now())
 }
 
 type jwtClaims struct {
