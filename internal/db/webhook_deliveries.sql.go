@@ -9,6 +9,51 @@ import (
 	"context"
 )
 
+const claimDelivery = `-- name: ClaimDelivery :one
+SELECT id, delivery_id, repo, event_type
+FROM webhook_deliveries
+ORDER BY id
+FOR UPDATE SKIP LOCKED
+LIMIT 1
+`
+
+type ClaimDeliveryRow struct {
+	ID         int64
+	DeliveryID string
+	Repo       string
+	EventType  string
+}
+
+// The dispatcher's consume half: claim the oldest doorbell, skipping any row a
+// concurrent claim already holds. FOR UPDATE locks the row until the surrounding
+// transaction ends, so the dispatcher can act on the delivery (re-fetch the
+// commit, create the Build) and only then DELETE + COMMIT — at-least-once
+// delivery, made exactly-once by the Build's deterministic name. SKIP LOCKED
+// keeps a single stuck delivery from blocking the rest (and is correct if a
+// second consumer ever appears). No rows -> pgx.ErrNoRows = queue drained.
+func (q *Queries) ClaimDelivery(ctx context.Context) (ClaimDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, claimDelivery)
+	var i ClaimDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.DeliveryID,
+		&i.Repo,
+		&i.EventType,
+	)
+	return i, err
+}
+
+const deleteDelivery = `-- name: DeleteDelivery :exec
+DELETE FROM webhook_deliveries WHERE id = $1
+`
+
+// Remove a processed doorbell. Run inside the same transaction as ClaimDelivery
+// so the lock is released by the COMMIT that also deletes the row.
+func (q *Queries) DeleteDelivery(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteDelivery, id)
+	return err
+}
+
 const enqueueDelivery = `-- name: EnqueueDelivery :execrows
 INSERT INTO webhook_deliveries (delivery_id, repo, event_type)
 VALUES ($1, $2, $3)

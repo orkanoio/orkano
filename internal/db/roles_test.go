@@ -104,19 +104,34 @@ func TestQueueRolesBlastRadius(t *testing.T) {
 			t.Fatalf("seed row: %v", err)
 		}
 
-		// The consume path: read + lock, then remove.
-		if _, err := disp.Exec(ctx, "SELECT delivery_id FROM webhook_deliveries FOR UPDATE SKIP LOCKED"); err != nil {
-			t.Fatalf("dispatcher SELECT FOR UPDATE should succeed: %v", err)
+		// The consume path, through the ACTUAL generated queries (not hand-written
+		// SQL): ClaimDelivery's FOR UPDATE needs the role's UPDATE grant and
+		// DeleteDelivery its DELETE grant, run in one transaction exactly as the
+		// dispatcher consumes. This is the generated-code regression guard, the
+		// mirror of the receiver branch exercising EnqueueDelivery above.
+		tx, err := disp.Begin(ctx)
+		if err != nil {
+			t.Fatalf("dispatcher begin: %v", err)
 		}
-		if _, err := disp.Exec(ctx, "DELETE FROM webhook_deliveries WHERE delivery_id = $1", "disp-1"); err != nil {
-			t.Fatalf("dispatcher DELETE should succeed: %v", err)
+		row, err := db.New(tx).ClaimDelivery(ctx)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("dispatcher ClaimDelivery should succeed: %v", err)
+		}
+		if err := db.New(tx).DeleteDelivery(ctx, row.ID); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("dispatcher DeleteDelivery should succeed: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("dispatcher commit should succeed: %v", err)
 		}
 
-		// The dispatcher is a consumer, never a producer.
-		_, err := disp.Exec(ctx,
-			"INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ($1, $2, $3)",
-			"disp-2", "orkanoio/orkano", "push")
-		assertDenied(t, "dispatcher INSERT", err)
+		// The dispatcher is a consumer, never a producer — even through the
+		// generated enqueue path.
+		_, err = db.New(disp).EnqueueDelivery(ctx, db.EnqueueDeliveryParams{
+			DeliveryID: "disp-2", Repo: "orkanoio/orkano", EventType: "push",
+		})
+		assertDenied(t, "dispatcher EnqueueDelivery", err)
 
 		// …and it consumes row-at-a-time: no TRUNCATE means it can never drain
 		// the whole queue in one statement (guards against a future stray grant).
