@@ -1,0 +1,17 @@
+# The App the local loop deploys: a Web/Dockerfile app whose repo is the one
+# run.sh allowlists in the receiver and points the stub GitHub API at. The
+# signed push event resolves to the stub's canned commit, and the dispatcher
+# snapshots this spec into a Build named "<app>-<sha[:12]>". The repo is a
+# placeholder — the loop stops at "Build CR appears" and never fetches it (the
+# real build + rollout is M1.6's E2E).
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: localloop-demo
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: orkanoio/orkano-localloop
+  build:
+    strategy: Dockerfile

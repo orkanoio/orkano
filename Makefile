@@ -56,3 +56,11 @@ manifests:
 
 validate-examples: manifests
 	hack/validate-examples.sh
+
+.PHONY: local-loop
+
+# Event-path inner loop: kind + Postgres + receiver + operator (stubbed GitHub);
+# one signed push must produce a Build CR (hack/local-loop/run.sh). KEEP=1 leaves
+# it up to fire more events; CLEAN=1 also deletes the kind cluster on exit.
+local-loop:
+	hack/local-loop/run.sh
