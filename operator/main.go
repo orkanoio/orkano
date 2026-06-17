@@ -64,6 +64,9 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		// Scope informers to Orkano's namespaces, per type, matching the
+		// operator's namespaced RBAC — a cluster-wide cache would Forbid.
+		Cache: controller.CacheOptions(),
 		// No metrics endpoint until a task wires SecureServing + authn/authz
 		// filters; a bind flag here would only ever enable plaintext HTTP.
 		Metrics:                 metricsserver.Options{BindAddress: "0"},

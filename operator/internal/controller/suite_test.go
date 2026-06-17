@@ -29,16 +29,19 @@ import (
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 )
 
-const (
-	leaderElectionID = "orkano-operator.orkano.io"
-	systemNamespace  = "orkano-system"
-	appsNamespace    = "orkano-apps"
-	buildNamespace   = "orkano-builds"
-)
+const leaderElectionID = "orkano-operator.orkano.io"
+
+// systemNamespace/appsNamespace/buildNamespace are defined in cache.go (the
+// non-test file that owns CacheOptions), so the production scoping and the
+// tests reference one set of namespace names.
 
 var (
-	k8sClient  client.Client
-	restConfig *rest.Config
+	k8sClient client.Client
+	// cachedClient is the manager's cache-backed client — the one whose reads
+	// are subject to CacheOptions scoping (k8sClient talks to the API server
+	// directly and is unscoped).
+	cachedClient client.Client
+	restConfig   *rest.Config
 )
 
 func TestMain(m *testing.M) {
@@ -89,6 +92,7 @@ func run(m *testing.M) (code int) {
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                        scheme,
+		Cache:                         CacheOptions(),
 		Metrics:                       metricsserver.Options{BindAddress: "0"},
 		LeaderElection:                true,
 		LeaderElectionID:              leaderElectionID,
@@ -99,6 +103,7 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to create manager: %v\n", err)
 		return 1
 	}
+	cachedClient = mgr.GetClient()
 
 	if err := (&AppReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to set up App controller: %v\n", err)

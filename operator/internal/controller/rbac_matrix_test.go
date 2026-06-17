@@ -42,8 +42,7 @@ import (
 )
 
 const (
-	buildsNamespace = "orkano-builds"
-
+	// systemNamespace/appsNamespace/buildNamespace are owned by cache.go.
 	dashboardIdentity = "system:serviceaccount:orkano-system:orkano-dashboard"
 	operatorIdentity  = "system:serviceaccount:orkano-system:orkano-operator"
 	receiverIdentity  = "system:serviceaccount:orkano-system:orkano-receiver"
@@ -94,7 +93,7 @@ var rbacKnownVerbs = map[string]bool{
 var rbacCollectionVerbs = map[string]bool{"list": true, "watch": true, "create": true}
 
 var orkanoNamespaces = map[string]bool{
-	systemNamespace: true, appsNamespace: true, buildsNamespace: true,
+	systemNamespace: true, appsNamespace: true, buildNamespace: true,
 }
 
 // --- rbac-matrix.md parsing ---
@@ -543,7 +542,7 @@ func TestNamespacePSALabels(t *testing.T) {
 	expected := map[string]map[string]string{
 		systemNamespace: {"enforce": "restricted", "warn": "restricted", "audit": "restricted"},
 		appsNamespace:   {"enforce": "baseline", "warn": "restricted", "audit": "restricted"},
-		buildsNamespace: {"enforce": "baseline", "warn": "baseline", "audit": "baseline"},
+		buildNamespace:  {"enforce": "baseline", "warn": "baseline", "audit": "baseline"},
 	}
 	manifests := loadRBACManifests(t)
 	if len(manifests.namespaces) != len(expected) {
@@ -687,7 +686,7 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{identity: dashboardIdentity, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"},
 		{identity: dashboardIdentity, namespace: appsNamespace, resource: "secrets", verb: "create"},
 		{identity: operatorIdentity, namespace: appsNamespace, group: "apps", resource: "deployments", verb: "get"},
-		{identity: operatorIdentity, namespace: buildsNamespace, group: "batch", resource: "jobs", verb: "get"},
+		{identity: operatorIdentity, namespace: buildNamespace, group: "batch", resource: "jobs", verb: "get"},
 		{identity: operatorIdentity, namespace: systemNamespace, group: "coordination.k8s.io", resource: "leases", verb: "get"},
 	}
 	for name := range humanRoles {
@@ -756,7 +755,7 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	for v := range rbacKnownVerbs {
 		verbs = append(verbs, v)
 	}
-	scopes := []string{appsNamespace, buildsNamespace, systemNamespace, ""}
+	scopes := []string{appsNamespace, buildNamespace, systemNamespace, ""}
 	denied, walked := 0, 0
 	for _, identity := range identities {
 		for gr := range universe {

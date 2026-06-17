@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	registryNamespace       = "orkano-system"
+	registryNamespace       = systemNamespace // canonical const lives in cache.go
 	registryCertificateName = "orkano-registry-tls"
 	registryDeploymentName  = "orkano-registry"
 
