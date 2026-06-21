@@ -2,10 +2,11 @@
 // reconcile to its complete object graph — the objects, their shapes, their
 // ownership, and the status a user would read from kubectl get. Images arrive
 // the way M1.2 will deliver them, through a succeeded Build, never by poking
-// status directly. The sixth file (06, the Postgres catalog kind) has no
-// reconciler yet, so its test is schema-level only until the M1.4 reconciler
-// lands. envtest runs no GC, so each example is applied exactly once per suite
-// run: these tests are the only consumers of the example files.
+// status directly. The sixth file (06, the Postgres catalog kind) is exercised
+// by TestExample06PostgresCatalogObjectGraph, which reconciles it to the full
+// StatefulSet + headless Service + connection Secret graph now that the M1.4
+// reconciler has landed. envtest runs no GC, so each example is applied exactly
+// once per suite run: these tests are the only consumers of the example files.
 package controller
 
 import (
@@ -15,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -397,11 +399,12 @@ func TestExample04MonorepoSubpathObjectGraph(t *testing.T) {
 	}
 }
 
-// TestExample06PostgresCatalogContract proves the sixth contract file is
-// accepted and defaults as ADR-0014 froze it. No object graph yet: the catalog
-// reconciler (StatefulSet + Service + connection Secret) is the next M1.4 task,
-// so status stays empty until something provisions it.
-func TestExample06PostgresCatalogContract(t *testing.T) {
+// TestExample06PostgresCatalogObjectGraph is the M1.4 milestone gate for the
+// catalog kind: the sixth contract file reconciles to the StatefulSet + headless
+// Service + connection Secret named exactly metadata.name that examples 02/03
+// already reference, and reports Ready once the database pod is up. The Secret's
+// key set and the api-db -> api_db identifier are ADR-0014's frozen contract.
+func TestExample06PostgresCatalogObjectGraph(t *testing.T) {
 	applyExample(t, "06-postgres-catalog.yaml")
 
 	var pg orkanov1alpha1.Postgres
@@ -415,9 +418,27 @@ func TestExample06PostgresCatalogContract(t *testing.T) {
 	if pg.Spec.StorageSize == nil || pg.Spec.StorageSize.String() != "10Gi" {
 		t.Errorf("storageSize = %v, want defaulted 10Gi", pg.Spec.StorageSize)
 	}
-	if pg.Status.SecretName != "" || len(pg.Status.Conditions) != 0 {
-		t.Errorf("status = %+v, want empty until the reconciler lands", pg.Status)
+
+	sts := getStatefulSet(t, "api-db")
+	assertOwnedBy(t, sts, "Postgres", "api-db")
+	if got := sts.Spec.Template.Spec.Containers[0].Image; got != postgresImages["16"] {
+		t.Errorf("image = %q, want the digest-pinned postgres:16", got)
 	}
+
+	secret := getPostgresSecret(t, "api-db")
+	assertOwnedBy(t, secret, "Postgres", "api-db")
+	// The very Secret + key examples 02 and 03 wire DATABASE_URL to.
+	if got := string(secret.Data[orkanov1alpha1.SecretKeyURI]); !strings.HasPrefix(got, "postgresql://api_db:") ||
+		!strings.Contains(got, "@api-db.orkano-apps.svc.cluster.local:5432/api_db") {
+		t.Errorf("secret uri = %q, want postgresql://api_db:...@api-db...:5432/api_db", got)
+	}
+
+	got := waitForPostgresCondition(t, "api-db", orkanov1alpha1.ConditionReady, metav1.ConditionFalse, reasonProvisioning)
+	if got.Status.SecretName != "api-db" {
+		t.Errorf("status.secretName = %q, want api-db", got.Status.SecretName)
+	}
+	markStatefulSetReady(t, "api-db", 1)
+	waitForPostgresCondition(t, "api-db", orkanov1alpha1.ConditionReady, metav1.ConditionTrue, reasonAvailable)
 }
 
 func TestExample05DockerfileObjectGraph(t *testing.T) {

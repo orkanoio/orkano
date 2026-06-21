@@ -20,8 +20,9 @@ The dashboard holds no impersonation grant in Phase 1 (ADR-0013): an unrestricte
 
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
-| apps, builds, domains + `/status`, `/finalizers` (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
-| deployments (apps); services (core); ingresses (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| apps, builds, domains, postgreses + `/status`, `/finalizers` (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| deployments, statefulsets (apps); services (core); ingresses (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — statefulsets back the Postgres catalog kind |
+| persistentvolumeclaims (core) | get, update | `orkano-apps` — grows the Postgres catalog data volume; the StatefulSet volumeClaimTemplate is immutable so the PVC is patched directly, read uncached so no list/watch |
 | jobs (batch) | create, get, list, watch, delete | `orkano-builds` |
 | pods, pods/log (core) | get, list, watch | `orkano-apps`, `orkano-builds` |
 | configmaps[orkano-registry-ca] (core) | get | `orkano-builds` — the internal CA bundle published for build pods; the Build controller verifies its registry manifest HEAD (digest resolution, INV-06) against the same trust root, read uncached so no list/watch grant exists |

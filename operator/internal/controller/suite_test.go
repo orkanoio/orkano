@@ -124,6 +124,10 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to set up Build controller: %v\n", err)
 		return 1
 	}
+	if err := (&PostgresReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up Postgres controller: %v\n", err)
+		return 1
+	}
 
 	// Registered after the testEnv.Stop defer, so LIFO ordering joins the
 	// manager (lease released against a live apiserver) before teardown.
