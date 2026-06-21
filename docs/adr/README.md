@@ -20,3 +20,4 @@ Rules:
 | [0011](0011-api-versioning-deprecation.md) | API versioning and deprecation policy | Accepted |
 | [0012](0012-build-namespace-psa-baseline.md) | Build namespace runs at PSA baseline with AppArmor confinement | Accepted |
 | [0013](0013-dashboard-value-blind-secrets-no-impersonation.md) | Make dashboard secret writes value-blind and defer impersonation to Phase 2 | Accepted |
+| [0014](0014-postgres-catalog-kind.md) | Model the service catalog as an engine-specific Postgres kind | Accepted |
