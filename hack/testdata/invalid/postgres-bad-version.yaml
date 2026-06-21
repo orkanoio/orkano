@@ -1,0 +1,10 @@
+# Violates: PostgresSpec.version enum — only "14"|"15"|"16"|"17". "13" is an
+# end-of-life major the operator ships no image for; the enum may be loosened
+# additively (ADR-0011), never to a value it can't serve.
+apiVersion: orkano.io/v1alpha1
+kind: Postgres
+metadata:
+  name: invalid-postgres-version
+  namespace: orkano-apps
+spec:
+  version: "13"

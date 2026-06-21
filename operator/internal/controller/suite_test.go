@@ -198,7 +198,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		t.Fatalf("schema default not applied: spec.type = %q, want %q", got.Spec.Type, orkanov1alpha1.WorkloadWeb)
 	}
 
-	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}} {
+	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}, &orkanov1alpha1.PostgresList{}} {
 		if err := k8sClient.List(ctx, list); err != nil {
 			t.Fatalf("failed to list %T: %v", list, err)
 		}

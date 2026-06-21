@@ -1,0 +1,15 @@
+# The Phase 1 service catalog: a Postgres object produces the Secret named
+# "api-db" (key: uri) that examples 02 and 03 already reference. A name is the
+# whole story — storageSize defaults to 10Gi, and version is the only dial.
+# The App side is unchanged: see 02-web-service-postgres.yaml, whose
+# secretRef.name "api-db" ties it to the object below (== the produced Secret
+# name). The operator is the Secret's single writer and owns it via
+# ownerReference, so deletion cascades; INV-03 holds — no value of that Secret
+# ever appears in a CR, only the name (ADR-0014).
+apiVersion: orkano.io/v1alpha1
+kind: Postgres
+metadata:
+  name: api-db
+  namespace: orkano-apps
+spec:
+  version: "16"

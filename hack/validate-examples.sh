@@ -12,7 +12,7 @@ KC() { kubectl --context "$CTX" "$@"; }
 kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER"
 
 KC apply --server-side -f config/crd/ >/dev/null
-KC wait --for=condition=Established crd/apps.orkano.io crd/builds.orkano.io crd/domains.orkano.io --timeout=60s >/dev/null
+KC wait --for=condition=Established crd/apps.orkano.io crd/builds.orkano.io crd/domains.orkano.io crd/postgreses.orkano.io --timeout=60s >/dev/null
 KC create namespace orkano-apps --dry-run=client -o yaml | KC apply -f - >/dev/null
 
 for f in docs/examples/*.yaml; do
@@ -42,5 +42,10 @@ if KC patch domain immutable-probe -n orkano-apps --type merge -p '{"spec":{"hos
   exit 1
 fi
 echo "PASS rejected: domain host mutation"
+if KC patch postgres immutable-probe -n orkano-apps --type merge -p '{"spec":{"version":"17"}}' >/dev/null 2>&1; then
+  echo "FAIL postgres version mutation should have been rejected"
+  exit 1
+fi
+echo "PASS rejected: postgres version mutation"
 
 echo "OK: all examples accepted, all invalid fixtures and mutations rejected"

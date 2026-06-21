@@ -23,3 +23,11 @@ spec:
   host: probe.example.com
   appRef:
     name: api
+---
+apiVersion: orkano.io/v1alpha1
+kind: Postgres
+metadata:
+  name: immutable-probe
+  namespace: orkano-apps
+spec:
+  version: "16"

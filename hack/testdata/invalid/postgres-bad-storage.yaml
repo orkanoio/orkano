@@ -1,0 +1,11 @@
+# Violates: PostgresSpec.storageSize is a resource.Quantity — the apiserver
+# rejects a value that is not a valid quantity (here a bare word matches no
+# unit). A too-small-but-valid quantity (e.g. "50Mi") is a reconciler concern
+# (ProvisionFailed), not a schema one (ADR-0014).
+apiVersion: orkano.io/v1alpha1
+kind: Postgres
+metadata:
+  name: invalid-postgres-storage
+  namespace: orkano-apps
+spec:
+  storageSize: ten-gigs

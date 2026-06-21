@@ -1,9 +1,11 @@
-// The M1.1 milestone gate: each of the five docs/examples contract files must
+// The M1.1 milestone gate: each of the App contract files (01–05) must
 // reconcile to its complete object graph — the objects, their shapes, their
 // ownership, and the status a user would read from kubectl get. Images arrive
 // the way M1.2 will deliver them, through a succeeded Build, never by poking
-// status directly. envtest runs no GC, so each example is applied exactly
-// once per suite run: these tests are the only consumers of the example files.
+// status directly. The sixth file (06, the Postgres catalog kind) has no
+// reconciler yet, so its test is schema-level only until the M1.4 reconciler
+// lands. envtest runs no GC, so each example is applied exactly once per suite
+// run: these tests are the only consumers of the example files.
 package controller
 
 import (
@@ -392,6 +394,29 @@ func TestExample04MonorepoSubpathObjectGraph(t *testing.T) {
 	// No Domain in the example: the URL column stays empty.
 	if app.Status.URL != "" {
 		t.Errorf("status.url = %q without any Domain, want empty", app.Status.URL)
+	}
+}
+
+// TestExample06PostgresCatalogContract proves the sixth contract file is
+// accepted and defaults as ADR-0014 froze it. No object graph yet: the catalog
+// reconciler (StatefulSet + Service + connection Secret) is the next M1.4 task,
+// so status stays empty until something provisions it.
+func TestExample06PostgresCatalogContract(t *testing.T) {
+	applyExample(t, "06-postgres-catalog.yaml")
+
+	var pg orkanov1alpha1.Postgres
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "api-db", Namespace: appsNamespace}, &pg); err != nil {
+		t.Fatalf("failed to get Postgres api-db: %v", err)
+	}
+	if pg.Spec.Version != "16" {
+		t.Errorf("version = %q, want 16 from the example", pg.Spec.Version)
+	}
+	if pg.Spec.StorageSize == nil || pg.Spec.StorageSize.String() != "10Gi" {
+		t.Errorf("storageSize = %v, want defaulted 10Gi", pg.Spec.StorageSize)
+	}
+	if pg.Status.SecretName != "" || len(pg.Status.Conditions) != 0 {
+		t.Errorf("status = %+v, want empty until the reconciler lands", pg.Status)
 	}
 }
 
