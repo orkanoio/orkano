@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +32,12 @@ type fakeNode struct {
 	encryptExit      int    // non-zero makes `secrets-encrypt status` fail
 	auditLogPresent  bool
 	serviceActive    bool // systemctl is-active response
-	readyAfter       int  // number of get-nodes polls before the node is Ready
+	readyAfter       int  // number of get-nodes polls before THIS node is Ready
+	existingReady    int  // nodes already Ready from the start (a joiner's peers)
 	getNodesErrors   int  // transport errors returned before answering get-nodes
 	kubeconfig       string
+	token            string // contents of the cluster token file
+	tokenExit        int    // non-zero makes the token-file read fail
 
 	getNodesCalls int
 }
@@ -45,6 +49,7 @@ func newFakeNode() *fakeNode {
 		auditLogPresent:  true,
 		serviceActive:    true,
 		kubeconfig:       sampleKubeconfig,
+		token:            "K10cafef00d::server:abc123def456",
 	}
 }
 
@@ -66,6 +71,12 @@ func (n *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 
 	case cmd == "cat "+pathKubeconfig:
 		return ssh.Result{Stdout: n.kubeconfig}, nil
+
+	case cmd == "cat "+pathToken:
+		if n.tokenExit != 0 {
+			return ssh.Result{Stderr: "No such file or directory", ExitStatus: n.tokenExit}, nil
+		}
+		return ssh.Result{Stdout: n.token + "\n"}, nil
 
 	case strings.HasPrefix(cmd, "cat "):
 		path := strings.TrimPrefix(cmd, "cat ")
@@ -97,10 +108,11 @@ func (n *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 			return ssh.Result{}, errors.New("dial tcp: connection refused")
 		}
 		n.getNodesCalls++
+		ready := n.existingReady
 		if n.getNodesCalls > n.readyAfter {
-			return ssh.Result{Stdout: "node1   Ready    control-plane,etcd,master   30s   " + n.version + "\n"}, nil
+			ready++ // this node has joined and become Ready
 		}
-		return ssh.Result{Stdout: "node1   NotReady   control-plane,etcd,master   3s   " + n.version + "\n"}, nil
+		return ssh.Result{Stdout: readyNodesOutput(ready, n.version)}, nil
 
 	case strings.Contains(cmd, "secrets-encrypt status"):
 		if n.encryptExit != 0 {
@@ -135,6 +147,19 @@ func parseWrite(cmd string) (path, content string) {
 	rest := cmd[k+len(teeMark):]
 	path = strings.TrimSpace(rest[:strings.Index(rest, " >/dev/null")])
 	return path, string(dec)
+}
+
+// readyNodesOutput renders `ready` Ready node lines (or a single NotReady line
+// when none are Ready yet), mimicking `kubectl get nodes --no-headers`.
+func readyNodesOutput(ready int, version string) string {
+	if ready <= 0 {
+		return "node1   NotReady   control-plane,etcd,master   3s   " + version + "\n"
+	}
+	var b strings.Builder
+	for i := 0; i < ready; i++ {
+		fmt.Fprintf(&b, "node%d   Ready    control-plane,etcd,master   30s   %s\n", i+1, version)
+	}
+	return b.String()
 }
 
 func installVersion(cmd string) string {
@@ -182,6 +207,14 @@ func TestBootstrapFreshInstall(t *testing.T) {
 	}
 	if !res.AuditLogPresent {
 		t.Error("AuditLogPresent = false")
+	}
+	// The first server reads back the cluster token for joining servers.
+	if res.Token != n.token {
+		t.Errorf("Token = %q, want the cluster token %q", res.Token, n.token)
+	}
+	// The first server renders cluster-init, not a join.
+	if cfg := n.files[pathConfig]; !strings.Contains(cfg, "cluster-init: true") || strings.Contains(cfg, "server:") {
+		t.Errorf("first server should render cluster-init, not a join:\n%s", cfg)
 	}
 
 	// All four hardening files landed with the expected content.
@@ -242,6 +275,132 @@ func TestBootstrapSnapshotConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBootstrapJoinServer(t *testing.T) {
+	n := newFakeNode()
+	n.existingReady = 1 // the first server is already up
+
+	res := mustBootstrap(t, n, Config{
+		NodeAddress:   "203.0.113.6",
+		ServerURL:     "https://203.0.113.5:6443",
+		Token:         "K10cafef00d::server:abc123def456",
+		MinReadyNodes: 2,
+	})
+
+	cfg := n.files[pathConfig]
+	if !strings.Contains(cfg, `server: "https://203.0.113.5:6443"`) {
+		t.Errorf("join config missing the server URL:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `token: "K10cafef00d::server:abc123def456"`) {
+		t.Errorf("join config missing the token:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "cluster-init") {
+		t.Errorf("a joining server must not set cluster-init:\n%s", cfg)
+	}
+	// Hardening flags stay identical to the first server: k3s requires
+	// secrets-encryption to be the same on every server or the join fails.
+	if !strings.Contains(cfg, "secrets-encryption: true") {
+		t.Errorf("join config missing secrets-encryption:\n%s", cfg)
+	}
+	// A joining server does not surface a token (it already holds one).
+	if res.Token != "" {
+		t.Errorf("joining server Token = %q, want empty", res.Token)
+	}
+	// The token never appears in a command in the clear: it lands in config.yaml
+	// only through the base64|tee write idiom, and the token-file read carries no
+	// value in the command string.
+	const tok = "K10cafef00d::server:abc123def456"
+	for _, c := range n.cmds {
+		if strings.Contains(c, tok) && !strings.Contains(c, "base64") {
+			t.Errorf("token leaked in plaintext command: %s", c)
+		}
+	}
+}
+
+func TestBootstrapJoinWaitsForNodeCount(t *testing.T) {
+	n := newFakeNode()
+	n.existingReady = 1 // the first server is already Ready (count 1)
+	n.readyAfter = 2    // this node only becomes Ready after two polls
+
+	mustBootstrap(t, n, Config{
+		NodeAddress:   "203.0.113.6",
+		ServerURL:     "https://203.0.113.5:6443",
+		Token:         "K10cafef00d::server:abc123def456",
+		MinReadyNodes: 2,
+	})
+	// It must keep polling past the count of 1 (only the first server Ready)
+	// until this node also reports Ready — proving it waits for the count, not
+	// just "any node Ready".
+	if n.getNodesCalls < 3 {
+		t.Errorf("expected to wait for the node count (>=3 polls), got %d", n.getNodesCalls)
+	}
+}
+
+func TestBootstrapJoinRejectsBadInput(t *testing.T) {
+	const goodToken = "K10cafef00d::server:abc123def456"
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"server url without token", Config{NodeAddress: "node", ServerURL: "https://203.0.113.5:6443"}},
+		{"non-https server url", Config{NodeAddress: "node", ServerURL: "http://203.0.113.5:6443", Token: goodToken}},
+		{"server url with path", Config{NodeAddress: "node", ServerURL: "https://203.0.113.5:6443/x", Token: goodToken}},
+		{"yaml-injecting server url", Config{NodeAddress: "node", ServerURL: "https://203.0.113.5:6443\"", Token: goodToken}},
+		{"yaml-injecting token", Config{NodeAddress: "node", ServerURL: "https://203.0.113.5:6443", Token: "x\"\nfoo: bar"}},
+		{"backslash-injecting token", Config{NodeAddress: "node", ServerURL: "https://203.0.113.5:6443", Token: `K10abc\server:def`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Bootstrap(context.Background(), newFakeNode(), tc.cfg); err == nil {
+				t.Fatal("want a validation error, got nil")
+			}
+		})
+	}
+}
+
+func TestBootstrapJoinServerIdempotentRerun(t *testing.T) {
+	n := newFakeNode()
+	n.existingReady = 1
+	cfg := Config{
+		NodeAddress:   "203.0.113.6",
+		ServerURL:     "https://203.0.113.5:6443",
+		Token:         "K10cafef00d::server:abc123def456",
+		MinReadyNodes: 2,
+	}
+	mustBootstrap(t, n, cfg)
+
+	n.cmds = nil // observe only the second run
+	res := mustBootstrap(t, n, cfg)
+
+	if res.Changed {
+		t.Error("Changed = true on a no-op joiner re-run")
+	}
+	if hasCmd(n.cmds, func(c string) bool { return strings.Contains(c, "| base64 -d |") }) {
+		t.Error("joiner re-run rewrote a file whose content (server:/token:) was unchanged")
+	}
+	if hasCmd(n.cmds, func(c string) bool { return strings.Contains(c, "systemctl restart") }) {
+		t.Error("joiner re-run restarted k3s with no config change")
+	}
+}
+
+func TestBootstrapFetchTokenErrors(t *testing.T) {
+	t.Run("empty token file", func(t *testing.T) {
+		n := newFakeNode()
+		n.token = "" // TrimSpace -> "" -> tokenRe rejects it
+		_, err := Bootstrap(context.Background(), n, Config{NodeAddress: "203.0.113.5"})
+		if err == nil || !strings.Contains(err.Error(), "cluster token") {
+			t.Fatalf("want a cluster-token error, got %v", err)
+		}
+	})
+	t.Run("token file missing", func(t *testing.T) {
+		n := newFakeNode()
+		n.tokenExit = 1 // the cat of the token file fails
+		_, err := Bootstrap(context.Background(), n, Config{NodeAddress: "203.0.113.5"})
+		if err == nil || !strings.Contains(err.Error(), "cluster token") {
+			t.Fatalf("want a cluster-token error, got %v", err)
+		}
+	})
 }
 
 func TestBootstrapIdempotentRerun(t *testing.T) {
@@ -382,7 +541,7 @@ func TestBootstrapReadyTimeout(t *testing.T) {
 	n.readyAfter = 1 << 30 // never reports Ready
 
 	_, err := Bootstrap(context.Background(), n, Config{NodeAddress: "203.0.113.5", ReadyTimeout: 30 * time.Millisecond})
-	if err == nil || !strings.Contains(err.Error(), "did not become Ready") {
+	if err == nil || !strings.Contains(err.Error(), "became Ready") {
 		t.Fatalf("want a Ready timeout error, got %v", err)
 	}
 }

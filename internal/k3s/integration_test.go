@@ -3,6 +3,7 @@ package k3s_test
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,12 @@ type scriptedNode struct {
 	mu        sync.Mutex
 	files     map[string]string
 	installed bool
+	// existingReady seeds the Ready count with peers already up (a joiner's first
+	// server); readyAfter delays this node's own Ready by that many polls so the
+	// HA test exercises waitReady's count gate over real SSH.
+	existingReady int
+	readyAfter    int
+	getNodesCalls int
 }
 
 func (n *scriptedNode) handle(raw string) (string, string, int) {
@@ -38,6 +45,8 @@ func (n *scriptedNode) handle(raw string) (string, string, int) {
 		return "", "", 0
 	case cmd == "cat /etc/rancher/k3s/k3s.yaml":
 		return "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\n", "", 0
+	case cmd == "cat /var/lib/rancher/k3s/server/token":
+		return "K10cafef00d::server:abc123def456\n", "", 0
 	case strings.HasPrefix(cmd, "cat "):
 		path := strings.TrimPrefix(cmd, "cat ")
 		if c, ok := n.files[path]; ok {
@@ -50,7 +59,19 @@ func (n *scriptedNode) handle(raw string) (string, string, int) {
 		n.installed = true
 		return "installing\n", "", 0
 	case strings.Contains(cmd, "kubectl get nodes"):
-		return "node1 Ready control-plane,etcd,master 30s v1.35.5+k3s1\n", "", 0
+		n.getNodesCalls++
+		ready := n.existingReady
+		if n.getNodesCalls > n.readyAfter {
+			ready++ // this node has joined and become Ready
+		}
+		if ready == 0 {
+			return "node1 NotReady control-plane,etcd,master 3s v1.35.5+k3s1\n", "", 0
+		}
+		var b strings.Builder
+		for i := 0; i < ready; i++ {
+			fmt.Fprintf(&b, "node%d Ready control-plane,etcd,master 30s v1.35.5+k3s1\n", i+1)
+		}
+		return b.String(), "", 0
 	case strings.Contains(cmd, "secrets-encrypt status"):
 		return "Encryption Status: Enabled\n", "", 0
 	case strings.HasPrefix(cmd, "test -f "):
@@ -109,5 +130,77 @@ func TestBootstrapOverRealSSH(t *testing.T) {
 	}
 	if n := srv.Connections(); n != 1 {
 		t.Errorf("server saw %d connections, want 1 (shared SSH connection)", n)
+	}
+}
+
+func dialSSH(t *testing.T, srv *sshtest.Server) *ssh.Client {
+	t.Helper()
+	c, err := ssh.New(ssh.Config{
+		Addr:       srv.Addr,
+		User:       srv.User,
+		PrivateKey: srv.ClientPrivateKey,
+		HostKey:    srv.HostKeyAuthorized,
+	})
+	if err != nil {
+		t.Fatalf("ssh.New: %v", err)
+	}
+	return c
+}
+
+// TestBootstrapHAJoinOverRealSSH proves the two-server HA flow over the genuine
+// SSH wire protocol: the first server initialises the cluster and yields a join
+// token, which the second server consumes to join — its rendered config carries
+// the server URL + shared token and no cluster-init.
+func TestBootstrapHAJoinOverRealSSH(t *testing.T) {
+	first := &scriptedNode{files: map[string]string{}}
+	srv1 := sshtest.New(first.handle)
+	defer srv1.Close()
+	c1 := dialSSH(t, srv1)
+	defer func() { _ = c1.Close() }()
+
+	res1, err := k3s.Bootstrap(context.Background(), c1, k3s.Config{NodeAddress: "198.51.100.7", Sudo: true})
+	if err != nil {
+		t.Fatalf("bootstrap first server: %v", err)
+	}
+	if res1.Token == "" {
+		t.Fatal("first server returned no join token")
+	}
+
+	// existingReady=1 (first server up), readyAfter=1 so this node is Ready only
+	// on the second poll — exercising waitReady's count gate over the real wire.
+	second := &scriptedNode{files: map[string]string{}, existingReady: 1, readyAfter: 1}
+	srv2 := sshtest.New(second.handle)
+	defer srv2.Close()
+	c2 := dialSSH(t, srv2)
+	defer func() { _ = c2.Close() }()
+
+	res2, err := k3s.Bootstrap(context.Background(), c2, k3s.Config{
+		NodeAddress:   "198.51.100.8",
+		ServerURL:     "https://198.51.100.7:6443",
+		Token:         res1.Token,
+		MinReadyNodes: 2,
+		Sudo:          true, // same operator/user as the first server
+	})
+	if err != nil {
+		t.Fatalf("bootstrap joining server: %v", err)
+	}
+	if res2.Token != "" {
+		t.Error("joining server should not surface a token")
+	}
+	if n := srv2.Connections(); n != 1 {
+		t.Errorf("joiner saw %d connections, want 1 (shared SSH connection across polls)", n)
+	}
+
+	second.mu.Lock()
+	cfg2 := second.files["/etc/rancher/k3s/config.yaml"]
+	second.mu.Unlock()
+	if !strings.Contains(cfg2, `server: "https://198.51.100.7:6443"`) {
+		t.Errorf("joiner config missing the server URL:\n%s", cfg2)
+	}
+	if !strings.Contains(cfg2, res1.Token) {
+		t.Errorf("joiner config missing the shared token:\n%s", cfg2)
+	}
+	if strings.Contains(cfg2, "cluster-init") {
+		t.Errorf("joiner config must not set cluster-init:\n%s", cfg2)
 	}
 }

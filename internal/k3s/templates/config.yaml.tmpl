@@ -2,7 +2,14 @@
 # internal/k3s/templates/config.yaml.tmpl. CIS-aligned k3s server configuration
 # (docs.k3s.io/security/hardening-guide). The hardening flags here are read by
 # k3s at startup, so the file is written before the server is installed.
+{{- if .ServerURL }}
+# Joins the existing embedded-etcd cluster at ServerURL using the shared token.
+server: "{{ .ServerURL }}"
+token: "{{ .Token }}"
+{{- else }}
+# Initialises the embedded-etcd cluster (the first server).
 cluster-init: true
+{{- end }}
 secrets-encryption: true
 protect-kernel-defaults: true
 write-kubeconfig-mode: "0600"

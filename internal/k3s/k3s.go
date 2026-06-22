@@ -1,10 +1,16 @@
-// Package k3s bootstraps a hardened, CIS-aligned k3s server onto a single node
-// over an SSH transport. It is the engine behind `orkano init`: it writes the
-// committed hardening templates (kernel parameters, audit policy, admission
-// config, server config with embedded etcd + secrets encryption), runs the
-// pinned k3s installer, waits for the node to become Ready, verifies that
-// encryption and auditing are actually active, and returns a kubeconfig
-// rewritten for remote access.
+// Package k3s bootstraps a hardened, CIS-aligned k3s server onto a node over an
+// SSH transport. It is the engine behind `orkano init`: it writes the committed
+// hardening templates (kernel parameters, audit policy, admission config, server
+// config with embedded etcd + secrets encryption), runs the pinned k3s
+// installer, waits for the node to become Ready, verifies that encryption and
+// auditing are actually active, and returns a kubeconfig rewritten for remote
+// access.
+//
+// A single Bootstrap call handles one server. The first server initialises the
+// embedded-etcd cluster (cluster-init); additional servers join it by setting
+// Config.ServerURL + Config.Token, which the caller reads from the first
+// server's Result.Token. The caller orchestrates an HA cluster by bootstrapping
+// the first server, then each joining server in turn.
 //
 // Bootstrap is idempotent: a re-run converges the node to the desired state and
 // does nothing when it is already there. It assumes the node has cleared the
@@ -62,6 +68,7 @@ const (
 	pathPSA         = pathServerDir + "/psa.yaml"
 	pathAuditLogDir = pathServerDir + "/logs"
 	pathAuditLog    = pathAuditLogDir + "/audit.log"
+	pathToken       = pathServerDir + "/token"
 	pathSysctl      = "/etc/sysctl.d/90-kubelet.conf"
 	pathKubeconfig  = "/etc/rancher/k3s/k3s.yaml"
 
@@ -81,6 +88,14 @@ var (
 	// double-quoted YAML scalar in config.yaml: it admits 5-field cron and the
 	// @-shorthands but excludes the quote and newline that could break the line.
 	cronRe = regexp.MustCompile(`^[A-Za-z0-9 @*/,-]+$`)
+	// serverURLRe validates a join server URL before it lands in config.yaml. The
+	// host is the hostRe charset; the scheme and port are fixed shapes.
+	serverURLRe = regexp.MustCompile(`^https://[A-Za-z0-9._-]+:[0-9]+$`)
+	// tokenRe validates the cluster join token (read from the first server, then
+	// written into joining servers' config.yaml). k3s server tokens are
+	// alphanumeric with `:` separators (K10<hash>::server:<secret>); the charset
+	// excludes the quote and newline that could break the YAML scalar.
+	tokenRe = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
 	// installedVersionRe pulls the version out of `k3s --version` output.
 	installedVersionRe = regexp.MustCompile(`v\d+\.\d+\.\d+\+k3s\d+`)
 
@@ -101,8 +116,23 @@ type Config struct {
 	// becomes a TLS SAN and the server URL in the returned kubeconfig. Required.
 	NodeAddress string
 	// ExtraTLSSANs are additional SANs to place on the server certificate (for
-	// example a DNS name the cluster will also be reached by). Optional.
+	// example a DNS name the cluster will also be reached by, or the addresses of
+	// the other HA servers). Optional.
 	ExtraTLSSANs []string
+	// ServerURL, when set, makes this a JOINING server: instead of initialising a
+	// new cluster it registers against an existing member at ServerURL (e.g.
+	// https://<first-server>:6443). Token must accompany it. Empty means this is
+	// the first server, which initialises the embedded-etcd cluster.
+	ServerURL string
+	// Token is the cluster join secret — the value of /var/lib/rancher/k3s/server/token
+	// on the first server, surfaced in its Result.Token. Required when ServerURL
+	// is set; ignored for the first server. It is a secret and is never logged.
+	Token string
+	// MinReadyNodes is how many nodes must report Ready before Bootstrap considers
+	// the step done; 1 when not positive. The caller sets it to the running server
+	// count (1 for the first server, 2 for the second, …) so a joining server
+	// waits for itself, not just the already-Ready first server.
+	MinReadyNodes int
 	// K3sVersion is the k3s release to install; DefaultK3sVersion when empty.
 	K3sVersion string
 	// SnapshotCron is the embedded-etcd snapshot schedule (cron syntax);
@@ -148,6 +178,13 @@ func (c Config) snapshotRetention() int {
 	return c.SnapshotRetention
 }
 
+func (c Config) minReadyNodes() int {
+	if c.MinReadyNodes <= 0 {
+		return 1
+	}
+	return c.MinReadyNodes
+}
+
 func (c Config) tlsSANs() []string {
 	sans := append([]string{c.NodeAddress}, c.ExtraTLSSANs...)
 	return sans
@@ -170,6 +207,10 @@ type Result struct {
 	// Kubeconfig is the cluster kubeconfig with its server URL rewritten to
 	// NodeAddress, ready to use from the control host.
 	Kubeconfig []byte
+	// Token is the cluster join secret read from a first (cluster-init) server,
+	// for the caller to pass to joining servers as Config.Token. Empty for a
+	// joining server. It is a secret: do not log or persist it in the clear.
+	Token string
 }
 
 // Bootstrap installs (or converges) a hardened k3s server on the node reachable
@@ -191,6 +232,17 @@ func Bootstrap(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	}
 	if !cronRe.MatchString(cfg.snapshotCron()) {
 		return nil, fmt.Errorf("k3s: invalid snapshot schedule %q", cfg.snapshotCron())
+	}
+	if cfg.ServerURL != "" {
+		if !serverURLRe.MatchString(cfg.ServerURL) {
+			return nil, fmt.Errorf("k3s: invalid join server URL %q (want https://host:port)", cfg.ServerURL)
+		}
+		if cfg.Token == "" {
+			return nil, errors.New("k3s: a join token is required when ServerURL is set")
+		}
+		if !tokenRe.MatchString(cfg.Token) {
+			return nil, errors.New("k3s: join token has an unexpected format")
+		}
 	}
 
 	b := &bootstrapper{r: r, cfg: cfg, res: &Result{}}
@@ -219,6 +271,9 @@ func Bootstrap(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	if err := b.fetchKubeconfig(ctx); err != nil {
 		return nil, err
 	}
+	if err := b.fetchToken(ctx); err != nil {
+		return nil, err
+	}
 	return b.res, nil
 }
 
@@ -245,6 +300,10 @@ type configData struct {
 	TLSSANs           []string
 	SnapshotCron      string
 	SnapshotRetention int
+	// ServerURL + Token are set on a joining server; empty on the first server,
+	// which renders cluster-init instead.
+	ServerURL string
+	Token     string
 }
 
 // renderFiles materialises the four node files from the embedded templates.
@@ -273,6 +332,8 @@ func (b *bootstrapper) renderFiles() error {
 		TLSSANs:           b.cfg.tlsSANs(),
 		SnapshotCron:      b.cfg.snapshotCron(),
 		SnapshotRetention: b.cfg.snapshotRetention(),
+		ServerURL:         b.cfg.ServerURL,
+		Token:             b.cfg.Token,
 	}
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("k3s: render config: %w", err)
@@ -377,7 +438,10 @@ func (b *bootstrapper) installOrConverge(ctx context.Context) error {
 	return nil
 }
 
-// waitReady polls until a node reports Ready or the ready timeout elapses.
+// waitReady polls until at least MinReadyNodes nodes report Ready or the ready
+// timeout elapses. The count (rather than "any node Ready") matters for a
+// joining server: the first server is already Ready, so a joiner must wait for
+// the cluster to reach its own ordinal before the step is done.
 func (b *bootstrapper) waitReady(ctx context.Context) error {
 	wait, cancel := context.WithTimeout(ctx, b.cfg.readyTimeout())
 	defer cancel()
@@ -385,23 +449,26 @@ func (b *bootstrapper) waitReady(ctx context.Context) error {
 	ticker := time.NewTicker(readyPollInterval)
 	defer ticker.Stop()
 
+	want := b.cfg.minReadyNodes()
 	for {
 		res, err := b.r.Run(wait, b.sudo+k3sBin+" kubectl get nodes --no-headers")
 		switch {
 		case err != nil:
 			// A transport error mid-install is expected (the API server is still
 			// coming up); keep polling until the deadline.
-			b.logf("waiting for node to be Ready: %v", err)
-		case res.ExitStatus == 0 && nodeReady(res.Stdout):
-			b.logf("node is Ready")
-			return nil
+			b.logf("waiting for nodes to be Ready: %v", err)
 		default:
-			b.logf("waiting for node to be Ready")
+			got := countReady(res.Stdout)
+			if res.ExitStatus == 0 && got >= want {
+				b.logf("%d node(s) Ready", want)
+				return nil
+			}
+			b.logf("waiting for nodes to be Ready (%d/%d)", got, want)
 		}
 
 		select {
 		case <-wait.Done():
-			return fmt.Errorf("k3s: node did not become Ready within %s: %w", b.cfg.readyTimeout(), wait.Err())
+			return fmt.Errorf("k3s: fewer than %d node(s) became Ready within %s: %w", want, b.cfg.readyTimeout(), wait.Err())
 		case <-ticker.C:
 		}
 	}
@@ -464,6 +531,29 @@ func (b *bootstrapper) fetchKubeconfig(ctx context.Context) error {
 	return nil
 }
 
+// fetchToken reads the cluster join token from a first (cluster-init) server so
+// the caller can pass it to joining servers. It is a no-op on a joining server,
+// which already holds the token. The token is a secret: it is validated but
+// never logged.
+func (b *bootstrapper) fetchToken(ctx context.Context) error {
+	if b.cfg.ServerURL != "" {
+		return nil // a joining server already has the token
+	}
+	res, err := b.r.Run(ctx, b.sudo+"cat "+pathToken)
+	if err != nil {
+		return fmt.Errorf("k3s: read cluster token: %w", err)
+	}
+	if res.ExitStatus != 0 {
+		return fmt.Errorf("k3s: read cluster token exited %d: %s", res.ExitStatus, firstLine(res.Stderr))
+	}
+	tok := strings.TrimSpace(res.Stdout)
+	if !tokenRe.MatchString(tok) {
+		return errors.New("k3s: cluster token file had unexpected contents")
+	}
+	b.res.Token = tok
+	return nil
+}
+
 // ensureFile writes content to path with mode only when the node's current
 // contents differ, reporting whether it wrote. Parent directories are created.
 func (b *bootstrapper) ensureFile(ctx context.Context, path string, content []byte, mode string) (bool, error) {
@@ -502,16 +592,17 @@ func (b *bootstrapper) runOK(ctx context.Context, cmd, desc string) error {
 	return nil
 }
 
-// nodeReady reports whether any line of `kubectl get nodes --no-headers` output
-// shows a node whose STATUS column is exactly "Ready" (not "NotReady").
-func nodeReady(out string) bool {
+// countReady counts the lines of `kubectl get nodes --no-headers` output whose
+// STATUS column is exactly "Ready" (not "NotReady").
+func countReady(out string) int {
+	n := 0
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[1] == "Ready" {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // encryptionStatus extracts the value after "Encryption Status:" from
