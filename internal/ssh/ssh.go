@@ -218,6 +218,72 @@ func (c *Client) invalidate(broken *gossh.Client) {
 	}
 }
 
+// ScanHostKey opens a connection to addr and returns the host key it presents,
+// in authorized-keys format, without authenticating. It exists for first
+// contact with a fresh node: orkano init shows the key's fingerprint and trusts
+// it only on explicit confirmation, then pins it via New's HostKey. The host key
+// is delivered during the handshake, before authentication, so no credentials
+// are needed — and capturing it here keeps New itself free of any insecure
+// host-key bypass.
+func ScanHostKey(ctx context.Context, addr string, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	addr = withDefaultPort(addr)
+
+	start := time.Now()
+	d := net.Dialer{Timeout: timeout}
+	netConn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("ssh: dial %s: %w", addr, err)
+	}
+	defer func() { _ = netConn.Close() }()
+
+	deadline := start.Add(timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	_ = netConn.SetDeadline(deadline)
+
+	var captured gossh.PublicKey
+	// errHostKeyCaptured aborts the handshake the instant the host key arrives:
+	// there is no point completing key exchange or attempting auth just to read
+	// a value the server already sent.
+	errHostKeyCaptured := errors.New("host key captured")
+	cc, chans, reqs, err := gossh.NewClientConn(netConn, addr, &gossh.ClientConfig{
+		User: "orkano-scan",
+		HostKeyCallback: func(_ string, _ net.Addr, key gossh.PublicKey) error {
+			captured = key
+			return errHostKeyCaptured
+		},
+	})
+	if err == nil {
+		// Unexpected: the server accepted us without presenting a key we rejected.
+		_ = cc.Close()
+		go gossh.DiscardRequests(reqs)
+		go func() {
+			for newCh := range chans {
+				_ = newCh.Reject(gossh.Prohibited, "scan only")
+			}
+		}()
+	}
+	if captured == nil {
+		return nil, fmt.Errorf("ssh: scan host key from %s: %w", addr, err)
+	}
+	return gossh.MarshalAuthorizedKey(captured), nil
+}
+
+// FingerprintSHA256 returns the SHA256 fingerprint of an authorized-keys host
+// key (the "SHA256:…" form ssh prints), for showing a node's identity to a user
+// before they trust it. It errors if the bytes do not parse as a public key.
+func FingerprintSHA256(authorizedKey []byte) (string, error) {
+	pub, _, _, _, err := gossh.ParseAuthorizedKey(authorizedKey)
+	if err != nil {
+		return "", fmt.Errorf("ssh: parse host key: %w", err)
+	}
+	return gossh.FingerprintSHA256(pub), nil
+}
+
 // Close closes the underlying connection if open. It is safe to call more than
 // once.
 func (c *Client) Close() error {

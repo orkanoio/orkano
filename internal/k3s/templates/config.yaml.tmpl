@@ -1,0 +1,26 @@
+# Managed by `orkano init` — generated from
+# internal/k3s/templates/config.yaml.tmpl. CIS-aligned k3s server configuration
+# (docs.k3s.io/security/hardening-guide). The hardening flags here are read by
+# k3s at startup, so the file is written before the server is installed.
+cluster-init: true
+secrets-encryption: true
+protect-kernel-defaults: true
+write-kubeconfig-mode: "0600"
+tls-san:
+{{- range .TLSSANs }}
+  - "{{ . }}"
+{{- end }}
+kube-apiserver-arg:
+  - "enable-admission-plugins=NodeRestriction,EventRateLimit"
+  - "admission-control-config-file=/var/lib/rancher/k3s/server/psa.yaml"
+  - "audit-log-path=/var/lib/rancher/k3s/server/logs/audit.log"
+  - "audit-policy-file=/var/lib/rancher/k3s/server/audit.yaml"
+  - "audit-log-maxage=30"
+  - "audit-log-maxbackup=10"
+  - "audit-log-maxsize=100"
+  - "service-account-extend-token-expiration=false"
+kube-controller-manager-arg:
+  - "terminated-pod-gc-threshold=100"
+kubelet-arg:
+  - "streaming-connection-idle-timeout=5m"
+  - "tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"

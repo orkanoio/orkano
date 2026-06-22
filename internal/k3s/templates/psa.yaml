@@ -1,0 +1,47 @@
+# Managed by `orkano init`. API server admission configuration referenced by
+# `admission-control-config-file` (docs.k3s.io/security/hardening-guide).
+#
+# It configures BOTH admission plugins that config.yaml enables. The published
+# k3s guide ships a PodSecurity-only file while enabling EventRateLimit on the
+# command line — that combination refuses to start ("EventRateLimit: no
+# configuration provided"), so the EventRateLimit block below is required for a
+# server that actually boots.
+#
+# PodSecurity sets a restricted cluster-wide default. Orkano's own namespaces
+# carry their own pod-security labels (orkano-system=restricted,
+# orkano-apps/-builds=baseline per ADR-0012), which override this default;
+# kube-system is exempted because k3s system pods (Traefik, CoreDNS, metrics,
+# local-path, svclb) are not all restricted-compliant. CONTRACT for the
+# component-deploy task: every namespace it creates (e.g. cert-manager) must
+# carry an explicit pod-security label or run a restricted-compliant workload,
+# or its pods are rejected by this default.
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+- name: PodSecurity
+  configuration:
+    apiVersion: pod-security.admission.config.k8s.io/v1
+    kind: PodSecurityConfiguration
+    defaults:
+      enforce: "restricted"
+      enforce-version: "latest"
+      audit: "restricted"
+      audit-version: "latest"
+      warn: "restricted"
+      warn-version: "latest"
+    exemptions:
+      usernames: []
+      runtimeClasses: []
+      namespaces: [kube-system]
+- name: EventRateLimit
+  configuration:
+    apiVersion: eventratelimit.admission.k8s.io/v1alpha1
+    kind: Configuration
+    limits:
+    - type: Namespace
+      qps: 50
+      burst: 100
+      cacheSize: 2000
+    - type: User
+      qps: 10
+      burst: 50

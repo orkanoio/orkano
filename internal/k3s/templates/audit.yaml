@@ -1,0 +1,8 @@
+# Managed by `orkano init`. Minimal CIS-compliant API server audit policy
+# (docs.k3s.io/security/hardening-guide). Metadata level records who did what to
+# which object, without request/response bodies — enough for the append-only
+# audit trail (INV-08) without logging Secret contents.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+- level: Metadata
