@@ -39,6 +39,15 @@ const DefaultK3sVersion = "v1.35.5+k3s1"
 // Ready after the installer returns.
 const DefaultReadyTimeout = 5 * time.Minute
 
+// Default embedded-etcd snapshot policy, mirroring k3s's own defaults: a
+// snapshot every 12 hours, keeping the last five. These are written into the
+// server config so the policy is explicit and version-controlled rather than
+// implicit in the k3s release.
+const (
+	DefaultSnapshotCron      = "0 */12 * * *"
+	DefaultSnapshotRetention = 5
+)
+
 const (
 	installURL = "https://get.k3s.io"
 
@@ -68,6 +77,10 @@ var (
 	// hostRe accepts a hostname or IPv4 literal for the TLS SAN and kubeconfig
 	// server URL. IPv6 is deferred (it needs bracket handling throughout).
 	hostRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// cronRe guards the snapshot schedule before it is interpolated into a
+	// double-quoted YAML scalar in config.yaml: it admits 5-field cron and the
+	// @-shorthands but excludes the quote and newline that could break the line.
+	cronRe = regexp.MustCompile(`^[A-Za-z0-9 @*/,-]+$`)
 	// installedVersionRe pulls the version out of `k3s --version` output.
 	installedVersionRe = regexp.MustCompile(`v\d+\.\d+\.\d+\+k3s\d+`)
 
@@ -92,6 +105,12 @@ type Config struct {
 	ExtraTLSSANs []string
 	// K3sVersion is the k3s release to install; DefaultK3sVersion when empty.
 	K3sVersion string
+	// SnapshotCron is the embedded-etcd snapshot schedule (cron syntax);
+	// DefaultSnapshotCron when empty.
+	SnapshotCron string
+	// SnapshotRetention is how many scheduled snapshots to keep;
+	// DefaultSnapshotRetention when not positive.
+	SnapshotRetention int
 	// Sudo prefixes privileged commands with sudo. Set it when the SSH user is
 	// not root (the user must then have passwordless sudo).
 	Sudo bool
@@ -113,6 +132,20 @@ func (c Config) readyTimeout() time.Duration {
 		return DefaultReadyTimeout
 	}
 	return c.ReadyTimeout
+}
+
+func (c Config) snapshotCron() string {
+	if c.SnapshotCron == "" {
+		return DefaultSnapshotCron
+	}
+	return c.SnapshotCron
+}
+
+func (c Config) snapshotRetention() int {
+	if c.SnapshotRetention <= 0 {
+		return DefaultSnapshotRetention
+	}
+	return c.SnapshotRetention
 }
 
 func (c Config) tlsSANs() []string {
@@ -155,6 +188,9 @@ func Bootstrap(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	}
 	if !versionRe.MatchString(cfg.version()) {
 		return nil, fmt.Errorf("k3s: invalid k3s version %q (want vX.Y.Z+k3sN)", cfg.version())
+	}
+	if !cronRe.MatchString(cfg.snapshotCron()) {
+		return nil, fmt.Errorf("k3s: invalid snapshot schedule %q", cfg.snapshotCron())
 	}
 
 	b := &bootstrapper{r: r, cfg: cfg, res: &Result{}}
@@ -204,6 +240,13 @@ func (b *bootstrapper) logf(format string, args ...any) {
 	}
 }
 
+// configData is the data model for config.yaml.tmpl.
+type configData struct {
+	TLSSANs           []string
+	SnapshotCron      string
+	SnapshotRetention int
+}
+
 // renderFiles materialises the four node files from the embedded templates.
 func (b *bootstrapper) renderFiles() error {
 	var err error
@@ -226,7 +269,12 @@ func (b *bootstrapper) renderFiles() error {
 		return fmt.Errorf("k3s: parse config template: %w", err)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, struct{ TLSSANs []string }{TLSSANs: b.cfg.tlsSANs()}); err != nil {
+	data := configData{
+		TLSSANs:           b.cfg.tlsSANs(),
+		SnapshotCron:      b.cfg.snapshotCron(),
+		SnapshotRetention: b.cfg.snapshotRetention(),
+	}
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("k3s: render config: %w", err)
 	}
 	b.configYAML = buf.Bytes()

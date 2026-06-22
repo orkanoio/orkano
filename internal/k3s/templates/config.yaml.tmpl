@@ -6,6 +6,10 @@ cluster-init: true
 secrets-encryption: true
 protect-kernel-defaults: true
 write-kubeconfig-mode: "0600"
+# Scheduled embedded-etcd snapshots for local disaster recovery. Defaults mirror
+# k3s (every 12h, keep the last 5); shipping snapshots off-box is a later concern.
+etcd-snapshot-schedule-cron: "{{ .SnapshotCron }}"
+etcd-snapshot-retention: {{ .SnapshotRetention }}
 tls-san:
 {{- range .TLSSANs }}
   - "{{ . }}"

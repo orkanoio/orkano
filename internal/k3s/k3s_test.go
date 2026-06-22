@@ -198,6 +198,7 @@ func TestBootstrapFreshInstall(t *testing.T) {
 	for _, want := range []string{
 		"cluster-init: true", "secrets-encryption: true", "protect-kernel-defaults: true",
 		`- "203.0.113.5"`, "audit-policy-file=/var/lib/rancher/k3s/server/audit.yaml",
+		`etcd-snapshot-schedule-cron: "0 */12 * * *"`, "etcd-snapshot-retention: 5",
 	} {
 		if !strings.Contains(cfgFile, want) {
 			t.Errorf("config.yaml missing %q:\n%s", want, cfgFile)
@@ -217,6 +218,29 @@ func TestBootstrapFreshInstall(t *testing.T) {
 	}
 	if !strings.Contains(string(res.Kubeconfig), "https://203.0.113.5:6443") {
 		t.Errorf("kubeconfig not rewritten to the node address:\n%s", res.Kubeconfig)
+	}
+}
+
+func TestBootstrapSnapshotConfig(t *testing.T) {
+	// A custom retention and a range of valid schedules — 5-field cron and the
+	// @-shorthands cronRe deliberately admits — all render verbatim.
+	for _, cron := range []string{"0 3 * * *", "@daily", "@every 6h"} {
+		t.Run(cron, func(t *testing.T) {
+			n := newFakeNode()
+			mustBootstrap(t, n, Config{
+				NodeAddress:       "203.0.113.5",
+				SnapshotCron:      cron,
+				SnapshotRetention: 12,
+			})
+
+			cfg := n.files[pathConfig]
+			if !strings.Contains(cfg, `etcd-snapshot-schedule-cron: "`+cron+`"`) {
+				t.Errorf("snapshot cron %q not rendered:\n%s", cron, cfg)
+			}
+			if !strings.Contains(cfg, "etcd-snapshot-retention: 12") {
+				t.Errorf("custom snapshot retention not rendered:\n%s", cfg)
+			}
+		})
 	}
 }
 
@@ -407,6 +431,8 @@ func TestBootstrapRejectsBadInput(t *testing.T) {
 		{"yaml-injecting address", Config{NodeAddress: "x\"]\nfoo: bar"}},
 		{"bad version", Config{NodeAddress: "node", K3sVersion: "latest; rm -rf /"}},
 		{"bad extra san", Config{NodeAddress: "node", ExtraTLSSANs: []string{"a b"}}},
+		{"yaml-injecting snapshot cron", Config{NodeAddress: "node", SnapshotCron: "0 0 * * *\"\nfoo: bar"}},
+		{"snapshot cron with embedded quote", Config{NodeAddress: "node", SnapshotCron: `0 0 * * *"`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
