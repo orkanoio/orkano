@@ -15,8 +15,10 @@ import (
 // command, decodes base64 writes into a files map, answers `cat`, and answers
 // the readiness `kubectl get … jsonpath` polls from a scriptable state.
 type fakeNode struct {
-	files map[string]string
-	cmds  []string
+	files   map[string]string
+	cmds    []string
+	secrets map[string]string // applied secret name -> rendered manifest
+	noNS    bool              // when true, `get namespace` reports not-found
 
 	// readiness scripting, keyed by "ns/kind/name".
 	readyAfter map[string]int  // polls before the workload reports ready
@@ -27,6 +29,7 @@ type fakeNode struct {
 func newFakeNode() *fakeNode {
 	return &fakeNode{
 		files:      map[string]string{},
+		secrets:    map[string]string{},
 		readyAfter: map[string]int{},
 		pollCount:  map[string]int{},
 		notFound:   map[string]bool{},
@@ -38,6 +41,24 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 	cmd := strings.ReplaceAll(raw, "sudo ", "") // sudo never appears in a base64 payload
 
 	switch {
+	case strings.Contains(cmd, "| base64 -d |") && strings.Contains(cmd, "kubectl apply -f -"):
+		name, manifest := parseSecretApply(cmd)
+		f.secrets[name] = manifest
+		return ssh.Result{}, nil
+
+	case strings.Contains(cmd, "kubectl get namespace "):
+		if f.noNS {
+			return ssh.Result{Stderr: "NotFound", ExitStatus: 1}, nil
+		}
+		return ssh.Result{Stdout: "namespace/orkano-system\n"}, nil
+
+	case strings.Contains(cmd, "kubectl -n") && strings.Contains(cmd, "get secret "):
+		name := secretNameArg(cmd)
+		if _, ok := f.secrets[name]; ok {
+			return ssh.Result{Stdout: "secret/" + name + "\n"}, nil
+		}
+		return ssh.Result{Stderr: "NotFound", ExitStatus: 1}, nil
+
 	case strings.Contains(cmd, "| base64 -d |"):
 		p, c := parseWrite(cmd)
 		f.files[p] = c
@@ -77,6 +98,33 @@ func parseWrite(cmd string) (string, string) {
 	rest := cmd[strings.Index(cmd, "tee ")+len("tee "):]
 	p := strings.TrimSpace(strings.SplitN(rest, " >/dev/null", 2)[0])
 	return p, string(dec)
+}
+
+// parseSecretApply decodes the secret manifest piped into `kubectl apply -f -`
+// and returns the Secret's name and the rendered manifest.
+func parseSecretApply(cmd string) (string, string) {
+	const marker = "printf %s '"
+	start := strings.Index(cmd, marker) + len(marker)
+	end := strings.Index(cmd, "' | base64 -d")
+	dec, _ := base64.StdEncoding.DecodeString(cmd[start:end])
+	manifest := string(dec)
+	for _, line := range strings.Split(manifest, "\n") {
+		if s := strings.TrimSpace(line); strings.HasPrefix(s, "name:") {
+			return strings.TrimSpace(strings.TrimPrefix(s, "name:")), manifest
+		}
+	}
+	return "", manifest
+}
+
+// secretNameArg parses the name from `kubectl -n NS get secret NAME -o name`.
+func secretNameArg(cmd string) string {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		if f == "secret" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 // readinessKey parses "ns/kind/name" from a `kubectl -n NS get KIND NAME …`.

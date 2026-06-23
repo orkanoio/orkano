@@ -109,8 +109,13 @@ func validateTargets(targets []Workload) error {
 
 // Result reports what Apply did.
 type Result struct {
-	// Changed is true when Apply wrote or updated at least one manifest.
+	// Changed is true when Apply wrote a manifest or created a Secret.
 	Changed bool
+	// BootstrapToken is the plaintext one-time install token, set only when this
+	// run generated it (a first install). Empty on a re-run where it already
+	// existed — only its hash is stored, so it can never be reprinted. The caller
+	// prints it exactly once (ADR-0003).
+	BootstrapToken string
 }
 
 func (c Config) autoDeployDir() string {
@@ -162,6 +167,30 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 			res.Changed = true
 			n.logf("wrote %s", f.name)
 		}
+	}
+
+	// The generated Secrets the component workloads reference are created
+	// imperatively (into etcd, encrypted at rest), generate-once, after k3s has
+	// created their namespace — never written to disk in the auto-deploy dir.
+	// This is the component path; the static-only path (no Version) skips it.
+	if cfg.Version != "" {
+		if err := n.waitNamespace(ctx, systemNS, cfg.waitTimeout()); err != nil {
+			return nil, err
+		}
+		// Fresh values are generated every run but used only for Secrets that do
+		// not yet exist; ensureSecrets preserves any already present (generate-
+		// once), so a re-run discards these in memory and never rotates a live
+		// credential. The bootstrap token is returned only if it was just created.
+		vals, err := generateSecretValues()
+		if err != nil {
+			return nil, err
+		}
+		token, secChanged, err := ensureSecrets(ctx, n, vals)
+		if err != nil {
+			return nil, err
+		}
+		res.Changed = res.Changed || secChanged
+		res.BootstrapToken = token
 	}
 
 	if len(cfg.ReadinessTargets) > 0 {

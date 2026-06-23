@@ -54,6 +54,30 @@ func (n *node) waitReady(ctx context.Context, targets []Workload, timeout time.D
 	}
 }
 
+// waitNamespace polls until the namespace exists, so the generated Secrets can
+// be created into it after k3s applies the namespace manifest. A transient
+// transport error or not-found both mean keep waiting; only the timeout fails.
+func (n *node) waitNamespace(ctx context.Context, ns string, timeout time.Duration) error {
+	wait, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(waitPollInterval)
+	defer ticker.Stop()
+
+	for {
+		res, err := n.r.Run(wait, fmt.Sprintf("%s%s kubectl get namespace %s -o name", n.sudo, k3sBin, ns))
+		if err == nil && res.ExitStatus == 0 {
+			return nil
+		}
+
+		select {
+		case <-wait.Done():
+			return fmt.Errorf("install: namespace %s not created within %s", ns, timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 // workloadReady reports whether the workload has at least one ready replica.
 // A not-found resource (still being applied) is not-ready, not an error; only a
 // transport failure is an error.
