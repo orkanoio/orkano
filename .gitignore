@@ -3,6 +3,8 @@ coverage.out
 .DS_Store
 hack/spikes/*/out/
 dist/
+# Stray dev build of the local-loop helper (the tracked source is hack/local-loop/).
+/local-loop
 
 # Internal planning docs and assistant config — private, never committed.
 /PRD.md
