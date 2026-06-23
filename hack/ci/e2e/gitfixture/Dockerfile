@@ -1,0 +1,27 @@
+# Combined E2E helper image (test-only — never a release artifact, so a
+# RUN-based assembly is fine; the COPY-only policy in build/Dockerfile governs
+# the PRODUCT images). It runs two subcommands of the local-loop-helper:
+#   github-stub  — the slice of the GitHub REST API the operator's dispatcher
+#                  re-fetches commits from (operator --github-base-url -> here);
+#   git-fixture  — the App's source repo over `git http-backend` smart HTTP
+#                  (operator --git-base-url -> here),
+# so the hermetic E2E reaches neither github.com nor api.github.com.
+#
+# alpine + the apk git package provide the git binary git-fixture serves
+# through (alpine:3.22 is the same base hack/ci/substrate-smoke/fixture pins, so
+# it is already pulled). Build context = the dir run.sh assembles: the prebuilt
+# linux/amd64 local-loop-helper binary, this seed.sh, and the fixture/ tree, all
+# at the context root.
+FROM alpine:3.22
+RUN apk add --no-cache git
+COPY local-loop-helper /usr/local/bin/local-loop-helper
+COPY seed.sh /usr/local/bin/seed.sh
+COPY fixture/ /fixture/
+# Bake the bare repo at build time (fixed SHA); world-readable so a non-root
+# runtime user can serve it.
+RUN sh /usr/local/bin/seed.sh /fixture /srv/git orkanoio/orkano-e2e \
+    && chmod -R a+rX /srv/git
+# Serve as non-root (the repo is world-readable; :8080 is unprivileged) so the
+# pod admits without a runAsNonRoot fight wherever the harness schedules it.
+USER 65534:65534
+ENTRYPOINT ["local-loop-helper"]

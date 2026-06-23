@@ -29,8 +29,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/cgi" //nolint:gosec // G504: this process makes no outbound HTTP requests while serving git http-backend as CGI, so the Httpoxy (CVE-2016-5386) HTTP_PROXY vector has no target; test-only fixture.
 	"net/url"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/orkanoio/orkano/internal/db"
@@ -61,6 +63,8 @@ func main() {
 		runMigrate(os.Args[2:])
 	case "github-stub":
 		runStub(os.Args[2:])
+	case "git-fixture":
+		runGitFixture(os.Args[2:])
 	case "genkey":
 		runGenKey(os.Args[2:])
 	case "sign":
@@ -71,7 +75,7 @@ func main() {
 }
 
 func usage() {
-	log.Fatal("usage: local-loop-helper {migrate|github-stub|genkey|sign} [flags]")
+	log.Fatal("usage: local-loop-helper {migrate|github-stub|git-fixture|genkey|sign} [flags]")
 }
 
 // runMigrate applies the platform schema + roles to the superuser DSN, sets the
@@ -172,6 +176,56 @@ func runStub(argv []string) {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("github-stub: %v", err)
 	}
+}
+
+// runGitFixture serves the bare git repos under --root over smart HTTP via
+// `git http-backend` (run as CGI), read-only. It is the hermetic E2E's git
+// source: build pods clone the App's repo from it instead of github.com (the
+// operator's --git-base-url points here), so no build reaches the public
+// internet for source. The repos are seeded into --root at image-build time by
+// gitfixture/seed.sh; this command only serves them — the M1.6 E2E grows from
+// the local loop, hence this lives beside the github-stub it pairs with.
+func runGitFixture(argv []string) {
+	fs := flag.NewFlagSet("git-fixture", flag.ExitOnError)
+	addr := fs.String("addr", ":8080", "address to listen on")
+	root := fs.String("root", "/srv/git", "GIT_PROJECT_ROOT: directory the bare repos live under")
+	_ = fs.Parse(argv)
+
+	h, err := gitBackendHandler(*root)
+	if err != nil {
+		log.Fatalf("git-fixture: %v", err)
+	}
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("git-fixture serving %s on %s", *root, *addr)
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatalf("git-fixture: %v", err)
+	}
+}
+
+// gitBackendHandler routes every request to `git http-backend` as CGI, serving
+// every repo under root (GIT_HTTP_EXPORT_ALL=1, no per-repo export marker
+// needed). GIT_HTTP_RECEIVE_PACK=0 disables push explicitly (not relying on the
+// version-dependent default), so the fixture is read-only — exactly what a
+// build's clone needs. Factored out of runGitFixture so a test can drive it
+// over httptest without a real listener.
+func gitBackendHandler(root string) (http.Handler, error) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		return nil, fmt.Errorf("git not found in PATH: %w", err)
+	}
+	return &cgi.Handler{
+		Path: gitBin,
+		Args: []string{"http-backend"},
+		Env: []string{
+			"GIT_PROJECT_ROOT=" + root,
+			"GIT_HTTP_EXPORT_ALL=1",
+			"GIT_HTTP_RECEIVE_PACK=0",
+		},
+	}, nil
 }
 
 // logHit logs which stub endpoint was hit. The label is a static literal, never
