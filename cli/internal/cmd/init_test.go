@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net"
 	"os"
@@ -21,6 +22,7 @@ import (
 // `ss -Hltn` body, so a test can make a required port look occupied.
 func healthyNode(ssOutput string) sshtest.ExecHandler {
 	installed := false
+	apparmorLoaded := false
 	files := map[string]string{}
 	return func(raw string) (string, string, int) {
 		cmd := strings.ReplaceAll(raw, "sudo ", "")
@@ -41,13 +43,28 @@ func healthyNode(ssOutput string) sshtest.ExecHandler {
 			}
 			return "k3s version v1.35.5+k3s1 (abc)\n", "", 0
 		case strings.Contains(cmd, "| base64 -d |"):
-			files["written"] = cmd
+			path, content := decodeWrite(cmd)
+			files[path] = content
 			return "", "", 0
 		case cmd == "cat /etc/rancher/k3s/k3s.yaml":
 			return "clusters:\n- cluster:\n    server: https://127.0.0.1:6443\n", "", 0
 		case cmd == "cat /var/lib/rancher/k3s/server/token":
 			return "K10cafef00d::server:abc123def456\n", "", 0
+		// nodeprep: AppArmor profile load + verification
+		case strings.Contains(cmd, "apparmor_parser -r"):
+			apparmorLoaded = true
+			return "", "", 0
+		case cmd == "cat /sys/kernel/security/apparmor/profiles":
+			if apparmorLoaded {
+				return "cri-containerd.apparmor.d (enforce)\norkano-buildkit (enforce)\n", "", 0
+			}
+			return "cri-containerd.apparmor.d (enforce)\n", "", 0
 		case strings.HasPrefix(cmd, "cat "):
+			// Serve a previously written file by path so a re-run converges to a
+			// no-op (matches a real node); anything unwritten is absent.
+			if c, ok := files[strings.TrimPrefix(cmd, "cat ")]; ok {
+				return c, "", 0
+			}
 			return "", "no such file", 1
 		case strings.HasPrefix(cmd, "sysctl -p"), strings.HasPrefix(cmd, "mkdir -p -m 700"):
 			return "", "", 0
@@ -64,6 +81,33 @@ func healthyNode(ssOutput string) sshtest.ExecHandler {
 			return "", "unexpected: " + cmd, 127
 		}
 	}
+}
+
+// failingAppArmorNode is a healthy node whose AppArmor profile load fails, to
+// prove orkano init refuses the node rather than leaving builds silently broken.
+func failingAppArmorNode() sshtest.ExecHandler {
+	base := healthyNode("")
+	return func(raw string) (string, string, int) {
+		if strings.Contains(strings.ReplaceAll(raw, "sudo ", ""), "apparmor_parser -r") {
+			return "", "apparmor_parser: profile failed to load", 1
+		}
+		return base(raw)
+	}
+}
+
+// decodeWrite extracts the path and decoded content from an ensureFile write
+// command (`printf %s 'BASE64' | base64 -d | tee PATH >/dev/null && ...`).
+func decodeWrite(cmd string) (path, content string) {
+	const start = "printf %s '"
+	i := strings.Index(cmd, start)
+	j := strings.Index(cmd, "' | base64 -d")
+	if i < 0 || j < 0 {
+		return "", ""
+	}
+	dec, _ := base64.StdEncoding.DecodeString(cmd[i+len(start) : j])
+	const teeMark = "tee "
+	rest := cmd[strings.Index(cmd, teeMark)+len(teeMark):]
+	return strings.TrimSpace(rest[:strings.Index(rest, " >/dev/null")]), string(dec)
 }
 
 func hostPort(t *testing.T, addr string) (string, int) {
@@ -122,6 +166,29 @@ func TestInitHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "KUBECONFIG="+opt.kubeconfig) {
 		t.Errorf("summary missing next-step hint:\n%s", out.String())
+	}
+	// The AppArmor profile load actually ran over sshtest (healthyNode answers
+	// apparmor_parser + the profiles read); the summary reports the confinement.
+	if !strings.Contains(out.String(), "build confinement:  AppArmor orkano-buildkit (enforce)") {
+		t.Errorf("summary missing the build-confinement line:\n%s", out.String())
+	}
+}
+
+func TestInitRefusesOnAppArmorFailure(t *testing.T) {
+	// The node bootstraps fine but the AppArmor profile fails to load — init must
+	// refuse it (a node without the profile silently breaks every build) and not
+	// write the kubeconfig.
+	srv := sshtest.New(failingAppArmorNode())
+	defer srv.Close()
+
+	opt := baseOptions(t, srv)
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "AppArmor profile") {
+		t.Fatalf("want AppArmor load refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(opt.kubeconfig); statErr == nil {
+		t.Error("kubeconfig was written despite the AppArmor load failure")
 	}
 }
 
@@ -217,14 +284,14 @@ func TestInitHAOrchestration(t *testing.T) {
 
 	orig := bootstrapOne
 	defer func() { bootstrapOne = orig }()
-	bootstrapOne = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, node, _ string, cfg k3s.Config) (*k3s.Result, error) {
+	bootstrapOne = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, node, _ string, cfg k3s.Config) (*k3s.Result, bool, error) {
 		calls = append(calls, call{node, cfg})
 		res := &k3s.Result{Version: "v1.35.5+k3s1", SecretsEncryption: "Enabled", AuditLogPresent: true, Changed: true}
 		if cfg.ServerURL == "" { // the first (cluster-init) server
 			res.Token = token
 			res.Kubeconfig = []byte("kubeconfig-from-first\n")
 		}
-		return res, nil
+		return res, false, nil
 	}
 
 	kcPath := filepath.Join(t.TempDir(), "kubeconfig")
@@ -261,6 +328,9 @@ func TestInitHAOrchestration(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "3 (HA, embedded etcd)") {
 		t.Errorf("summary missing the HA server count:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "build confinement:") {
+		t.Errorf("summary missing the build-confinement line:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "load balancer") {
 		t.Errorf("summary missing the HA kubeconfig caveat:\n%s", out.String())

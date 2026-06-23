@@ -10,6 +10,7 @@ import (
 
 	"github.com/orkanoio/orkano/internal/checks"
 	"github.com/orkanoio/orkano/internal/k3s"
+	"github.com/orkanoio/orkano/internal/nodeprep"
 	"github.com/orkanoio/orkano/internal/preflight"
 	"github.com/orkanoio/orkano/internal/ssh"
 	"github.com/spf13/cobra"
@@ -106,11 +107,11 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 			ReadyTimeout:  opt.readyTimeout,
 			Logf:          func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 		}
-		res, err := bootstrapOne(ctx, out, errw, opt, privateKey, node, hostKeyPath, cfg)
+		res, apparmorChanged, err := bootstrapOne(ctx, out, errw, opt, privateKey, node, hostKeyPath, cfg)
 		if err != nil {
 			return fmt.Errorf("bootstrap %s: %w", node, err)
 		}
-		anyChanged = anyChanged || res.Changed
+		anyChanged = anyChanged || res.Changed || apparmorChanged
 		anyFresh = anyFresh || !res.AlreadyInstalled
 		if i == 0 {
 			first = res
@@ -129,16 +130,19 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 
 // bootstrapOne is the per-node bootstrap, indirected through a package variable
 // so the HA-orchestration test can stub it and assert the loop's token/serverURL
-// threading and kubeconfig selection without a live cluster.
+// threading and kubeconfig selection without a live cluster. It returns the k3s
+// result, whether the AppArmor node-prep step changed anything, and an error.
 var bootstrapOne = bootstrapNode
 
 // bootstrapNode runs the identical per-node setup (host-key pinning, preflight,
-// k3s bootstrap) so the HA loop does not duplicate it across servers.
-func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, privateKey []byte, node, hostKeyPath string, cfg k3s.Config) (*k3s.Result, error) {
+// k3s bootstrap, AppArmor profile load) so the HA loop does not duplicate it
+// across servers. The second return reports whether the AppArmor step changed
+// node state, so the summary headline reflects an AppArmor-only convergence.
+func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, privateKey []byte, node, hostKeyPath string, cfg k3s.Config) (*k3s.Result, bool, error) {
 	addr := net.JoinHostPort(node, fmt.Sprintf("%d", opt.sshPort))
 	hostKey, err := resolveHostKey(ctx, errw, addr, hostKeyPath, opt.acceptNewKey)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	client, err := ssh.New(ssh.Config{
@@ -148,19 +152,37 @@ func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, p
 		HostKey:    hostKey,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("configure SSH client for %s: %w", node, err)
+		return nil, false, fmt.Errorf("configure SSH client for %s: %w", node, err)
 	}
 	defer func() { _ = client.Close() }()
 
 	target := opt.sshUser + "@" + node
 	if !opt.skipPreflight {
 		if err := runPreflight(ctx, out, client, target); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
 	writef(errw, "Bootstrapping k3s on %s...\n", target)
-	return k3s.Bootstrap(ctx, client, cfg)
+	res, err := k3s.Bootstrap(ctx, client, cfg)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Load the build-confinement AppArmor profile on every node. Without it,
+	// build pods scheduled on this node cannot start (ADR-0012), so it is
+	// verified, not assumed; a failure refuses the node rather than leaving every
+	// future build silently broken.
+	writef(errw, "Loading build confinement profile on %s...\n", target)
+	npRes, err := nodeprep.EnsureAppArmorProfile(ctx, nodeprep.Options{
+		Runner: client,
+		Sudo:   cfg.Sudo,
+		Logf:   func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("load AppArmor profile on %s: %w", node, err)
+	}
+	return res, npRes.Changed, nil
 }
 
 // otherNodes returns every node address except the one at index skip.
@@ -259,6 +281,7 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	}
 	writef(out, "  secrets encryption: %s\n", res.SecretsEncryption)
 	writef(out, "  audit logging:      %s\n", presentLabel(res.AuditLogPresent))
+	writef(out, "  build confinement:  AppArmor %s (enforce)\n", nodeprep.ProfileName)
 	if len(opt.nodes) > 1 {
 		writef(out, "  servers:            %d (HA, embedded etcd)\n", len(opt.nodes))
 	}
