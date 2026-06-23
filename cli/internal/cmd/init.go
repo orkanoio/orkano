@@ -32,6 +32,7 @@ type initOptions struct {
 	acmeEmail     string
 	acmeProd      bool
 	allowRepos    []string
+	receiverHost  string
 }
 
 func newInitCommand(version string) *cobra.Command {
@@ -64,6 +65,7 @@ func newInitCommand(version string) *cobra.Command {
 	f.StringVar(&opt.acmeEmail, "acme-email", "", "email to register the Let's Encrypt account with (optional)")
 	f.BoolVar(&opt.acmeProd, "acme-prod", false, "use Let's Encrypt production instead of staging (staging is the safe default)")
 	f.StringArrayVar(&opt.allowRepos, "allow-repo", nil, "owner/repo allowed to trigger builds; repeat to allow several (the webhook receiver's allowlist)")
+	f.StringVar(&opt.receiverHost, "receiver-host", "", "public hostname to expose the webhook receiver on over HTTPS (optional; without it the receiver stays cluster-internal)")
 
 	return cmd
 }
@@ -97,7 +99,9 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	// addresses so the kubeconfig (and any load balancer placed in front) is
 	// valid against any of them.
 	var first *k3s.Result
-	var firstHostKey []byte
+	// One pinned host key per node, kept so the component deploy (first server)
+	// and the registry wiring (every node) can reconnect without re-scanning.
+	hostKeys := make([][]byte, len(opt.nodes))
 	serverURL, token := "", ""
 	anyChanged, anyFresh := false, false
 	for i, node := range opt.nodes {
@@ -120,11 +124,11 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 		if err != nil {
 			return fmt.Errorf("bootstrap %s: %w", node, err)
 		}
+		hostKeys[i] = hostKey
 		anyChanged = anyChanged || res.Changed || apparmorChanged
 		anyFresh = anyFresh || !res.AlreadyInstalled
 		if i == 0 {
 			first = res
-			firstHostKey = hostKey
 			serverURL = fmt.Sprintf("https://%s:6443", node)
 			token = res.Token
 		}
@@ -138,9 +142,17 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	// cert-manager, RBAC, NetworkPolicies, registry, platform Postgres, operator,
 	// receiver) and the generated Secrets, then wait for the critical path.
 	writef(errw, "Deploying Orkano components on %s...\n", opt.nodes[0])
-	bootstrapToken, err := deployComponents(ctx, out, errw, opt, privateKey, firstHostKey)
+	bootstrapToken, err := deployComponents(ctx, out, errw, opt, privateKey, hostKeys[0])
 	if err != nil {
 		return fmt.Errorf("deploy components: %w", err)
+	}
+
+	// Point every node's container runtime at the now-issued in-cluster registry
+	// (registries.yaml + CA, a k3s restart per changed node) and publish the
+	// build-pod CA + the node-ingress policy from the first server.
+	writef(errw, "Wiring the in-cluster registry...\n")
+	if err := wireRegistry(ctx, out, errw, opt, privateKey, hostKeys); err != nil {
+		return fmt.Errorf("wire registry: %w", err)
 	}
 
 	printSummary(out, opt, first, anyFresh, anyChanged, bootstrapToken)
@@ -159,10 +171,9 @@ var deployComponents = deployOnNode0
 // with the auto-deploy directory; the deploy is idempotent, so it is re-runnable.
 func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, privateKey, hostKey []byte) (string, error) {
 	node := opt.nodes[0]
-	addr := net.JoinHostPort(node, fmt.Sprintf("%d", opt.sshPort))
-	client, err := ssh.New(ssh.Config{Addr: addr, User: opt.sshUser, PrivateKey: privateKey, HostKey: hostKey})
+	client, err := dialNode(opt, privateKey, node, hostKey)
 	if err != nil {
-		return "", fmt.Errorf("configure SSH client for %s: %w", node, err)
+		return "", err
 	}
 	defer func() { _ = client.Close() }()
 
@@ -171,6 +182,7 @@ func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, pri
 		ACMEEmail:        opt.acmeEmail,
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
+		ReceiverHost:     opt.receiverHost,
 		ReadinessTargets: install.DefaultReadinessTargets(),
 		Sudo:             opt.sshUser != "root",
 		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
@@ -179,6 +191,62 @@ func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, pri
 		return "", err
 	}
 	return res.BootstrapToken, nil
+}
+
+// wireRegistry is the node-registry-wiring step, indirected through a package
+// variable so the CLI-orchestration tests can stub it (like deployComponents).
+// The wiring itself is engine-tested in internal/install over a fake node.
+var wireRegistry = wireRegistryOnNodes
+
+// wireRegistryOnNodes reads the issued registry CA + ClusterIP on the first
+// server (publishing the build-pod CA ConfigMap and the node-ingress policy),
+// then writes registries.yaml + the CA onto every node so the kubelet can pull
+// the digest-pinned app images, restarting k3s where the config changed. Each
+// connection reuses the host key pinned during bootstrap (no re-scan).
+func wireRegistryOnNodes(ctx context.Context, _, errw io.Writer, opt *initOptions, privateKey []byte, hostKeys [][]byte) error {
+	cfg := install.Config{
+		Sudo:                opt.sshUser != "root",
+		RestartReadyTimeout: opt.readyTimeout,
+		Logf:                func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
+	}
+
+	node0, err := dialNode(opt, privateKey, opt.nodes[0], hostKeys[0])
+	if err != nil {
+		return err
+	}
+	info, err := install.WireRegistry(ctx, node0, cfg)
+	_ = node0.Close()
+	if err != nil {
+		return fmt.Errorf("%s: %w", opt.nodes[0], err)
+	}
+
+	for i, node := range opt.nodes {
+		client, err := dialNode(opt, privateKey, node, hostKeys[i])
+		if err != nil {
+			return err
+		}
+		writef(errw, "  configuring the registry on %s...\n", node)
+		changed, err := install.WriteNodeRegistry(ctx, client, info, cfg)
+		_ = client.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", node, err)
+		}
+		if changed {
+			writef(errw, "  applied registry config on %s\n", node)
+		}
+	}
+	return nil
+}
+
+// dialNode opens an SSH client to a node, pinning the host key resolved during
+// bootstrap (no re-scan, no re-printed fingerprint).
+func dialNode(opt *initOptions, privateKey []byte, node string, hostKey []byte) (*ssh.Client, error) {
+	addr := net.JoinHostPort(node, fmt.Sprintf("%d", opt.sshPort))
+	client, err := ssh.New(ssh.Config{Addr: addr, User: opt.sshUser, PrivateKey: privateKey, HostKey: hostKey})
+	if err != nil {
+		return nil, fmt.Errorf("configure SSH client for %s: %w", node, err)
+	}
+	return client, nil
 }
 
 // bootstrapOne is the per-node bootstrap, indirected through a package variable
@@ -342,6 +410,12 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 		writef(out, "  servers:            %d (HA, embedded etcd)\n", len(opt.nodes))
 	}
 	writef(out, "  components:         deployed\n")
+	writef(out, "  registry:           wired on every node\n")
+	if opt.receiverHost != "" {
+		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
+	} else {
+		writef(out, "  receiver:           cluster-internal (set --receiver-host to expose it)\n")
+	}
 	writef(out, "  kubeconfig:         %s\n", opt.kubeconfig)
 	if len(opt.nodes) > 1 {
 		writef(out, "\nThe kubeconfig points at the first server (%s). The cluster keeps serving\n"+

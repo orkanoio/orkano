@@ -1,0 +1,32 @@
+# The receiver is Orkano's one internet-facing component (GitHub webhooks,
+# INV-05). This Ingress exposes it on --receiver-host over HTTPS: cert-manager's
+# ingress-shim issues the certificate from the orkano-platform ClusterIssuer
+# (ADR-0006), and the cluster-wide Traefik web->websecure redirect
+# (config/traefik) sends plain HTTP there. Rendered only when --receiver-host is
+# set; without a host the receiver stays ClusterIP-only and is exposed later.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+  annotations:
+    cert-manager.io/cluster-issuer: orkano-platform
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - {{ .ReceiverHost }}
+      secretName: orkano-receiver-tls
+  rules:
+    - host: {{ .ReceiverHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orkano-receiver
+                port:
+                  number: 80

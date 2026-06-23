@@ -94,6 +94,33 @@ func TestRenderComponentsAllowlist(t *testing.T) {
 	}
 }
 
+func TestRenderComponentsReceiverIngressOptional(t *testing.T) {
+	// Without --receiver-host the Ingress is skipped entirely (an empty host would
+	// render an invalid Ingress); the receiver stays ClusterIP-only.
+	without := renderByName(t, Config{Version: "1.0.0"})
+	if _, ok := without["receiver-ingress.yaml"]; ok {
+		t.Error("receiver Ingress should not render without --receiver-host")
+	}
+
+	with := renderByName(t, Config{Version: "1.0.0", ReceiverHost: "hooks.example.com"})
+	ing, ok := with["receiver-ingress.yaml"]
+	if !ok {
+		t.Fatal("receiver Ingress should render with --receiver-host")
+	}
+	for _, want := range []string{
+		"host: hooks.example.com",
+		"- hooks.example.com",
+		"cert-manager.io/cluster-issuer: orkano-platform",
+		"secretName: orkano-receiver-tls",
+		"ingressClassName: traefik",
+		"name: orkano-receiver",
+	} {
+		if !strings.Contains(ing, want) {
+			t.Errorf("receiver Ingress missing %q", want)
+		}
+	}
+}
+
 func TestRenderComponentsValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -103,6 +130,8 @@ func TestRenderComponentsValidation(t *testing.T) {
 		{"bad email", Config{Version: "1.0.0", ACMEEmail: "not-an-email\ninjected: true"}},
 		{"bad repo", Config{Version: "1.0.0", RepoAllowlist: []string{`bad"repo`}}},
 		{"repo without slash", Config{Version: "1.0.0", RepoAllowlist: []string{"noslash"}}},
+		{"bad receiver host", Config{Version: "1.0.0", ReceiverHost: "bad host\ninjected: true"}},
+		{"receiver host with scheme", Config{Version: "1.0.0", ReceiverHost: "https://hooks.example.com"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := renderComponents(tc.cfg); err == nil {
@@ -128,5 +157,24 @@ func TestApplyWritesComponentsWhenVersioned(t *testing.T) {
 		if _, ok := n.files[path.Join(base, name)]; !ok {
 			t.Errorf("expected %s to be deployed", name)
 		}
+	}
+	// The optional receiver Ingress is the one conditional file: absent here
+	// (no ReceiverHost), present in TestApplyWritesReceiverIngressWhenHostSet.
+	if _, ok := n.files[path.Join(base, "receiver-ingress.yaml")]; ok {
+		t.Error("receiver Ingress should not deploy without a receiver host")
+	}
+}
+
+func TestApplyWritesReceiverIngressWhenHostSet(t *testing.T) {
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{Version: "2.0.0", ReceiverHost: "hooks.example.com"}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	ing, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "receiver-ingress.yaml")]
+	if !ok {
+		t.Fatal("receiver Ingress was not deployed with a receiver host")
+	}
+	if !strings.Contains(ing, "host: hooks.example.com") {
+		t.Errorf("deployed receiver Ingress missing the host:\n%s", ing)
 	}
 }

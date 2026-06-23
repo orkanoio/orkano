@@ -31,8 +31,13 @@ var (
 	versionRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	emailRe     = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`)
 	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+	hostRe      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	templateExt = ".yaml.tmpl"
 )
+
+// receiverIngressTemplate is rendered only when a receiver host is configured;
+// without one the receiver stays ClusterIP-only and the file is skipped.
+const receiverIngressTemplate = "receiver-ingress.yaml.tmpl"
 
 // templateData feeds the component templates.
 type templateData struct {
@@ -41,6 +46,7 @@ type templateData struct {
 	ACMEServer    string
 	ACMEEmail     string
 	RepoAllowlist string // comma-joined owner/repo list
+	ReceiverHost  string // public hostname for the receiver Ingress (may be empty)
 }
 
 // renderComponents renders the per-install component manifests (operator and
@@ -62,6 +68,9 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 	if cfg.ACMEEmail != "" && !emailRe.MatchString(cfg.ACMEEmail) {
 		return nil, fmt.Errorf("install: invalid ACME email %q", cfg.ACMEEmail)
 	}
+	if cfg.ReceiverHost != "" && !hostRe.MatchString(cfg.ReceiverHost) {
+		return nil, fmt.Errorf("install: invalid receiver host %q", cfg.ReceiverHost)
+	}
 
 	data := templateData{
 		OperatorImage: imageRepo + "/orkano-operator:" + cfg.Version,
@@ -69,6 +78,7 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 		ACMEServer:    acmeServer(cfg.ACMEProd),
 		ACMEEmail:     cfg.ACMEEmail,
 		RepoAllowlist: allowlist,
+		ReceiverHost:  cfg.ReceiverHost,
 	}
 
 	entries, err := componentTemplates.ReadDir("templates")
@@ -78,6 +88,11 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 	var files []manifestFile
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), templateExt) {
+			continue
+		}
+		// The receiver Ingress is optional: rendering it with an empty host would
+		// emit an invalid Ingress, so it is skipped entirely without --receiver-host.
+		if e.Name() == receiverIngressTemplate && cfg.ReceiverHost == "" {
 			continue
 		}
 		raw, err := componentTemplates.ReadFile("templates/" + e.Name())

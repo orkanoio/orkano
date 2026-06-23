@@ -166,10 +166,33 @@ func stubDeploy(t *testing.T, token string) *deployCall {
 	return c
 }
 
+// wireCall records what runInit passed to the (stubbed) registry-wiring step.
+type wireCall struct {
+	called   bool
+	hostKeys [][]byte
+}
+
+// stubWireRegistry replaces the node-registry-wiring step with a stub, restoring
+// the real one on cleanup. The wiring is engine-tested in internal/install; here
+// we only assert the CLI orchestration around it (it is called after deploy with
+// one host key per node).
+func stubWireRegistry(t *testing.T) *wireCall {
+	t.Helper()
+	orig := wireRegistry
+	t.Cleanup(func() { wireRegistry = orig })
+	c := &wireCall{}
+	wireRegistry = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, hostKeys [][]byte) error {
+		c.called, c.hostKeys = true, hostKeys
+		return nil
+	}
+	return c
+}
+
 func TestInitHappyPath(t *testing.T) {
 	srv := sshtest.New(healthyNode(""))
 	defer srv.Close()
 	stubDeploy(t, "boot-token-xyz")
+	wire := stubWireRegistry(t)
 
 	opt := baseOptions(t, srv)
 	var out, errw bytes.Buffer
@@ -178,6 +201,18 @@ func TestInitHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "components:         deployed") {
 		t.Errorf("summary missing the components line:\n%s", out.String())
+	}
+	if !wire.called {
+		t.Error("registry wiring step was not invoked")
+	}
+	if len(wire.hostKeys) != 1 {
+		t.Errorf("registry wiring got %d host keys, want 1", len(wire.hostKeys))
+	}
+	if !strings.Contains(out.String(), "registry:           wired on every node") {
+		t.Errorf("summary missing the registry line:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "receiver:           cluster-internal") {
+		t.Errorf("summary should note the receiver stays cluster-internal without --receiver-host:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "Bootstrap token (shown once") || !strings.Contains(out.String(), "boot-token-xyz") {
 		t.Errorf("summary missing the one-time bootstrap token:\n%s", out.String())
@@ -242,6 +277,7 @@ func TestInitSkipPreflightProceeds(t *testing.T) {
 	srv := sshtest.New(healthyNode("LISTEN 0 128 0.0.0.0:6443 0.0.0.0:*\n"))
 	defer srv.Close()
 	stubDeploy(t, "")
+	stubWireRegistry(t)
 
 	opt := baseOptions(t, srv)
 	opt.skipPreflight = true
@@ -307,6 +343,7 @@ func TestFirstDuplicate(t *testing.T) {
 func TestInitHAOrchestration(t *testing.T) {
 	const token = "K10secret::server:deadbeef"
 	stubDeploy(t, "") // HA test focuses on the bootstrap loop; deploy is stubbed
+	wire := stubWireRegistry(t)
 	type call struct {
 		node string
 		cfg  k3s.Config
@@ -322,7 +359,8 @@ func TestInitHAOrchestration(t *testing.T) {
 			res.Token = token
 			res.Kubeconfig = []byte("kubeconfig-from-first\n")
 		}
-		return res, nil, false, nil
+		// Distinct per-node host keys so the registry-wiring threading is provable.
+		return res, []byte("hostkey-" + node), false, nil
 	}
 
 	kcPath := filepath.Join(t.TempDir(), "kubeconfig")
@@ -369,6 +407,17 @@ func TestInitHAOrchestration(t *testing.T) {
 	if strings.Contains(out.String(), token) || strings.Contains(errw.String(), token) {
 		t.Error("join token leaked into CLI output")
 	}
+	// The registry wiring must receive one host key per node, in node order, so it
+	// can reach every node (registries.yaml is written cluster-wide, not just on
+	// node 0) reusing each node's pinned key.
+	if !wire.called || len(wire.hostKeys) != 3 {
+		t.Fatalf("registry wiring got %d host keys, want 3 (one per node)", len(wire.hostKeys))
+	}
+	for i, node := range opt.nodes {
+		if string(wire.hostKeys[i]) != "hostkey-"+node {
+			t.Errorf("registry wiring host key[%d] = %q, want the key pinned for %s", i, wire.hostKeys[i], node)
+		}
+	}
 }
 
 // TestInitRunsComponentDeploy stubs the bootstrap and deploy steps to assert
@@ -381,17 +430,19 @@ func TestInitRunsComponentDeploy(t *testing.T) {
 		return &k3s.Result{Version: "v1.35.5+k3s1", SecretsEncryption: "Enabled", AuditLogPresent: true, Kubeconfig: []byte("kc\n")}, nil, false, nil
 	}
 	deploy := stubDeploy(t, "the-install-token")
+	stubWireRegistry(t)
 
 	opt := &initOptions{
-		version:    "9.9.9",
-		nodes:      []string{"10.0.0.1"},
-		sshUser:    "root",
-		sshPort:    22,
-		sshKeyPath: writeTemp(t, "id", []byte("dummy-key")),
-		kubeconfig: filepath.Join(t.TempDir(), "kubeconfig"),
-		acmeEmail:  "ops@example.com",
-		acmeProd:   true,
-		allowRepos: []string{"orkanoio/orkano"},
+		version:      "9.9.9",
+		nodes:        []string{"10.0.0.1"},
+		sshUser:      "root",
+		sshPort:      22,
+		sshKeyPath:   writeTemp(t, "id", []byte("dummy-key")),
+		kubeconfig:   filepath.Join(t.TempDir(), "kubeconfig"),
+		acmeEmail:    "ops@example.com",
+		acmeProd:     true,
+		allowRepos:   []string{"orkanoio/orkano"},
+		receiverHost: "hooks.example.com",
 	}
 	var out, errw bytes.Buffer
 	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
@@ -404,8 +455,14 @@ func TestInitRunsComponentDeploy(t *testing.T) {
 	if deploy.opt.version != "9.9.9" || deploy.opt.acmeEmail != "ops@example.com" || !deploy.opt.acmeProd {
 		t.Errorf("deploy did not receive the version/ACME flags: %+v", deploy.opt)
 	}
+	if deploy.opt.receiverHost != "hooks.example.com" {
+		t.Errorf("deploy did not receive --receiver-host: %q", deploy.opt.receiverHost)
+	}
 	if len(deploy.opt.allowRepos) != 1 || deploy.opt.allowRepos[0] != "orkanoio/orkano" {
 		t.Errorf("deploy did not receive the allowlist: %v", deploy.opt.allowRepos)
+	}
+	if !strings.Contains(out.String(), "receiver:           https://hooks.example.com") {
+		t.Errorf("summary missing the exposed-receiver line:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "the-install-token") {
 		t.Errorf("bootstrap token not printed:\n%s", out.String())

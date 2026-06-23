@@ -66,11 +66,18 @@ type Config struct {
 	ACMEProd bool
 	// RepoAllowlist seeds the receiver's ORKANO_REPO_ALLOWLIST (owner/name).
 	RepoAllowlist []string
+	// ReceiverHost is the public hostname for the webhook receiver's Ingress.
+	// Empty renders no Ingress — the receiver stays ClusterIP-only (INV-05).
+	ReceiverHost string
 	// ReadinessTargets are the workloads Apply waits to become Ready before
 	// returning. Empty skips the wait.
 	ReadinessTargets []Workload
 	// WaitTimeout overrides DefaultWaitTimeout when positive.
 	WaitTimeout time.Duration
+	// RestartReadyTimeout bounds the wait for a node's apiserver to come back
+	// after a registries.yaml-triggered k3s restart; 0 uses the package default.
+	// The CLI feeds it the same budget as the bootstrap ready wait (--ready-timeout).
+	RestartReadyTimeout time.Duration
 	// Sudo prefixes privileged commands with sudo (non-root SSH user).
 	Sudo bool
 	// Logf receives human-readable progress lines; nil discards them.
@@ -146,6 +153,13 @@ func (c Config) waitTimeout() time.Duration {
 		return DefaultWaitTimeout
 	}
 	return c.WaitTimeout
+}
+
+func (c Config) restartReadyTimeout() time.Duration {
+	if c.RestartReadyTimeout <= 0 {
+		return defaultRestartReadyTimeout
+	}
+	return c.RestartReadyTimeout
 }
 
 // Apply writes the static manifest set into the server node's auto-deploy
