@@ -1,0 +1,65 @@
+# One-shot migration Job (M1.5 component deploy). Runs `orkano-operator migrate`
+# (the operator image's migrate subcommand) to apply the platform schema and set
+# the least-privilege role passwords, using the superuser DSN. It retries until
+# Postgres is reachable (OnFailure + backoffLimit), so ordering against the
+# platform-postgres StatefulSet is handled by retry, not sequencing. It touches
+# only Postgres, never the Kubernetes API: no SA token, restricted PSA.
+#
+# Runs once at install. Re-applying a completed Job is a no-op; applying new
+# migrations on upgrade is `orkano upgrade`'s job (Phase 5), not init's.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orkano-migrate
+  namespace: orkano-system
+spec:
+  # OnFailure restarts cap at ~5 min of kubelet backoff each; 10 retries gives a
+  # ~30 min ceiling — ample for a cold-start Postgres on a slow PVC, while a
+  # genuinely stuck DB still surfaces as a Failed Job rather than hanging for
+  # hours.
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-migrate
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ .OperatorImage }}
+          args: ["migrate"]
+          env:
+            # Superuser DSN to apply the schema and ALTER ROLE the two roles.
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-postgres-superuser
+                  key: dsn
+            - name: ORKANO_RECEIVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-receiver-db
+                  key: password
+            - name: ORKANO_DISPATCHER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-operator-db
+                  key: password
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

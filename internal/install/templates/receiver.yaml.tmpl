@@ -1,0 +1,93 @@
+# Orkano webhook receiver (M1.5 component deploy, rendered per install). The one
+# internet-facing component, exposed via a Traefik Ingress (rendered separately
+# for --receiver-host). It holds no Kubernetes credentials (INV-04): SA token not
+# mounted, no Role. Its entire config is the HMAC secret, the INSERT-only
+# receiver DSN, and the repo allowlist. Runs restricted-PSA in orkano-system.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-receiver
+  template:
+    metadata:
+      labels:
+        # The netpol contract: the orkano-receiver egress policy keys on this
+        # label — unlabeled pods get no egress and fail closed.
+        app.kubernetes.io/name: orkano-receiver
+    spec:
+      serviceAccountName: orkano-receiver
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receiver
+          image: {{ .ReceiverImage }}
+          env:
+            - name: ORKANO_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-webhook-secret
+                  key: secret
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-receiver-db
+                  key: dsn
+            # The allowlist is not a secret; it is a plain comma-separated value.
+            - name: ORKANO_REPO_ALLOWLIST
+              value: "{{ .RepoAllowlist }}"
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+# ClusterIP: the receiver is reached through the Traefik Ingress (rendered for
+# --receiver-host), never directly. INV-05: nothing public except via that
+# deliberate Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-receiver
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

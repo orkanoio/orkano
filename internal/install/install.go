@@ -56,6 +56,16 @@ type Runner interface {
 type Config struct {
 	// AutoDeployDir overrides DefaultAutoDeployDir (tests).
 	AutoDeployDir string
+	// Version is the CLI's own version; it tags the first-party operator and
+	// receiver images so the deployed components match the installer. Empty
+	// renders no component manifests (the static-only path tests exercise).
+	Version string
+	// ACMEEmail registers the orkano-platform ACME account (optional).
+	ACMEEmail string
+	// ACMEProd selects Let's Encrypt production; false uses staging (default).
+	ACMEProd bool
+	// RepoAllowlist seeds the receiver's ORKANO_REPO_ALLOWLIST (owner/name).
+	RepoAllowlist []string
 	// ReadinessTargets are the workloads Apply waits to become Ready before
 	// returning. Empty skips the wait.
 	ReadinessTargets []Workload
@@ -134,6 +144,14 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Per-install component manifests (version-tagged images, ACME/allowlist
+	// values) join the static set; both are written and reconciled identically.
+	comps, err := renderComponents(cfg)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, comps...)
+
 	base := path.Join(cfg.autoDeployDir(), manifestSubdir)
 	for _, f := range files {
 		changed, err := n.ensureFile(ctx, path.Join(base, f.name), f.content, manifestMode)
