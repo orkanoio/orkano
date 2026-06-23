@@ -119,8 +119,11 @@ func run(m *testing.M) (code int) {
 	}
 	// The digest resolver is stubbed: envtest has no registry to HEAD. The
 	// real Resolver's TLS round trip is covered by its own test against a
-	// local TLS server (build_controller_test.go).
-	if err := (&BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: stubResolveDigest}).SetupWithManager(mgr); err != nil {
+	// local TLS server (build_controller_test.go). GitBaseURL is a sentinel
+	// (not the github.com default) so the Build-test context assertion proves
+	// r.GitBaseURL threads through to the rendered Job, not a hardcoded prefix;
+	// envtest never executes the build.
+	if err := (&BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: stubResolveDigest, GitBaseURL: "http://git.example.test/"}).SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to set up Build controller: %v\n", err)
 		return 1
 	}

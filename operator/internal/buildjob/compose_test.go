@@ -77,7 +77,7 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
 			build := snapshotBuild(t, tc.file)
-			inv := Compose(build)
+			inv := Compose(build, DefaultGitBaseURL)
 			if inv.ContextURL != tc.wantContextURL {
 				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
 			}
@@ -149,12 +149,56 @@ func TestComposeNormalizesSubPath(t *testing.T) {
 			if tc.dockerfilePath != "" {
 				build.Spec.Strategy.Dockerfile = &orkanov1alpha1.DockerfileBuild{Path: tc.dockerfilePath}
 			}
-			inv := Compose(build)
+			inv := Compose(build, DefaultGitBaseURL)
 			if inv.ContextURL != tc.wantContextURL {
 				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
 			}
 			if inv.DockerfilePath != tc.wantDockerfile {
 				t.Errorf("DockerfilePath = %q, want %q", inv.DockerfilePath, tc.wantDockerfile)
+			}
+		})
+	}
+}
+
+// TestComposeHonorsGitBaseURL pins the --git-base-url thread: a configured base
+// (the hermetic E2E's in-cluster git server, or an air-gapped mirror) prefixes
+// the git context verbatim, an empty base falls back to DefaultGitBaseURL, and
+// the push target (ImageRef) is base-independent — the registry host is fixed.
+func TestComposeHonorsGitBaseURL(t *testing.T) {
+	build := &orkanov1alpha1.Build{
+		Spec: orkanov1alpha1.BuildSpec{
+			AppName: "blog",
+			Commit:  composeCommit,
+			Source: orkanov1alpha1.Source{
+				GitHub:  orkanov1alpha1.GitHubSource{Repo: "alice/blog"},
+				SubPath: "site",
+			},
+			Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+	}
+	for _, tc := range []struct {
+		name           string
+		gitBaseURL     string
+		wantContextURL string
+	}{
+		{
+			name:           "in-cluster http base",
+			gitBaseURL:     "http://gitfixture.orkano-system.svc/",
+			wantContextURL: "http://gitfixture.orkano-system.svc/alice/blog.git#" + composeCommit + ":site",
+		},
+		{
+			name:           "empty falls back to the github.com default",
+			gitBaseURL:     "",
+			wantContextURL: DefaultGitBaseURL + "alice/blog.git#" + composeCommit + ":site",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inv := Compose(build, tc.gitBaseURL)
+			if inv.ContextURL != tc.wantContextURL {
+				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
+			}
+			if want := RegistryHost + "/blog:" + composeCommit; inv.ImageRef != want {
+				t.Errorf("ImageRef = %q, want %q (base must not affect the push target)", inv.ImageRef, want)
 			}
 		})
 	}

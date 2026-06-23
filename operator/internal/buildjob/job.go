@@ -85,10 +85,13 @@ const (
 	// examples 02/03/04).
 	DefaultDockerfile = "Dockerfile"
 
-	// gitHubContextPrefix is the only source host v1 supports; GitHubSource.Repo
-	// is "<owner>/<name>". BuildKit fetches over the orkano-builds egress
-	// allowlist's tcp/443 rule.
-	gitHubContextPrefix = "https://github.com/"
+	// DefaultGitBaseURL is the base a Build clones the App's repo from when the
+	// operator's --git-base-url is unset. GitHubSource.Repo is "<owner>/<name>",
+	// so Compose forms "<base><owner>/<name>.git#<commit>"; BuildKit fetches over
+	// the orkano-builds egress allowlist's tcp/443 rule. The hermetic E2E (and an
+	// air-gapped mirror) override the base with an in-cluster git server — the
+	// value must end in "/", validated where the operator flag is parsed.
+	DefaultGitBaseURL = "https://github.com/"
 
 	// StaticServerImage serves a Static app's build output. nginx-unprivileged
 	// runs non-root (UID 101), listens on 8080 (= the App's default web port,
@@ -147,10 +150,19 @@ type Invocation struct {
 
 // Compose builds the BuildKit invocation for one Build. It trusts CRD
 // admission for well-formed inputs — the repo/commit/appName patterns and the
-// strategy/members CEL rule — exactly as the rest of the template does.
-func Compose(build *orkanov1alpha1.Build) Invocation {
+// strategy/members CEL rule — exactly as the rest of the template does, and it
+// trusts gitBaseURL the same way: it is operator config (--git-base-url, which
+// the operator validates to end in "/"), never CR input, so Compose neither
+// re-validates nor normalizes it. An empty gitBaseURL falls back to
+// DefaultGitBaseURL, so callers — and the existing tests — that configure no
+// override keep the github.com behaviour.
+func Compose(build *orkanov1alpha1.Build, gitBaseURL string) Invocation {
 	src := build.Spec.Source
-	ctxURL := gitHubContextPrefix + src.GitHub.Repo + ".git#" + build.Spec.Commit
+	base := gitBaseURL
+	if base == "" {
+		base = DefaultGitBaseURL
+	}
+	ctxURL := base + src.GitHub.Repo + ".git#" + build.Spec.Commit
 	// Trim slashes the CRD pattern allows but BuildKit's git fetcher does not
 	// expect: a leading or trailing "/" malforms the subdir fragment, and a
 	// bare "/" means the repo root (no subdir at all). Compose owns producing

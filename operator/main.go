@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ import (
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/internal/db"
+	"github.com/orkanoio/orkano/operator/internal/buildjob"
 	"github.com/orkanoio/orkano/operator/internal/controller"
 	"github.com/orkanoio/orkano/operator/internal/dispatcher"
 	"github.com/orkanoio/orkano/operator/internal/githubapp"
@@ -90,6 +92,7 @@ func runOperator() {
 		leaderElectionNamespace string
 		clusterIssuer           string
 		githubBaseURL           string
+		gitBaseURL              string
 		dispatchPollInterval    time.Duration
 		maxConcurrentBuilds     int
 	)
@@ -101,6 +104,8 @@ func runOperator() {
 		"Name of the cert-manager ClusterIssuer every Domain Ingress is annotated with.")
 	flag.StringVar(&githubBaseURL, "github-base-url", "",
 		"GitHub API base URL the dispatcher re-fetches commits from; empty uses https://api.github.com (set for GitHub Enterprise).")
+	flag.StringVar(&gitBaseURL, "git-base-url", buildjob.DefaultGitBaseURL,
+		"Base URL builds clone the App's repo from; must end with '/'. Override for an in-cluster git server (hermetic E2E) or an air-gapped mirror.")
 	flag.DurationVar(&dispatchPollInterval, "dispatch-poll-interval", dispatcher.DefaultPollInterval,
 		"How often the webhook dispatcher polls the delivery queue.")
 	flag.IntVar(&maxConcurrentBuilds, "max-concurrent-builds", dispatcher.DefaultMaxConcurrentBuilds,
@@ -112,6 +117,13 @@ func runOperator() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 	log := ctrl.Log.WithName("setup")
 	log.Info("starting orkano-operator", "version", version)
+
+	// Compose appends "<owner>/<name>.git#<commit>" straight onto the base, so a
+	// missing trailing slash silently malforms every git context. Fail fast.
+	if !strings.HasSuffix(gitBaseURL, "/") {
+		log.Error(fmt.Errorf("--git-base-url=%q must end with '/'", gitBaseURL), "invalid flag")
+		os.Exit(1)
+	}
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -151,7 +163,7 @@ func runOperator() {
 		os.Exit(1)
 	}
 	resolver := &registry.Resolver{Reader: mgr.GetAPIReader()}
-	if err := (&controller.BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: resolver.ResolveDigest}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: resolver.ResolveDigest, GitBaseURL: gitBaseURL}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up Build controller")
 		os.Exit(1)
 	}

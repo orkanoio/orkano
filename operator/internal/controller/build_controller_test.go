@@ -209,7 +209,9 @@ func TestBuildCreatesJobAndReportsPending(t *testing.T) {
 	if got := *job.Spec.ActiveDeadlineSeconds; got != buildjob.DefaultTimeoutSeconds {
 		t.Errorf("activeDeadlineSeconds = %d, want the spec default %d", got, buildjob.DefaultTimeoutSeconds)
 	}
-	wantContext := "https://github.com/orkanoio/example.git#" + build.Spec.Commit
+	// The base is the suite reconciler's configured --git-base-url sentinel, so
+	// this also proves r.GitBaseURL threads through Compose into the Job context.
+	wantContext := "http://git.example.test/orkanoio/example.git#" + build.Spec.Commit
 	if args := job.Spec.Template.Spec.Containers[0].Args; !strings.Contains(strings.Join(args, " "), "--opt=context="+wantContext) {
 		t.Errorf("Job args %v miss the commit-pinned context %s", args, wantContext)
 	}

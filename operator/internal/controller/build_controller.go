@@ -56,6 +56,11 @@ type BuildReconciler struct {
 	// a registry manifest HEAD (registry.Resolver in production; tests stub
 	// it — envtest has no registry).
 	ResolveDigest func(ctx context.Context, imageRef string) (string, error)
+	// GitBaseURL is the base BuildKit clones the App's repo from (the operator's
+	// --git-base-url). Empty falls back to buildjob.DefaultGitBaseURL inside
+	// Compose, so production keeps the github.com behaviour; the hermetic E2E
+	// points it at an in-cluster git server.
+	GitBaseURL string
 }
 
 func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -97,7 +102,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // cross-namespace ownerReferences are forbidden). A same-name Job that is
 // not ours is refused, never adopted, never deleted.
 func (r *BuildReconciler) ensureJob(ctx context.Context, build *orkanov1alpha1.Build) (*batchv1.Job, error) {
-	inv := buildjob.Compose(build)
+	inv := buildjob.Compose(build, r.GitBaseURL)
 	desired, err := buildjob.Render(build, buildjob.Options{
 		ContextURL:          inv.ContextURL,
 		DockerfilePath:      inv.DockerfilePath,
@@ -181,7 +186,7 @@ func (r *BuildReconciler) observeJob(ctx context.Context, build *orkanov1alpha1.
 		failBuild(build, reason, message)
 
 	case jobCondition(job, batchv1.JobComplete) != nil:
-		ref := buildjob.Compose(build).ImageRef
+		ref := buildjob.Compose(build, r.GitBaseURL).ImageRef
 		pinned, err := r.ResolveDigest(ctx, ref)
 		if err != nil {
 			// The image is pushed but unpinned: stay Running, record why,
