@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/orkanoio/orkano/internal/checks"
+	"github.com/orkanoio/orkano/internal/install"
 	"github.com/orkanoio/orkano/internal/k3s"
 	"github.com/orkanoio/orkano/internal/nodeprep"
 	"github.com/orkanoio/orkano/internal/preflight"
@@ -17,6 +18,7 @@ import (
 )
 
 type initOptions struct {
+	version       string
 	nodes         []string
 	sshUser       string
 	sshPort       int
@@ -27,10 +29,13 @@ type initOptions struct {
 	kubeconfig    string
 	readyTimeout  time.Duration
 	skipPreflight bool
+	acmeEmail     string
+	acmeProd      bool
+	allowRepos    []string
 }
 
-func newInitCommand() *cobra.Command {
-	opt := &initOptions{}
+func newInitCommand(version string) *cobra.Command {
+	opt := &initOptions{version: version}
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Bootstrap a hardened k3s cluster on one or three nodes over SSH",
@@ -56,6 +61,9 @@ func newInitCommand() *cobra.Command {
 	f.StringVar(&opt.kubeconfig, "kubeconfig", "orkano.kubeconfig", "path to write the retrieved kubeconfig")
 	f.DurationVar(&opt.readyTimeout, "ready-timeout", k3s.DefaultReadyTimeout, "how long to wait for the node to become Ready")
 	f.BoolVar(&opt.skipPreflight, "skip-preflight", false, "skip the install preflight checks (not recommended)")
+	f.StringVar(&opt.acmeEmail, "acme-email", "", "email to register the Let's Encrypt account with (optional)")
+	f.BoolVar(&opt.acmeProd, "acme-prod", false, "use Let's Encrypt production instead of staging (staging is the safe default)")
+	f.StringArrayVar(&opt.allowRepos, "allow-repo", nil, "owner/repo allowed to trigger builds; repeat to allow several (the webhook receiver's allowlist)")
 
 	return cmd
 }
@@ -89,6 +97,7 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	// addresses so the kubeconfig (and any load balancer placed in front) is
 	// valid against any of them.
 	var first *k3s.Result
+	var firstHostKey []byte
 	serverURL, token := "", ""
 	anyChanged, anyFresh := false, false
 	for i, node := range opt.nodes {
@@ -107,7 +116,7 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 			ReadyTimeout:  opt.readyTimeout,
 			Logf:          func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 		}
-		res, apparmorChanged, err := bootstrapOne(ctx, out, errw, opt, privateKey, node, hostKeyPath, cfg)
+		res, hostKey, apparmorChanged, err := bootstrapOne(ctx, out, errw, opt, privateKey, node, hostKeyPath, cfg)
 		if err != nil {
 			return fmt.Errorf("bootstrap %s: %w", node, err)
 		}
@@ -115,6 +124,7 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 		anyFresh = anyFresh || !res.AlreadyInstalled
 		if i == 0 {
 			first = res
+			firstHostKey = hostKey
 			serverURL = fmt.Sprintf("https://%s:6443", node)
 			token = res.Token
 		}
@@ -124,25 +134,71 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 		return fmt.Errorf("write kubeconfig: %w", err)
 	}
 
-	printSummary(out, opt, first, anyFresh, anyChanged)
+	// Deploy the platform components onto the now-running cluster (CRDs,
+	// cert-manager, RBAC, NetworkPolicies, registry, platform Postgres, operator,
+	// receiver) and the generated Secrets, then wait for the critical path.
+	writef(errw, "Deploying Orkano components on %s...\n", opt.nodes[0])
+	bootstrapToken, err := deployComponents(ctx, out, errw, opt, privateKey, firstHostKey)
+	if err != nil {
+		return fmt.Errorf("deploy components: %w", err)
+	}
+
+	printSummary(out, opt, first, anyFresh, anyChanged, bootstrapToken)
 	return nil
+}
+
+// deployComponents is the component-deploy step, indirected through a package
+// variable so the CLI-orchestration tests can stub it (like bootstrapOne) and
+// assert what runInit passes without a live cluster. It returns the one-time
+// bootstrap token (empty on a re-run where it already existed).
+var deployComponents = deployOnNode0
+
+// deployOnNode0 opens a fresh SSH connection to the first server and runs the
+// component deploy over it. It reuses the host key pinned during bootstrap (no
+// re-scan, no re-printed fingerprint). The first server is always a k3s server
+// with the auto-deploy directory; the deploy is idempotent, so it is re-runnable.
+func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, privateKey, hostKey []byte) (string, error) {
+	node := opt.nodes[0]
+	addr := net.JoinHostPort(node, fmt.Sprintf("%d", opt.sshPort))
+	client, err := ssh.New(ssh.Config{Addr: addr, User: opt.sshUser, PrivateKey: privateKey, HostKey: hostKey})
+	if err != nil {
+		return "", fmt.Errorf("configure SSH client for %s: %w", node, err)
+	}
+	defer func() { _ = client.Close() }()
+
+	res, err := install.Apply(ctx, client, install.Config{
+		Version:          opt.version,
+		ACMEEmail:        opt.acmeEmail,
+		ACMEProd:         opt.acmeProd,
+		RepoAllowlist:    opt.allowRepos,
+		ReadinessTargets: install.DefaultReadinessTargets(),
+		Sudo:             opt.sshUser != "root",
+		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.BootstrapToken, nil
 }
 
 // bootstrapOne is the per-node bootstrap, indirected through a package variable
 // so the HA-orchestration test can stub it and assert the loop's token/serverURL
 // threading and kubeconfig selection without a live cluster. It returns the k3s
-// result, whether the AppArmor node-prep step changed anything, and an error.
+// result, the resolved (pinned) host key, whether the AppArmor node-prep step
+// changed anything, and an error.
 var bootstrapOne = bootstrapNode
 
 // bootstrapNode runs the identical per-node setup (host-key pinning, preflight,
 // k3s bootstrap, AppArmor profile load) so the HA loop does not duplicate it
-// across servers. The second return reports whether the AppArmor step changed
-// node state, so the summary headline reflects an AppArmor-only convergence.
-func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, privateKey []byte, node, hostKeyPath string, cfg k3s.Config) (*k3s.Result, bool, error) {
+// across servers. It returns the resolved host key so the caller can reuse it
+// for the component deploy on the first server without re-scanning (which would
+// re-print the fingerprint), and whether the AppArmor step changed node state
+// (so the summary headline reflects an AppArmor-only convergence).
+func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, privateKey []byte, node, hostKeyPath string, cfg k3s.Config) (*k3s.Result, []byte, bool, error) {
 	addr := net.JoinHostPort(node, fmt.Sprintf("%d", opt.sshPort))
 	hostKey, err := resolveHostKey(ctx, errw, addr, hostKeyPath, opt.acceptNewKey)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 
 	client, err := ssh.New(ssh.Config{
@@ -152,21 +208,21 @@ func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, p
 		HostKey:    hostKey,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("configure SSH client for %s: %w", node, err)
+		return nil, nil, false, fmt.Errorf("configure SSH client for %s: %w", node, err)
 	}
 	defer func() { _ = client.Close() }()
 
 	target := opt.sshUser + "@" + node
 	if !opt.skipPreflight {
 		if err := runPreflight(ctx, out, client, target); err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 	}
 
 	writef(errw, "Bootstrapping k3s on %s...\n", target)
 	res, err := k3s.Bootstrap(ctx, client, cfg)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 
 	// Load the build-confinement AppArmor profile on every node. Without it,
@@ -180,9 +236,9 @@ func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, p
 		Logf:   func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("load AppArmor profile on %s: %w", node, err)
+		return nil, nil, false, fmt.Errorf("load AppArmor profile on %s: %w", node, err)
 	}
-	return res, npRes.Changed, nil
+	return res, hostKey, npRes.Changed, nil
 }
 
 // otherNodes returns every node address except the one at index skip.
@@ -268,7 +324,7 @@ func runPreflight(ctx context.Context, out io.Writer, exec preflight.Executor, t
 // converged a joiner does not falsely report "up to date"; per-node progress is
 // streamed to stderr while bootstrapping. res carries the first server's
 // representative encryption/audit/version state.
-func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, anyChanged bool) {
+func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, anyChanged bool, bootstrapToken string) {
 	first := opt.nodes[0]
 	writef(out, "\n")
 	switch {
@@ -285,12 +341,21 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	if len(opt.nodes) > 1 {
 		writef(out, "  servers:            %d (HA, embedded etcd)\n", len(opt.nodes))
 	}
+	writef(out, "  components:         deployed\n")
 	writef(out, "  kubeconfig:         %s\n", opt.kubeconfig)
 	if len(opt.nodes) > 1 {
 		writef(out, "\nThe kubeconfig points at the first server (%s). The cluster keeps serving\n"+
 			"if another server fails, but API access through this kubeconfig needs the\n"+
 			"first server reachable — for failure-tolerant access put a load balancer in\n"+
 			"front of all servers and re-point the kubeconfig at it.\n", first)
+	}
+	// ADR-0003: the install token is printed exactly once. On a re-run it has
+	// already been generated (only its hash is stored), so there is nothing to show.
+	if bootstrapToken != "" {
+		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+			"Redeem it at first dashboard login to create the admin account (Phase 2).\n", bootstrapToken)
+	} else {
+		writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n")
 	}
 	writef(out, "\nTry it: KUBECONFIG=%s kubectl get nodes\n", opt.kubeconfig)
 }

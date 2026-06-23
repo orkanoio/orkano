@@ -144,14 +144,43 @@ func baseOptions(t *testing.T, srv *sshtest.Server) *initOptions {
 	}
 }
 
+// deployCall records what runInit passed to the (stubbed) component-deploy step.
+type deployCall struct {
+	called bool
+	opt    *initOptions
+}
+
+// stubDeploy replaces the component-deploy step with a stub returning token,
+// restoring the real step on cleanup. The deploy itself is engine-tested in
+// internal/install; here we only assert the CLI orchestration around it (like
+// bootstrapOne for the bootstrap loop).
+func stubDeploy(t *testing.T, token string) *deployCall {
+	t.Helper()
+	orig := deployComponents
+	t.Cleanup(func() { deployComponents = orig })
+	c := &deployCall{}
+	deployComponents = func(_ context.Context, _, _ io.Writer, opt *initOptions, _, _ []byte) (string, error) {
+		c.called, c.opt = true, opt
+		return token, nil
+	}
+	return c
+}
+
 func TestInitHappyPath(t *testing.T) {
 	srv := sshtest.New(healthyNode(""))
 	defer srv.Close()
+	stubDeploy(t, "boot-token-xyz")
 
 	opt := baseOptions(t, srv)
 	var out, errw bytes.Buffer
 	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
 		t.Fatalf("runInit: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !strings.Contains(out.String(), "components:         deployed") {
+		t.Errorf("summary missing the components line:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Bootstrap token (shown once") || !strings.Contains(out.String(), "boot-token-xyz") {
+		t.Errorf("summary missing the one-time bootstrap token:\n%s", out.String())
 	}
 
 	kc, err := os.ReadFile(opt.kubeconfig)
@@ -212,6 +241,7 @@ func TestInitSkipPreflightProceeds(t *testing.T) {
 	// Same occupied port, but --skip-preflight bypasses the gate.
 	srv := sshtest.New(healthyNode("LISTEN 0 128 0.0.0.0:6443 0.0.0.0:*\n"))
 	defer srv.Close()
+	stubDeploy(t, "")
 
 	opt := baseOptions(t, srv)
 	opt.skipPreflight = true
@@ -276,6 +306,7 @@ func TestFirstDuplicate(t *testing.T) {
 // be exercised through sshtest (one --ssh-port can't reach three servers).
 func TestInitHAOrchestration(t *testing.T) {
 	const token = "K10secret::server:deadbeef"
+	stubDeploy(t, "") // HA test focuses on the bootstrap loop; deploy is stubbed
 	type call struct {
 		node string
 		cfg  k3s.Config
@@ -284,14 +315,14 @@ func TestInitHAOrchestration(t *testing.T) {
 
 	orig := bootstrapOne
 	defer func() { bootstrapOne = orig }()
-	bootstrapOne = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, node, _ string, cfg k3s.Config) (*k3s.Result, bool, error) {
+	bootstrapOne = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, node, _ string, cfg k3s.Config) (*k3s.Result, []byte, bool, error) {
 		calls = append(calls, call{node, cfg})
 		res := &k3s.Result{Version: "v1.35.5+k3s1", SecretsEncryption: "Enabled", AuditLogPresent: true, Changed: true}
 		if cfg.ServerURL == "" { // the first (cluster-init) server
 			res.Token = token
 			res.Kubeconfig = []byte("kubeconfig-from-first\n")
 		}
-		return res, false, nil
+		return res, nil, false, nil
 	}
 
 	kcPath := filepath.Join(t.TempDir(), "kubeconfig")
@@ -337,6 +368,47 @@ func TestInitHAOrchestration(t *testing.T) {
 	}
 	if strings.Contains(out.String(), token) || strings.Contains(errw.String(), token) {
 		t.Error("join token leaked into CLI output")
+	}
+}
+
+// TestInitRunsComponentDeploy stubs the bootstrap and deploy steps to assert
+// runInit invokes the component deploy after bootstrap and threads the ACME and
+// allowlist flags + the CLI version into it, printing the returned token once.
+func TestInitRunsComponentDeploy(t *testing.T) {
+	origBootstrap := bootstrapOne
+	defer func() { bootstrapOne = origBootstrap }()
+	bootstrapOne = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, node, _ string, cfg k3s.Config) (*k3s.Result, []byte, bool, error) {
+		return &k3s.Result{Version: "v1.35.5+k3s1", SecretsEncryption: "Enabled", AuditLogPresent: true, Kubeconfig: []byte("kc\n")}, nil, false, nil
+	}
+	deploy := stubDeploy(t, "the-install-token")
+
+	opt := &initOptions{
+		version:    "9.9.9",
+		nodes:      []string{"10.0.0.1"},
+		sshUser:    "root",
+		sshPort:    22,
+		sshKeyPath: writeTemp(t, "id", []byte("dummy-key")),
+		kubeconfig: filepath.Join(t.TempDir(), "kubeconfig"),
+		acmeEmail:  "ops@example.com",
+		acmeProd:   true,
+		allowRepos: []string{"orkanoio/orkano"},
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+
+	if !deploy.called {
+		t.Fatal("component deploy was not invoked")
+	}
+	if deploy.opt.version != "9.9.9" || deploy.opt.acmeEmail != "ops@example.com" || !deploy.opt.acmeProd {
+		t.Errorf("deploy did not receive the version/ACME flags: %+v", deploy.opt)
+	}
+	if len(deploy.opt.allowRepos) != 1 || deploy.opt.allowRepos[0] != "orkanoio/orkano" {
+		t.Errorf("deploy did not receive the allowlist: %v", deploy.opt.allowRepos)
+	}
+	if !strings.Contains(out.String(), "the-install-token") {
+		t.Errorf("bootstrap token not printed:\n%s", out.String())
 	}
 }
 

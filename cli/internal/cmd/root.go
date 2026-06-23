@@ -13,6 +13,6 @@ func NewRootCommand(version string) *cobra.Command {
 		SilenceUsage:  true, // a runtime error is not a usage error
 		SilenceErrors: true, // main prints the error once
 	}
-	root.AddCommand(newInitCommand())
+	root.AddCommand(newInitCommand(version))
 	return root
 }

@@ -118,6 +118,22 @@ type Result struct {
 	BootstrapToken string
 }
 
+// DefaultReadinessTargets is the critical path Apply waits for after a full
+// component deploy: cert-manager (so the operator's Certificate watches and the
+// registry TLS can issue), the registry, the platform Postgres, and the
+// operator and receiver themselves.
+func DefaultReadinessTargets() []Workload {
+	return []Workload{
+		{Namespace: "cert-manager", Kind: "deployment", Name: "cert-manager-webhook"},
+		{Namespace: "cert-manager", Kind: "deployment", Name: "cert-manager"},
+		{Namespace: "cert-manager", Kind: "deployment", Name: "cert-manager-cainjector"},
+		{Namespace: "orkano-system", Kind: "statefulset", Name: "orkano-postgres"},
+		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-registry"},
+		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-operator"},
+		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-receiver"},
+	}
+}
+
 func (c Config) autoDeployDir() string {
 	if c.AutoDeployDir == "" {
 		return DefaultAutoDeployDir
