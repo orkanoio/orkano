@@ -19,5 +19,5 @@ import "embed"
 // config/apparmor is deliberately excluded: it is a node-loaded profile, not a
 // Kubernetes manifest.
 //
-//go:embed crd namespaces rbac netpol registry buildkit components
+//go:embed crd namespaces rbac netpol registry buildkit components cert-manager traefik
 var StaticManifests embed.FS

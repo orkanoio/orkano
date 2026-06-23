@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"path"
@@ -60,8 +61,20 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 		return ssh.Result{Stderr: "NotFound", ExitStatus: 1}, nil
 
 	case strings.Contains(cmd, "| base64 -d |"):
-		p, c := parseWrite(cmd)
-		f.files[p] = c
+		p, c, appendMode := parseWrite(cmd)
+		if appendMode {
+			f.files[p] += c
+		} else {
+			f.files[p] = c
+		}
+		return ssh.Result{}, nil
+
+	case strings.HasPrefix(cmd, "mv "):
+		// chunked finalize: `mv PATH.tmp PATH [&& chmod …]`
+		fields := strings.Fields(cmd)
+		src, dst := fields[1], fields[2]
+		f.files[dst] = f.files[src]
+		delete(f.files, src)
 		return ssh.Result{}, nil
 
 	case strings.HasPrefix(cmd, "cat "):
@@ -87,17 +100,22 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 	}
 }
 
-// parseWrite extracts the destination path and decoded content from an
-// ensureFile command of the form
-// `…printf %s 'BASE64' | base64 -d | …tee PATH >/dev/null…`.
-func parseWrite(cmd string) (string, string) {
+// parseWrite extracts the destination path, decoded content, and whether the
+// write appends, from an ensureFile command of the form
+// `…printf %s 'BASE64' | base64 -d | …tee [-a ]PATH >/dev/null…`.
+func parseWrite(cmd string) (string, string, bool) {
 	const marker = "printf %s '"
 	start := strings.Index(cmd, marker) + len(marker)
 	end := strings.Index(cmd, "' | base64 -d")
 	dec, _ := base64.StdEncoding.DecodeString(cmd[start:end])
 	rest := cmd[strings.Index(cmd, "tee ")+len("tee "):]
+	appendMode := false
+	if strings.HasPrefix(rest, "-a ") {
+		appendMode = true
+		rest = strings.TrimPrefix(rest, "-a ")
+	}
 	p := strings.TrimSpace(strings.SplitN(rest, " >/dev/null", 2)[0])
-	return p, string(dec)
+	return p, string(dec), appendMode
 }
 
 // parseSecretApply decodes the secret manifest piped into `kubectl apply -f -`
@@ -187,6 +205,8 @@ func TestApplyWritesAllStaticManifests(t *testing.T) {
 		"namespaces-namespaces.yaml",
 		"components-platform-postgres.yaml",
 		"registry-registry.yaml",
+		"cert-manager-cert-manager.yaml",
+		"traefik-traefik-redirect.yaml",
 	} {
 		if _, ok := n.files[path.Join(base, want)]; !ok {
 			t.Errorf("expected %s to be deployed", want)
@@ -295,6 +315,41 @@ func TestApplyRejectsInvalidTarget(t *testing.T) {
 func TestApplyNilRunner(t *testing.T) {
 	if _, err := Apply(context.Background(), nil, Config{}); err == nil {
 		t.Fatal("expected an error for a nil runner")
+	}
+}
+
+func TestEnsureFileChunkedRoundTrip(t *testing.T) {
+	n := newFakeNode()
+	nd := newNode(n, false, nil)
+
+	// Content whose base64 exceeds maxInlineBase64, forcing the chunked path.
+	content := bytes.Repeat([]byte("orkano-cert-manager-payload\n"), 8000) // ~216 KiB
+	if len(content) <= maxInlineBase64 {
+		t.Fatal("test content is not large enough to chunk")
+	}
+
+	changed, err := nd.ensureFile(context.Background(), "/var/lib/rancher/k3s/server/manifests/orkano/big.yaml", content, "0600")
+	if err != nil {
+		t.Fatalf("ensureFile: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected a write")
+	}
+	if got := n.files["/var/lib/rancher/k3s/server/manifests/orkano/big.yaml"]; got != string(content) {
+		t.Fatalf("chunked write did not round-trip: got %d bytes, want %d", len(got), len(content))
+	}
+	// The chunked path uses append (tee -a) and an atomic rename.
+	if !hasCmd(n.cmds, func(c string) bool { return strings.Contains(c, "tee -a ") }) {
+		t.Error("expected appended chunks (tee -a) for a large file")
+	}
+	if !hasCmd(n.cmds, func(c string) bool { return strings.HasPrefix(c, "mv ") }) {
+		t.Error("expected an atomic rename (mv) to finalize the chunked write")
+	}
+	// No single inline command should carry the whole oversize payload.
+	for _, c := range n.cmds {
+		if len(c) > maxInlineBase64+4096 {
+			t.Errorf("a command exceeded the inline bound (%d chars) — would risk E2BIG", len(c))
+		}
 	}
 }
 

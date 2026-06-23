@@ -1,0 +1,19 @@
+# HTTP→HTTPS redirect for the bundled Traefik (ADR-0006: TLS is always on; HTTP
+# redirects to HTTPS, zero dials). k3s installs Traefik through a HelmChart in
+# kube-system; this HelmChartConfig of the same name layers values onto it
+# without replacing the chart, so the redirect survives a k3s upgrade. This is a
+# cluster-wide entrypoint concern, deliberately not the operator's job.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        redirections:
+          entryPoint:
+            to: websecure
+            scheme: https
+            permanent: true
