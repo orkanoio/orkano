@@ -17,10 +17,12 @@ RUN apk add --no-cache git
 COPY local-loop-helper /usr/local/bin/local-loop-helper
 COPY seed.sh /usr/local/bin/seed.sh
 COPY fixture/ /fixture/
-# Bake the bare repo at build time (fixed SHA); world-readable so a non-root
-# runtime user can serve it.
+# Bake the bare repo at build time (fixed SHA), then hand it to the non-root
+# runtime UID. chown (not just chmod) is load-bearing: git refuses to operate on
+# a repo owned by a different user ("detected dubious ownership"), so a
+# root-owned repo served as 65534 would fail git http-backend and rev-parse.
 RUN sh /usr/local/bin/seed.sh /fixture /srv/git orkanoio/orkano-e2e \
-    && chmod -R a+rX /srv/git
+    && chown -R 65534:65534 /srv/git
 # Serve as non-root (the repo is world-readable; :8080 is unprivileged) so the
 # pod admits without a runAsNonRoot fight wherever the harness schedules it.
 USER 65534:65534

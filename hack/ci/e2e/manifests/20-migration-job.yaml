@@ -1,0 +1,59 @@
+# One-shot migration Job, faithful to internal/install/templates/
+# migration-job.yaml.tmpl: `orkano-operator migrate` applies the platform schema
+# and ALTER ROLEs the least-privilege roles to the passwords in 10-secrets.yaml,
+# using the superuser DSN. OnFailure + backoffLimit retries until Postgres is
+# reachable, so ordering against the StatefulSet is handled by retry. The image
+# is the locally-built operator (kind-loaded), pulled IfNotPresent so the cluster
+# never reaches a registry for it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orkano-migrate
+  namespace: orkano-system
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-migrate
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: orkano-operator:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["migrate"]
+          env:
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-postgres-superuser
+                  key: dsn
+            - name: ORKANO_RECEIVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-receiver-db
+                  key: password
+            - name: ORKANO_DISPATCHER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-operator-db
+                  key: password
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

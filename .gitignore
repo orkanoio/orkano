@@ -12,3 +12,4 @@ dist/
 /TASKS.md
 /CLAUDE.md
 .claude/
+.codex/

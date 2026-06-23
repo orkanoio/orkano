@@ -1,0 +1,70 @@
+# In-cluster git fixture server (the local-loop-helper git-fixture subcommand in
+# the combined E2E helper image). Serves the App's source repo (baked into the
+# image at /srv/git/orkanoio/orkano-e2e.git by seed.sh) over plain HTTP via
+# `git http-backend`, read-only. Build pods clone from here (operator
+# --git-base-url=http://gitfixture.orkano-e2e.svc/), reaching it through the
+# additive 50-test-egress NetworkPolicy. Restricted-grade SC; the repo is
+# world-readable so the non-root server can serve it. readOnlyRootFilesystem is
+# left unset: git http-backend writes pack temporaries under $TMPDIR.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitfixture
+  namespace: orkano-e2e
+  labels:
+    app.kubernetes.io/name: gitfixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitfixture
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitfixture
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gitfixture
+          image: orkano-e2e-helper:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["git-fixture", "--addr", ":8080", "--root", "/srv/git"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitfixture
+  namespace: orkano-e2e
+  labels:
+    app.kubernetes.io/name: gitfixture
+spec:
+  selector:
+    app.kubernetes.io/name: gitfixture
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,82 @@
+# Operator Deployment, mirroring internal/install/templates/
+# operator-deployment.yaml.tmpl (orkano-operator SA, restricted SC, ORKANO_DB_DSN
+# from orkano-operator-db). Differences for the hermetic E2E: the locally-built
+# image (kind-loaded, IfNotPresent) and three flags that point the dispatcher and
+# builds at the in-cluster stubs instead of the public GitHub:
+#   --github-base-url  the dispatcher re-fetches commits from the stub API;
+#   --git-base-url     builds clone the App's repo from the git fixture (note the
+#                      trailing slash the operator validates);
+#   --dispatch-poll-interval  fast loop so the E2E does not wait 5s per tick.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-operator
+  template:
+    metadata:
+      labels:
+        # The registry ingress NetworkPolicy admits the operator's
+        # digest-resolution HEADs by this label.
+        app.kubernetes.io/name: orkano-operator
+    spec:
+      serviceAccountName: orkano-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: orkano-operator:e2e
+          imagePullPolicy: IfNotPresent
+          args:
+            - --github-base-url=http://github-stub.orkano-e2e.svc
+            - --git-base-url=http://gitfixture.orkano-e2e.svc/
+            - --dispatch-poll-interval=2s
+            - --cluster-issuer=orkano-platform
+          env:
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-operator-db
+                  key: dsn
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

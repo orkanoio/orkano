@@ -1,0 +1,91 @@
+# Receiver Deployment + ClusterIP Service, mirroring internal/install/templates/
+# receiver.yaml.tmpl (orkano-receiver SA, automountServiceAccountToken false,
+# restricted SC, env from orkano-webhook-secret + orkano-receiver-db). The
+# allowlist is the in-cluster fixture repo; the image is the locally-built
+# receiver (kind-loaded, IfNotPresent). No Ingress: run.sh reaches /webhook via
+# kubectl port-forward (INV-05 — nothing public).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-receiver
+  template:
+    metadata:
+      labels:
+        # The orkano-receiver egress NetworkPolicy keys on this label —
+        # unlabeled pods get no egress and fail closed.
+        app.kubernetes.io/name: orkano-receiver
+    spec:
+      serviceAccountName: orkano-receiver
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receiver
+          image: orkano-receiver:e2e
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ORKANO_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-webhook-secret
+                  key: secret
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-receiver-db
+                  key: dsn
+            - name: ORKANO_REPO_ALLOWLIST
+              value: "orkanoio/orkano-e2e"
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-receiver
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,70 @@
+# In-cluster GitHub REST API stub (the local-loop-helper github-stub subcommand
+# in the combined E2E helper image). The operator's dispatcher re-fetches commit
+# data from here (operator --github-base-url), so the E2E never reaches
+# api.github.com. run.sh templates __STUB_SHA__ to the git fixture's real HEAD
+# SHA before applying, so the "resolved" commit is exactly what BuildKit checks
+# out. Restricted-grade SC; reached only by the operator (orkano-system, open
+# egress), never publicly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-stub
+  namespace: orkano-e2e
+  labels:
+    app.kubernetes.io/name: github-stub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: github-stub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: github-stub
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: github-stub
+          image: orkano-e2e-helper:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["github-stub", "--addr", ":8080", "--sha", "__STUB_SHA__"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-stub
+  namespace: orkano-e2e
+  labels:
+    app.kubernetes.io/name: github-stub
+spec:
+  selector:
+    app.kubernetes.io/name: github-stub
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,13 @@
+# The app-facing ClusterIssuer the operator annotates every Domain Ingress with
+# (--cluster-issuer default "orkano-platform"). Production renders an ACME
+# ClusterIssuer (internal/install/templates/platform-issuer.yaml.tmpl) that
+# reaches Let's Encrypt; the hermetic E2E uses a self-signed issuer instead so
+# the Domain -> ingress-shim -> Certificate -> Ready leg runs entirely
+# in-cluster with no ACME egress. The cert is untrusted (self-signed), which is
+# fine: the E2E asserts the App answers HTTP, not TLS-trust.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: orkano-platform
+spec:
+  selfSigned: {}

@@ -1,0 +1,15 @@
+# The hermetic E2E's test-only infrastructure namespace: the in-cluster GitHub
+# API stub and the git fixture server live here, NOT in a product namespace —
+# they are not Orkano components, so this keeps orkano-system product-only. The
+# operator (orkano-system, open egress) reaches both by Service DNS; the build
+# pod reaches the git fixture via the additive 50-test-egress NetworkPolicy.
+# Baseline PSA enforce + restricted warn (mirrors orkano-apps); the stub and
+# fixture pods are restricted-grade, so they admit cleanly with no warnings.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-e2e
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
