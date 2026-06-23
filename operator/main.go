@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/internal/db"
 	"github.com/orkanoio/orkano/operator/internal/controller"
 	"github.com/orkanoio/orkano/operator/internal/dispatcher"
 	"github.com/orkanoio/orkano/operator/internal/githubapp"
@@ -27,9 +29,62 @@ import (
 // dev runs and envtest), so the rest of the operator still works without a DB.
 const envDBDSN = "ORKANO_DB_DSN"
 
+// The migrate subcommand reads the superuser DSN from envDBDSN and the
+// install-generated passwords for the least-privilege roles from these (the
+// names, not the credentials, so no gosec G101 suppression is needed).
+const (
+	envReceiverPassword   = "ORKANO_RECEIVER_PASSWORD"
+	envDispatcherPassword = "ORKANO_DISPATCHER_PASSWORD"
+)
+
 var version = "dev"
 
 func main() {
+	// `orkano-operator migrate` is the one-shot entrypoint the platform's
+	// migration Job runs at install: apply the schema and set the role
+	// passwords with the superuser DSN, then exit. The long-running operator
+	// never takes this path, so it is handled before any manager setup.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := runMigrate(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "migrate:", err)
+			os.Exit(1)
+		}
+		fmt.Println("migrations applied and role passwords set")
+		return
+	}
+
+	runOperator()
+}
+
+// runMigrate applies the platform schema and assigns the least-privilege role
+// passwords. It connects with the superuser DSN (envDBDSN here carries the
+// superuser, not the dispatcher role the running operator uses) and the
+// install-generated role passwords.
+func runMigrate(ctx context.Context) error {
+	dsn := os.Getenv(envDBDSN)
+	if dsn == "" {
+		return fmt.Errorf("%s is required", envDBDSN)
+	}
+	recvPw := os.Getenv(envReceiverPassword)
+	if recvPw == "" {
+		return fmt.Errorf("%s is required", envReceiverPassword)
+	}
+	dispPw := os.Getenv(envDispatcherPassword)
+	if dispPw == "" {
+		return fmt.Errorf("%s is required", envDispatcherPassword)
+	}
+	if err := db.Migrate(ctx, dsn); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
+	if err := db.SetupRoles(ctx, dsn, recvPw, dispPw); err != nil {
+		return fmt.Errorf("set role passwords: %w", err)
+	}
+	return nil
+}
+
+func runOperator() {
 	var (
 		probeAddr               string
 		leaderElectionNamespace string

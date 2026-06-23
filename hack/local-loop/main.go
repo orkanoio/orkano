@@ -21,7 +21,6 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -33,10 +32,6 @@ import (
 	"net/url"
 	"os"
 	"time"
-
-	// pgx's database/sql driver, registered as "pgx", for the role-password
-	// ALTER ROLEs (db.Migrate opens its own connection for the schema itself).
-	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/orkanoio/orkano/internal/db"
 )
@@ -97,7 +92,10 @@ func runMigrate(argv []string) {
 	if err := db.Migrate(ctx, *dsn); err != nil {
 		log.Fatalf("migrate: applying migrations: %v", err)
 	}
-	if err := setRolePasswords(ctx, *dsn); err != nil {
+	// Both least-privilege roles get the same fixed dev password — the loop's
+	// Postgres is a throwaway container bound to 127.0.0.1. SetupRoles is the
+	// same install-time path the platform's migration Job runs in prod.
+	if err := db.SetupRoles(ctx, *dsn, rolePassword, rolePassword); err != nil {
 		log.Fatalf("migrate: setting role passwords: %v", err)
 	}
 
@@ -112,25 +110,6 @@ func runMigrate(argv []string) {
 	// stdout carries only these two KEY=VALUE lines; logs go to stderr.
 	fmt.Printf("RECEIVER_DSN=%s\n", recv)
 	fmt.Printf("DISPATCHER_DSN=%s\n", disp)
-}
-
-func setRolePasswords(ctx context.Context, dsn string) error {
-	sqlDB, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return fmt.Errorf("open db: %w", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-	// Constant SQL (the password is the rolePassword const), so no string-built
-	// query and nothing to escape. The roles already exist (migration 00002).
-	for _, stmt := range []string{
-		"ALTER ROLE orkano_receiver LOGIN PASSWORD '" + rolePassword + "'",
-		"ALTER ROLE orkano_dispatcher LOGIN PASSWORD '" + rolePassword + "'",
-	} {
-		if _, err := sqlDB.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("exec %q: %w", stmt, err)
-		}
-	}
-	return nil
 }
 
 // roleDSN rewrites the superuser DSN's userinfo to a least-privilege role and
