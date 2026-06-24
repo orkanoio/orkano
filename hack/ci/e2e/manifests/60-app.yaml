@@ -1,0 +1,29 @@
+# The App + Domain the hermetic E2E drives end to end. The App is a Web/Dockerfile
+# app whose source.github.repo matches the in-cluster git fixture, the receiver
+# allowlist, and the github-stub; the operator's --git-base-url makes its builds
+# clone the repo from the fixture, not github.com. No explicit port: the fixture
+# app listens on 8080 (the App default web port). The Domain exercises the
+# operator -> ingress-shim -> self-signed Certificate -> App.status.url leg; kind
+# has no ingress controller, so the E2E asserts the App answers HTTP via a
+# port-forward to the Service/pod, not via the Ingress.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: e2e-web
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: orkanoio/orkano-e2e
+  build:
+    strategy: Dockerfile
+---
+apiVersion: orkano.io/v1alpha1
+kind: Domain
+metadata:
+  name: e2e-web-example-test
+  namespace: orkano-apps
+spec:
+  host: e2e-web.example.test
+  appRef:
+    name: e2e-web

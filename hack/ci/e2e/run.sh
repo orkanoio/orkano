@@ -41,7 +41,12 @@ OPERATOR_IMG="orkano-operator:e2e"
 RECEIVER_IMG="orkano-receiver:e2e"
 HELPER_IMG="orkano-e2e-helper:e2e"
 
+# The registry host every image ref carries (portless = 443); the node-wiring
+# maps it to the registry ClusterIP so the kubelet can pull the App image.
+REGISTRY_HOST="orkano-registry.orkano-system.svc.cluster.local"
+
 TMP="$(mktemp -d)"
+PF_PID=""   # current kubectl port-forward, killed by cleanup
 
 log() { printf '\n== %s\n' "$*"; }
 
@@ -75,6 +80,94 @@ fatal() {
   dump_state >&2
   trap - ERR
   exit 1
+}
+
+cleanup() {
+  [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null
+  rm -rf "$TMP"
+  [ "${CLEAN:-}" = "1" ] && kind delete cluster --name "$CLUSTER" >/dev/null 2>&1
+  return 0   # never mask the script's exit code
+}
+
+# Block until a URL answers (the receiver's /readyz also pings the DB).
+wait_http() {
+  local url=$1 deadline=$(( $(date +%s) + ${2:-60} ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    curl -fsS -o /dev/null "$url" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# wire_registry_pull is the kind analog of internal/install/registry.go: the App
+# Deployment pulls orkano-registry.orkano-system.svc.cluster.local/<app>@sha256:…,
+# but a kind node's containerd resolves neither cluster DNS nor the internal CA.
+# So map the registry FQDN -> its ClusterIP in each node's /etc/hosts and trust
+# the internal CA via a containerd registry-host config (kind sets
+# config_path=/etc/containerd/certs.d), then render the per-node ingress allow
+# init owns in prod. The build PUSH already works (in-pod DNS + buildkitd.toml CA);
+# this is only the kubelet PULL side.
+wire_registry_pull() {
+  local clusterip ca node node_ips ip
+  clusterip="$(kubectl get svc orkano-registry -n orkano-system -o 'jsonpath={.spec.clusterIP}')"
+  [ -n "$clusterip" ] || fatal "orkano-registry Service has no ClusterIP"
+  ca="$TMP/registry-ca.crt"
+  kubectl get secret orkano-registry-tls -n orkano-system -o 'jsonpath={.data.ca\.crt}' | base64 --decode > "$ca"
+  [ -s "$ca" ] || fatal "orkano-registry-tls carries no ca.crt"
+
+  for node in "$CLUSTER-control-plane" "$CLUSTER-worker"; do
+    docker exec "$node" mkdir -p "/etc/containerd/certs.d/$REGISTRY_HOST"
+    docker cp "$ca" "$node:/etc/containerd/certs.d/$REGISTRY_HOST/ca.crt"
+    docker exec -i "$node" sh -c "cat > /etc/containerd/certs.d/$REGISTRY_HOST/hosts.toml" <<EOF
+server = "https://$REGISTRY_HOST"
+
+[host."https://$REGISTRY_HOST"]
+  capabilities = ["pull", "resolve"]
+  ca = "/etc/containerd/certs.d/$REGISTRY_HOST/ca.crt"
+EOF
+    # Replace-in-place (not append): a reused cluster must not keep a stale
+    # mapping if the registry ClusterIP ever changed (mirrors registry.go).
+    docker exec -i "$node" sh -c "
+      grep -v ' $REGISTRY_HOST\$' /etc/hosts > /etc/hosts.new || true
+      echo '$clusterip $REGISTRY_HOST' >> /etc/hosts.new
+      cat /etc/hosts.new > /etc/hosts
+      rm -f /etc/hosts.new
+    "
+    # Without config_path the certs.d files are silently ignored and the pull
+    # x509-fails; fatal here (diagnosable) rather than as an opaque 4-min later
+    # ImagePullBackOff. kind v0.32 sets it by default.
+    docker exec "$node" grep -q '/etc/containerd/certs.d' /etc/containerd/config.toml \
+      || fatal "$node containerd has no registry config_path=/etc/containerd/certs.d (kind regression or non-default node image)"
+    echo "  $node: registry node-wiring written (certs.d + /etc/hosts)"
+  done
+
+  # The cross-node kubelet-pull allow init renders at install (M1.5, smoke probe
+  # 9). Same-node pulls are CNI-exempt, but rendering it removes any doubt and
+  # mirrors production; node IPs are install-specific so it can't be a static file.
+  node_ips="$(kubectl get nodes -o 'jsonpath={.items[*].status.addresses[?(@.type=="InternalIP")].address}')"
+  [ -n "$node_ips" ] || fatal "no node InternalIPs found"
+  {
+    cat <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orkano-registry-ingress-nodes
+  namespace: orkano-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-registry
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 5000
+          protocol: TCP
+      from:
+EOF
+    for ip in $node_ips; do
+      printf '        - ipBlock:\n            cidr: %s/32\n' "$ip"
+    done
+  } | kubectl apply -f - >/dev/null
 }
 
 # Poll a Job's two terminal conditions (a failed Job would otherwise block a
@@ -155,7 +248,7 @@ esac
 
 KCFG="$TMP/kubeconfig"
 export KUBECONFIG="$KCFG"
-trap 'rm -rf "$TMP"; [ "${CLEAN:-}" = "1" ] && kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true' EXIT
+trap cleanup EXIT
 trap 'dump_state >&2' ERR
 
 log "kind-config drift guard (must match the substrate smoke's AppArmor mounts)"
@@ -274,7 +367,83 @@ kubectl rollout status deploy/github-stub -n orkano-e2e --timeout=120s
 kubectl rollout status deploy/orkano-operator -n orkano-system --timeout=180s
 kubectl rollout status deploy/orkano-receiver -n orkano-system --timeout=180s
 
-log "PASS — platform + e2e infra up"
+log "apply the App and Domain, then wire the nodes to pull from the in-cluster registry"
+kubectl apply -f "$DIR/manifests/60-app.yaml" >/dev/null
+wire_registry_pull
+
+log "fire one signed push event at the receiver"
+# A reused cluster keeps the prior run's Build (the name is deterministic); delete
+# it first so the assertion proves THIS run's dispatcher recreated it.
+BUILD_NAME="${APP_NAME}-${FIXTURE_SHA:0:12}"
+kubectl delete build "$BUILD_NAME" -n orkano-apps --ignore-not-found >/dev/null 2>&1 || true
+kubectl port-forward svc/orkano-receiver -n orkano-system 18080:80 >/dev/null 2>&1 &
+PF_PID=$!
+wait_http "http://127.0.0.1:18080/readyz" 60 || fatal "receiver port-forward never answered /readyz"
+printf '%s' "{\"repository\":{\"full_name\":\"$REPO\"}}" > "$TMP/body.json"
+SIG="$("$TMP/helper" sign --secret "$WEBHOOK_SECRET" < "$TMP/body.json")"
+code="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H 'X-GitHub-Event: push' \
+  -H "X-GitHub-Delivery: e2e-$(date +%s)" \
+  -H "X-Hub-Signature-256: $SIG" \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$TMP/body.json" \
+  http://127.0.0.1:18080/webhook)"
+[ "$code" = "202" ] || fatal "receiver answered $code (expected 202)"
+kill "$PF_PID" 2>/dev/null; PF_PID=""
+echo "OK: receiver accepted the signed push (202)"
+
+log "wait for the dispatcher to create Build $BUILD_NAME"
+found=""
+for _ in $(seq 1 60); do
+  kubectl get build "$BUILD_NAME" -n orkano-apps >/dev/null 2>&1 && { found=yes; break; }
+  sleep 2
+done
+[ -n "$found" ] || fatal "Build $BUILD_NAME never appeared — the event path is broken"
+
+log "wait for the rootless BuildKit build to succeed and push a digest-pinned image"
+phase=""
+deadline=$(( $(date +%s) + 600 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  phase="$(kubectl get build "$BUILD_NAME" -n orkano-apps -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+  [ "$phase" = "Succeeded" ] && break
+  [ "$phase" = "Failed" ] && fatal "Build $BUILD_NAME Failed — see the build Job logs in the dump"
+  sleep 5
+done
+[ "$phase" = "Succeeded" ] || fatal "Build $BUILD_NAME did not succeed (phase=${phase:-none})"
+BUILD_IMG="$(kubectl get build "$BUILD_NAME" -n orkano-apps -o 'jsonpath={.status.image}')"
+echo "$BUILD_IMG" | grep -q '@sha256:' || fatal "Build image is not digest-pinned: $BUILD_IMG"
+echo "OK: build pushed $BUILD_IMG"
+
+log "wait for the App to roll out to the digest and assert the running pod is digest-pinned"
+# rollout status exits non-zero immediately on a not-yet-created Deployment, so
+# poll for it first (the App controller creates it after observing the Build).
+for _ in $(seq 1 30); do
+  kubectl get deploy/"$APP_NAME" -n orkano-apps >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl rollout status deploy/"$APP_NAME" -n orkano-apps --timeout=240s || fatal "App Deployment never rolled out"
+POD_IMG="$(kubectl get pods -n orkano-apps -l app.orkano.io/app="$APP_NAME" -o 'jsonpath={.items[0].spec.containers[0].image}')"
+echo "$POD_IMG" | grep -q '@sha256:' || fatal "running App pod image is not digest-pinned: $POD_IMG"
+echo "OK: App pod runs $POD_IMG"
+
+log "assert the App answers HTTP on the digest-pinned image"
+kubectl port-forward deploy/"$APP_NAME" -n orkano-apps 18090:8080 >/dev/null 2>&1 &
+PF_PID=$!
+wait_http "http://127.0.0.1:18090/" 60 || fatal "App port-forward never answered after 60s"
+body="$(curl -fsS "http://127.0.0.1:18090/" 2>/dev/null || true)"
+kill "$PF_PID" 2>/dev/null; PF_PID=""
+echo "$body" | grep -q 'orkano-e2e-ok' || fatal "App did not answer with the expected body (got: '$body')"
+echo "OK: App answered HTTP with the fixture body"
+
+log "assert the Domain leg (Certificate Ready + App.status.url)"
+kubectl wait certificate "${APP_NAME}-example-test-tls" -n orkano-apps --for=condition=Ready --timeout=120s \
+  || fatal "Domain Certificate never became Ready (self-signed orkano-platform issuer)"
+APP_URL="$(kubectl get app "$APP_NAME" -n orkano-apps -o 'jsonpath={.status.url}')"
+[ "$APP_URL" = "https://e2e-web.example.test" ] || fatal "App.status.url = '$APP_URL', want https://e2e-web.example.test"
+echo "OK: App.status.url = $APP_URL"
+
+log "PASS — engine E2E: signed push -> build -> digest-pinned rollout -> HTTP"
 echo "cluster:        $CLUSTER ($(kind version))"
 echo "fixture commit: $FIXTURE_SHA (repo $REPO, app $APP_NAME)"
-echo "(the signed-push drive + rollout assertions and the invariant probes are appended in the following commits)"
+echo "build image:    $BUILD_IMG"
+echo "(the invariant probes are appended in the following commit)"
