@@ -99,6 +99,13 @@ wait_http() {
   return 1
 }
 
+# Exec-based connect check from a long-lived canary pod: exec rides the kubelet,
+# not the pod network, so it works under any NetworkPolicy (substrate-smoke
+# idiom). $1 ns, $2 pod, $3 host/ip, $4 port.
+canary_connect() {
+  kubectl exec "$2" -n "$1" -- timeout 8 nc -z -w 5 "$3" "$4" >/dev/null 2>&1
+}
+
 # wire_registry_pull is the kind analog of internal/install/registry.go: the App
 # Deployment pulls orkano-registry.orkano-system.svc.cluster.local/<app>@sha256:…,
 # but a kind node's containerd resolves neither cluster DNS nor the internal CA.
@@ -442,8 +449,131 @@ APP_URL="$(kubectl get app "$APP_NAME" -n orkano-apps -o 'jsonpath={.status.url}
 [ "$APP_URL" = "https://e2e-web.example.test" ] || fatal "App.status.url = '$APP_URL', want https://e2e-web.example.test"
 echo "OK: App.status.url = $APP_URL"
 
-log "PASS — engine E2E: signed push -> build -> digest-pinned rollout -> HTTP"
+log "engine E2E green — running the invariant probes"
+
+# (c) build.apparmor-profile-loaded -------------------------------------------
+log "invariant: orkano-buildkit AppArmor profile enforce on every node (ADR-0012)"
+for node in "$CLUSTER-control-plane" "$CLUSTER-worker"; do
+  docker exec "$node" grep -qE '^orkano-buildkit \(enforce\)' /sys/kernel/security/apparmor/profiles \
+    || fatal "orkano-buildkit not loaded in enforce mode on $node (nodeprep.AppArmorProfileLoadedCheck)"
+done
+echo "OK: orkano-buildkit enforce on both nodes"
+
+# (d) RBAC SubjectAccessReview spot-checks (exhaustive walk = rbac_matrix_test.go)
+log "invariant: RBAC SubjectAccessReview spot-checks"
+sar() {  # verb resource sa-ns sa-name target-ns want(yes|no)
+  local got
+  got="$(kubectl auth can-i "$1" "$2" --as="system:serviceaccount:$3:$4" -n "$5" 2>/dev/null || true)"
+  [ "$got" = "$6" ] || fatal "SAR $3:$4 can-i $1 $2 -n $5 = '$got', want '$6'"
+}
+sar create builds.orkano.io orkano-system orkano-operator orkano-apps   yes
+sar get    apps.orkano.io   orkano-system orkano-operator orkano-apps   yes
+sar create builds.orkano.io orkano-system orkano-receiver orkano-apps   no
+sar get    secrets          orkano-builds orkano-build    orkano-builds no
+sar get    secrets          orkano-system orkano-operator kube-system   no
+sar '*'    '*'              orkano-system orkano-operator orkano-system no
+echo "OK: operator allowed its grants; receiver/build denied; no cluster-admin"
+
+# (a) receiver blast radius ---------------------------------------------------
+log "invariant: receiver blast radius (no SA token, INSERT-only DB role, no API/GitHub reach)"
+[ "$(kubectl get pod -n orkano-system -l app.kubernetes.io/name=orkano-receiver -o 'jsonpath={.items[0].spec.automountServiceAccountToken}')" = "false" ] \
+  || fatal "receiver pod mounts a ServiceAccount token (INV-04)"
+# Connecting AS the receiver role, a SELECT must be denied (42501) — the Job
+# succeeds only when the SELECT was refused.
+kubectl delete job db-blast-radius -n orkano-system --ignore-not-found >/dev/null 2>&1 || true
+cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-blast-radius
+  namespace: orkano-system
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-blast-radius
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          image: $postgres_img
+          command:
+            - sh
+            - -c
+            - 'if psql -v ON_ERROR_STOP=on "\$DSN" -c "SELECT 1 FROM webhook_deliveries" >/dev/null 2>&1; then echo SELECT-SUCCEEDED-BUG; exit 1; else echo SELECT-DENIED-OK; fi'
+          env:
+            - name: DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-receiver-db
+                  key: dsn
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+EOF
+outcome="$(job_outcome db-blast-radius 120 orkano-system)"
+[ "$outcome" = "complete" ] || fatal "receiver DB role could SELECT — INSERT-only invariant broken (Job $outcome)"
+echo "OK: receiver pod mounts no token; receiver DB role cannot SELECT"
+
+# Network: a receiver-labeled canary reaches Postgres but NOT the apiserver / stub.
+kubectl apply -f "$DIR/manifests/51-probe-canaries.yaml" >/dev/null
+kubectl wait --for=condition=Ready pod/receiver-canary -n orkano-system --timeout=120s
+kubectl wait --for=condition=Ready pod/build-canary -n orkano-builds --timeout=120s
+# Capability-probe the token mount (not just the spec): the receiver-canary
+# shares the receiver's automountServiceAccountToken=false, so no token file.
+kubectl exec receiver-canary -n orkano-system -- sh -c 'test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token' \
+  || fatal "receiver pod filesystem carries a ServiceAccount token (INV-04)"
+pg_ok=""
+for _ in $(seq 1 12); do
+  canary_connect orkano-system receiver-canary orkano-postgres.orkano-system.svc 5432 && { pg_ok=yes; break; }
+  sleep 5
+done
+[ -n "$pg_ok" ] || fatal "receiver canary cannot reach Postgres — its egress allow is broken"
+api_denied="" stub_denied=""
+for _ in $(seq 1 12); do
+  [ -z "$api_denied" ]  && ! canary_connect orkano-system receiver-canary kubernetes.default.svc 443 && api_denied=yes
+  [ -z "$stub_denied" ] && ! canary_connect orkano-system receiver-canary github-stub.orkano-e2e.svc 80 && stub_denied=yes
+  [ -n "$api_denied" ] && [ -n "$stub_denied" ] && break
+  sleep 5
+done
+[ -n "$api_denied" ]  || fatal "receiver canary reached the K8s API server — INV-04 network half broken"
+[ -n "$stub_denied" ] || fatal "receiver canary reached the GitHub stub — receiver egress too broad"
+echo "OK: receiver reaches only Postgres; not the API server, not GitHub"
+
+# (b) build canary isolation --------------------------------------------------
+log "invariant: build canary isolation (no SA token file, non-allowlisted egress denied)"
+kubectl exec build-canary -n orkano-builds -- sh -c 'test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token' \
+  || fatal "build pod has a ServiceAccount token file (INV-02)"
+reg_ip="$(kubectl get svc orkano-registry -n orkano-system -o 'jsonpath={.spec.clusterIP}')"
+gf_ok="" reg_ok=""
+for _ in $(seq 1 12); do
+  [ -z "$gf_ok" ]  && canary_connect orkano-builds build-canary gitfixture.orkano-e2e.svc 80 && gf_ok=yes
+  [ -z "$reg_ok" ] && canary_connect orkano-builds build-canary "$reg_ip" 443 && reg_ok=yes
+  [ -n "$gf_ok" ] && [ -n "$reg_ok" ] && break
+  sleep 5
+done
+[ -n "$gf_ok" ]  || fatal "build canary cannot reach the git fixture — the test-egress allow is broken"
+[ -n "$reg_ok" ] || fatal "build canary cannot reach the registry — the build egress allow is broken"
+stub_denied=""
+for _ in $(seq 1 12); do
+  ! canary_connect orkano-builds build-canary github-stub.orkano-e2e.svc 80 && { stub_denied=yes; break; }
+  sleep 5
+done
+[ -n "$stub_denied" ] || fatal "build canary reached the github-stub — non-allowlisted egress not denied (INV-02)"
+echo "OK: build pod has no token; reaches its allowlist; denied elsewhere"
+kubectl delete pod receiver-canary -n orkano-system >/dev/null 2>&1 || true
+kubectl delete pod build-canary -n orkano-builds >/dev/null 2>&1 || true
+
+log "PASS — engine E2E + invariant probes"
 echo "cluster:        $CLUSTER ($(kind version))"
 echo "fixture commit: $FIXTURE_SHA (repo $REPO, app $APP_NAME)"
 echo "build image:    $BUILD_IMG"
-echo "(the invariant probes are appended in the following commit)"

@@ -1,0 +1,75 @@
+# Long-lived exec canaries for the invariant probes. `kubectl exec` rides the
+# kubelet (not the pod network), so it works under any NetworkPolicy — the same
+# pattern the substrate smoke uses to capability-probe deny/allow legs.
+#
+# receiver-canary carries the receiver's netpol label so it INHERITS the receiver
+# egress lockdown (config/netpol/orkano-receiver.yaml: CoreDNS + platform Postgres
+# only). The real receiver is distroless (no shell), so this label-inheriting
+# busybox is the network-blast-radius exec target; its SA + automount mirror the
+# real receiver. Restricted-grade SC so it admits under orkano-system's restricted PSA.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: receiver-canary
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+spec:
+  serviceAccountName: orkano-receiver
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: canary
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+---
+# build-canary carries the build-pod netpol label, the orkano-build SA, and
+# automount false — the orkano-builds lockdown (default-deny + egress allowlist)
+# applies to it exactly as it does to a real build Job pod. Used to probe that no
+# SA token file is mounted and that egress to a non-allowlisted target is denied
+# while the allowlisted ones work.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: build-canary
+  namespace: orkano-builds
+  labels:
+    app.kubernetes.io/name: orkano-build
+spec:
+  serviceAccountName: orkano-build
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: canary
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
