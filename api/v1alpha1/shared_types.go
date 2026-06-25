@@ -53,8 +53,16 @@ type BuildStrategy struct {
 // target were deferred by ADR-0012 after the BuildKit spike — each widens
 // the hostile-input surface without being needed for the core loop.
 type DockerfileBuild struct {
-	// Path to the Dockerfile, relative to source.subPath when set.
+	// Path to the Dockerfile, relative to source.subPath when set; an omitted
+	// path (or omitted dockerfile block) selects the default "Dockerfile". The
+	// pattern and the no-".." rule mirror source.subPath and static.dir: the
+	// value lands in BuildKit's --opt=filename argument, where ".." would point
+	// the build outside the intended subdirectory of the (commit-pinned)
+	// context. Lower-risk than its siblings — single argv, no shell, no context
+	// escape — but closing the validation asymmetry is cheap.
 	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="path must not contain '..'"
 	// +optional
 	Path string `json:"path,omitempty"`
 }

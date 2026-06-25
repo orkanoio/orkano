@@ -1,0 +1,18 @@
+# Violates: build.dockerfile.path CEL rule — no ".." (the pattern also forbids
+# "#", ":", spaces, and newlines). The value lands in BuildKit's --opt=filename
+# argument, where ".." would point the build outside the intended subdirectory
+# of the commit-pinned context; the guard closes the validation asymmetry with
+# source.subPath and static.dir.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-dockerfile-path
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/app
+  build:
+    strategy: Dockerfile
+    dockerfile:
+      path: ../../etc/passwd

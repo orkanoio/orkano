@@ -1,0 +1,19 @@
+# Violates: build.strategy.dockerfile.path CEL rule — no ".." (the pattern also
+# forbids "#", ":", spaces, and newlines). Same shared BuildStrategy rule as the
+# App fixture; this fixture proves it survived `make manifests` on the Build CRD
+# too (the rule lands in both kinds). Only the path is invalid here.
+apiVersion: orkano.io/v1alpha1
+kind: Build
+metadata:
+  name: invalid-build-dockerfile-path
+  namespace: orkano-apps
+spec:
+  appName: api
+  commit: 0123456789abcdef0123456789abcdef01234567
+  source:
+    github:
+      repo: alice/app
+  strategy:
+    strategy: Dockerfile
+    dockerfile:
+      path: ../../etc/passwd
