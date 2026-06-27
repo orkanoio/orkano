@@ -8,6 +8,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditLog struct {
+	ID         int64
+	OccurredAt pgtype.Timestamptz
+	Actor      string
+	Action     string
+	Target     string
+	Outcome    string
+	Detail     []byte
+}
+
+type DeployHistory struct {
+	ID           int64
+	OccurredAt   pgtype.Timestamptz
+	AppNamespace string
+	AppName      string
+	BuildName    string
+	Image        string
+	Status       string
+}
+
+type Session struct {
+	TokenHash  string
+	UserID     int64
+	CreatedAt  pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
+	LastUsedAt pgtype.Timestamptz
+}
+
+type User struct {
+	ID              int64
+	Username        string
+	PasswordHash    string
+	TotpSecret      string
+	TotpConfirmedAt pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type WebhookDelivery struct {
 	ID         int64
 	DeliveryID string
