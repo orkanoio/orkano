@@ -175,14 +175,13 @@ func TestDashboardSchemaRoundTrip(t *testing.T) {
 	})
 
 	t.Run("deleting a user cascades to its sessions", func(t *testing.T) {
-		admin := q
-		u, err := admin.CreateUser(ctx, db.CreateUserParams{
+		u, err := q.CreateUser(ctx, db.CreateUserParams{
 			Username: "throwaway", PasswordHash: "h", TotpSecret: "s",
 		})
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}
-		if err := admin.CreateSession(ctx, db.CreateSessionParams{
+		if err := q.CreateSession(ctx, db.CreateSessionParams{
 			TokenHash: "cascade-token", UserID: u.ID, ExpiresAt: tsAt(time.Now().Add(time.Hour)),
 		}); err != nil {
 			t.Fatalf("CreateSession: %v", err)
@@ -190,7 +189,7 @@ func TestDashboardSchemaRoundTrip(t *testing.T) {
 		if _, err := pool.Exec(ctx, "DELETE FROM users WHERE id = $1", u.ID); err != nil {
 			t.Fatalf("delete user: %v", err)
 		}
-		if _, err := admin.GetSession(ctx, "cascade-token"); !errors.Is(err, pgx.ErrNoRows) {
+		if _, err := q.GetSession(ctx, "cascade-token"); !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("session should cascade-delete with its user, got %v", err)
 		}
 	})
@@ -212,10 +211,17 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 		t.Fatalf("admin pool: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	// init sets this password at install via ALTER ROLE; the migration ships only
-	// the privilege shape. Play that step here.
-	if _, err := admin.Exec(ctx, "ALTER ROLE orkano_dashboard WITH PASSWORD 'dash-pw'"); err != nil {
-		t.Fatalf("set dashboard password: %v", err)
+	// init sets these passwords at install via ALTER ROLE; the migration ships
+	// only the privilege shape. Play that step here (the queue roles too, for the
+	// cross-component isolation check at the end).
+	for role, pw := range map[string]string{
+		"orkano_dashboard":  "dash-pw",
+		"orkano_receiver":   "recv-pw",
+		"orkano_dispatcher": "disp-pw",
+	} {
+		if _, err := admin.Exec(ctx, "ALTER ROLE "+role+" WITH PASSWORD '"+pw+"'"); err != nil {
+			t.Fatalf("set %s password: %v", role, err)
+		}
 	}
 
 	dash := connectAs(t, dsn, "orkano_dashboard", "dash-pw")
@@ -257,16 +263,29 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 	_, err = dash.Exec(ctx, "TRUNCATE audit_log")
 	assertDenied(t, "dashboard TRUNCATE audit_log", err)
 
-	// deploy_history: append + read, no UPDATE/DELETE.
+	// deploy_history: append + read, never UPDATE/DELETE/TRUNCATE.
 	if _, err := dq.RecordDeploy(ctx, db.RecordDeployParams{
 		AppNamespace: "orkano-apps", AppName: "web", Image: "reg/web@sha256:x", Status: "Succeeded",
 	}); err != nil {
 		t.Fatalf("dashboard RecordDeploy should succeed: %v", err)
 	}
+	if deploys, err := dq.ListAppDeploys(ctx, db.ListAppDeploysParams{
+		AppNamespace: "orkano-apps", AppName: "web", Limit: 10,
+	}); err != nil || len(deploys) != 1 {
+		t.Fatalf("dashboard ListAppDeploys should succeed: got %d, %v", len(deploys), err)
+	}
 	_, err = dash.Exec(ctx, "UPDATE deploy_history SET status = 'x'")
 	assertDenied(t, "dashboard UPDATE deploy_history", err)
 	_, err = dash.Exec(ctx, "DELETE FROM deploy_history")
 	assertDenied(t, "dashboard DELETE deploy_history", err)
+	_, err = dash.Exec(ctx, "TRUNCATE deploy_history")
+	assertDenied(t, "dashboard TRUNCATE deploy_history", err)
+
+	// The D in "full CRUD on users", as the dashboard role (the cascade above ran
+	// as the superuser).
+	if _, err := dash.Exec(ctx, "DELETE FROM users WHERE id = $1", u.ID); err != nil {
+		t.Fatalf("dashboard DELETE users should succeed: %v", err)
+	}
 
 	// The dashboard role holds nothing on the webhook queue — it can neither read
 	// nor ring the doorbell (cross-component blast-radius).
@@ -274,6 +293,16 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 	assertDenied(t, "dashboard SELECT webhook_deliveries", err)
 	_, err = dash.Exec(ctx, "INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ('x','y','push')")
 	assertDenied(t, "dashboard INSERT webhook_deliveries", err)
+
+	// The reverse direction: the internet-facing receiver and the dispatcher hold
+	// nothing on the dashboard's account store — a DB compromise of the doorbell
+	// yields no users/sessions/audit.
+	recv := connectAs(t, dsn, "orkano_receiver", "recv-pw")
+	_, err = recv.Exec(ctx, "SELECT id FROM users")
+	assertDenied(t, "receiver SELECT users", err)
+	disp := connectAs(t, dsn, "orkano_dispatcher", "disp-pw")
+	_, err = disp.Exec(ctx, "SELECT id FROM users")
+	assertDenied(t, "dispatcher SELECT users", err)
 }
 
 // TestDashboardSchemaHasNoSecretValueColumns pins the exact column set of each
@@ -294,33 +323,31 @@ func TestDashboardSchemaHasNoSecretValueColumns(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	want := map[string][]string{
-		"users":          {"id", "username", "password_hash", "totp_secret", "totp_confirmed_at", "created_at", "updated_at"},
-		"sessions":       {"token_hash", "user_id", "created_at", "expires_at", "last_used_at"},
-		"audit_log":      {"id", "occurred_at", "actor", "action", "target", "outcome", "detail"},
-		"deploy_history": {"id", "occurred_at", "app_namespace", "app_name", "build_name", "image", "status"},
+	want := []struct {
+		table string
+		cols  []string
+	}{
+		{"users", []string{"id", "username", "password_hash", "totp_secret", "totp_confirmed_at", "created_at", "updated_at"}},
+		{"sessions", []string{"token_hash", "user_id", "created_at", "expires_at", "last_used_at"}},
+		{"audit_log", []string{"id", "occurred_at", "actor", "action", "target", "outcome", "detail"}},
+		{"deploy_history", []string{"id", "occurred_at", "app_namespace", "app_name", "build_name", "image", "status"}},
 	}
-	for table, cols := range want {
+	for _, tc := range want {
 		rows, err := pool.Query(ctx,
 			`SELECT column_name FROM information_schema.columns
 			 WHERE table_schema = 'public' AND table_name = $1
-			 ORDER BY ordinal_position`, table)
+			 ORDER BY ordinal_position`, tc.table)
 		if err != nil {
-			t.Fatalf("describe %s: %v", table, err)
+			t.Errorf("describe %s: %v", tc.table, err)
+			continue
 		}
-		var got []string
-		for rows.Next() {
-			var c string
-			if err := rows.Scan(&c); err != nil {
-				t.Fatalf("scan %s: %v", table, err)
-			}
-			got = append(got, c)
+		got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Errorf("collect %s: %v", tc.table, err)
+			continue
 		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("rows %s: %v", table, err)
-		}
-		if !slices.Equal(got, cols) {
-			t.Errorf("%s columns drifted: got %v, want %v", table, got, cols)
+		if !slices.Equal(got, tc.cols) {
+			t.Errorf("%s columns drifted: got %v, want %v", tc.table, got, tc.cols)
 		}
 	}
 }

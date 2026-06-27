@@ -88,8 +88,8 @@ WHERE lower(username) = lower($1)
 `
 
 // Login lookup; matched case-insensitively against the lowercased unique index.
-func (q *Queries) GetUserByUsername(ctx context.Context, lower string) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByUsername, lower)
+func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByUsername, username)
 	var i User
 	err := row.Scan(
 		&i.ID,

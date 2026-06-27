@@ -10,7 +10,7 @@ RETURNING id, username, password_hash, totp_secret, totp_confirmed_at, created_a
 -- Login lookup; matched case-insensitively against the lowercased unique index.
 SELECT id, username, password_hash, totp_secret, totp_confirmed_at, created_at, updated_at
 FROM users
-WHERE lower(username) = lower($1);
+WHERE lower(username) = lower(@username);
 
 -- name: GetUserByID :one
 SELECT id, username, password_hash, totp_secret, totp_confirmed_at, created_at, updated_at
