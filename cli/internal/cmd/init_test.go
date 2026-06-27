@@ -32,6 +32,8 @@ func healthyNode(ssOutput string) sshtest.ExecHandler {
 			return "", "", 0
 		case cmd == "uname -m":
 			return "x86_64\n", "", 0
+		case cmd == "command -v curl":
+			return "/usr/bin/curl\n", "", 0
 		case cmd == "ss -Hltn":
 			return ssOutput, "", 0
 		case cmd == "date -u +%s":

@@ -75,6 +75,49 @@ func archSupportedCheck(opt Options) check.Check {
 	}
 }
 
+// toolsPresentCheck verifies the node has the command-line tools the bootstrap
+// shells out to that no other preflight check already exercises. Today that is
+// curl: the k3s installer is `curl -sfL https://get.k3s.io | sh`, so a node
+// without curl fails partway through the install instead of cleanly at the gate
+// (ss is exercised by ports.free; base64/tee/sudo by the file writes).
+//
+// `command -v curl` exits 1 when (and only when) curl is absent — that is the
+// definitive answer, so exit 1 maps to a fail (init refuses cleanly), like
+// ssh.reachable and unlike arch.supported/ports.free. Any OTHER non-zero exit
+// means `command -v` itself could not run (a broken or non-POSIX shell), which
+// is unknown rather than "absent", so it maps to a probe error: unknown must
+// never read as a definitive result.
+func toolsPresentCheck(opt Options) check.Check {
+	return check.Check{
+		ID:          IDToolsPresent,
+		Severity:    check.SeverityCritical,
+		Summary:     "tools required to install k3s are present",
+		Remediation: "install curl on the node, e.g. `apt-get install -y curl` or `dnf install -y curl`",
+		Requires:    []string{IDSSHReachable},
+		Probe: func(ctx context.Context) (check.Result, error) {
+			res, err := opt.Executor.Run(ctx, "command -v curl")
+			if err != nil {
+				return check.Result{}, fmt.Errorf("run command -v curl: %w", err)
+			}
+			switch res.ExitStatus {
+			case 0:
+				msg := "curl is present"
+				if path := firstLine(res.Stdout); path != "" {
+					msg += " (" + path + ")"
+				}
+				return check.Result{Status: check.StatusPass, Message: msg}, nil
+			case 1:
+				return check.Result{
+					Status:  check.StatusFail,
+					Message: "curl is not installed; the k3s installer is `curl -sfL https://get.k3s.io | sh`",
+				}, nil
+			default:
+				return check.Result{}, fmt.Errorf("command -v curl exited %d: %s", res.ExitStatus, firstLine(res.Stderr))
+			}
+		},
+	}
+}
+
 // portsFreeCheck lists the node's listening TCP sockets and reports any of the
 // required ports already in use. It reads the live kernel socket table (via ss)
 // rather than a config file — the port is occupied if and only if something is

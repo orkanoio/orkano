@@ -129,6 +129,48 @@ func TestArchSupported(t *testing.T) {
 	})
 }
 
+func TestToolsPresent(t *testing.T) {
+	t.Run("present", func(t *testing.T) {
+		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"command -v curl": out("/usr/bin/curl\n")}}}
+		res, err := probeByID(t, opt, preflight.IDToolsPresent)
+		assertStatus(t, res, err, check.StatusPass)
+		if !contains(res.Message, "/usr/bin/curl") {
+			t.Errorf("message %q should name the resolved curl path", res.Message)
+		}
+	})
+	t.Run("present without a path still passes", func(t *testing.T) {
+		// A shell where `command -v` prints nothing on a zero exit (a builtin or
+		// alias) must still pass — exit status is the authority, not stdout.
+		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"command -v curl": out("")}}}
+		res, err := probeByID(t, opt, preflight.IDToolsPresent)
+		assertStatus(t, res, err, check.StatusPass)
+	})
+	t.Run("missing is a fail not an error", func(t *testing.T) {
+		// command -v exits 1 with no output when the tool is absent; that is the
+		// definitive answer, so it must be a fail (init refuses cleanly), never a
+		// probe error.
+		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"command -v curl": exit(1, "")}}}
+		res, err := probeByID(t, opt, preflight.IDToolsPresent)
+		assertStatus(t, res, err, check.StatusFail)
+		if !contains(res.Message, "curl") {
+			t.Errorf("message %q should name the missing tool", res.Message)
+		}
+	})
+	t.Run("unexpected exit is a probe error not a fail", func(t *testing.T) {
+		// A non-{0,1} exit means `command -v` itself could not run (a broken or
+		// non-POSIX shell); that is unknown, not "curl absent", so it must be a
+		// probe error — mirrors arch.supported / ports.free.
+		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"command -v curl": exit(127, "command: not found")}}}
+		_, err := probeByID(t, opt, preflight.IDToolsPresent)
+		assertProbeError(t, check.Result{}, err)
+	})
+	t.Run("transport error errors", func(t *testing.T) {
+		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"command -v curl": fail("eof")}}}
+		_, err := probeByID(t, opt, preflight.IDToolsPresent)
+		assertProbeError(t, check.Result{}, err)
+	})
+}
+
 const ssListening = "LISTEN 0 4096 127.0.0.1:5432 0.0.0.0:*\nLISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n"
 
 func TestPortsFree(t *testing.T) {
@@ -265,6 +307,7 @@ func TestContract(t *testing.T) {
 	want := map[string]check.Severity{
 		preflight.IDSSHReachable:  check.SeverityCritical,
 		preflight.IDArchSupported: check.SeverityCritical,
+		preflight.IDToolsPresent:  check.SeverityCritical,
 		preflight.IDPortsFree:     check.SeverityCritical,
 		preflight.IDTimeSynced:    check.SeverityWarning,
 	}
@@ -324,7 +367,7 @@ func TestUnreachableBlocksTheRest(t *testing.T) {
 	if got := outcome(run, preflight.IDSSHReachable); got != checks.OutcomeFail {
 		t.Errorf("ssh.reachable outcome = %s, want fail", got)
 	}
-	for _, id := range []string{preflight.IDArchSupported, preflight.IDPortsFree, preflight.IDTimeSynced} {
+	for _, id := range []string{preflight.IDArchSupported, preflight.IDToolsPresent, preflight.IDPortsFree, preflight.IDTimeSynced} {
 		if got := outcome(run, id); got != checks.OutcomeBlocked {
 			t.Errorf("%s outcome = %s, want blocked", id, got)
 		}
@@ -332,8 +375,10 @@ func TestUnreachableBlocksTheRest(t *testing.T) {
 	if !slices.Contains(exec.calls, "true") {
 		t.Error("ssh.reachable did not probe")
 	}
-	if slices.Contains(exec.calls, "uname -m") {
-		t.Error("a blocked check was probed (uname ran)")
+	for _, cmd := range []string{"uname -m", "command -v curl", "ss -Hltn", "date -u +%s"} {
+		if slices.Contains(exec.calls, cmd) {
+			t.Errorf("a blocked check was probed (%q ran)", cmd)
+		}
 	}
 	if run.ExitCode() != checks.ExitCritical {
 		t.Errorf("ExitCode = %d, want ExitCritical (init must refuse)", run.ExitCode())
@@ -345,10 +390,11 @@ func TestUnreachableBlocksTheRest(t *testing.T) {
 func TestHappyPathPasses(t *testing.T) {
 	fixed := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
 	exec := &fakeExecutor{responses: map[string]fakeResp{
-		"true":        out(""),
-		"uname -m":    out("x86_64\n"),
-		"ss -Hltn":    out(ssListening),
-		"date -u +%s": out(strconv.FormatInt(fixed.Unix(), 10) + "\n"),
+		"true":            out(""),
+		"uname -m":        out("x86_64\n"),
+		"command -v curl": out("/usr/bin/curl\n"),
+		"ss -Hltn":        out(ssListening),
+		"date -u +%s":     out(strconv.FormatInt(fixed.Unix(), 10) + "\n"),
 	}}
 	reg := checks.New()
 	if err := preflight.Register(reg, preflight.Options{Executor: exec, Now: func() time.Time { return fixed }}); err != nil {
@@ -361,8 +407,8 @@ func TestHappyPathPasses(t *testing.T) {
 	if !run.OK() {
 		t.Fatalf("run did not clear the gate: %+v", run.Summary())
 	}
-	if s := run.Summary(); s.Passed != 4 {
-		t.Errorf("passed = %d, want 4", s.Passed)
+	if s := run.Summary(); s.Passed != 5 {
+		t.Errorf("passed = %d, want 5", s.Passed)
 	}
 }
 

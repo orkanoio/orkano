@@ -16,7 +16,7 @@ import (
 // of the package is that the real SSH client drives them.
 var _ preflight.Executor = (*ssh.Client)(nil)
 
-// nodeScript answers the four probe commands the way a healthy node would.
+// nodeScript answers the five probe commands the way a healthy node would.
 func nodeScript(ssOutput string) sshtest.ExecHandler {
 	return func(cmd string) (string, string, int) {
 		switch cmd {
@@ -24,6 +24,8 @@ func nodeScript(ssOutput string) sshtest.ExecHandler {
 			return "", "", 0
 		case "uname -m":
 			return "x86_64\n", "", 0
+		case "command -v curl":
+			return "/usr/bin/curl\n", "", 0
 		case "ss -Hltn":
 			return ssOutput, "", 0
 		case "date -u +%s":
@@ -69,7 +71,7 @@ func TestPreflightOverRealSSH(t *testing.T) {
 	}
 	// run.OK() only gates on critical checks; assert the warning-severity
 	// time.synced explicitly so its date-parsing path is covered end to end.
-	for _, id := range []string{preflight.IDSSHReachable, preflight.IDArchSupported, preflight.IDPortsFree, preflight.IDTimeSynced} {
+	for _, id := range []string{preflight.IDSSHReachable, preflight.IDArchSupported, preflight.IDToolsPresent, preflight.IDPortsFree, preflight.IDTimeSynced} {
 		if got := outcome(run, id); got != checks.OutcomePass {
 			t.Errorf("%s outcome = %s, want pass", id, got)
 		}
@@ -125,7 +127,7 @@ func TestPreflightUnreachableOverSSH(t *testing.T) {
 	if got := outcome(run, preflight.IDSSHReachable); got != checks.OutcomeFail {
 		t.Errorf("ssh.reachable outcome = %s, want fail", got)
 	}
-	for _, id := range []string{preflight.IDArchSupported, preflight.IDPortsFree, preflight.IDTimeSynced} {
+	for _, id := range []string{preflight.IDArchSupported, preflight.IDToolsPresent, preflight.IDPortsFree, preflight.IDTimeSynced} {
 		if got := outcome(run, id); got != checks.OutcomeBlocked {
 			t.Errorf("%s outcome = %s, want blocked", id, got)
 		}

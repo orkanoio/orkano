@@ -22,6 +22,7 @@ import (
 const (
 	IDSSHReachable  = "ssh.reachable"
 	IDArchSupported = "arch.supported"
+	IDToolsPresent  = "tools.present"
 	IDPortsFree     = "ports.free"
 	IDTimeSynced    = "time.synced"
 )
@@ -92,13 +93,14 @@ func (o Options) target() string {
 	return o.Target
 }
 
-// Checks returns the four preflight checks as composite literals closing over
-// opt, in registration order (ssh.reachable first). The order the runner
-// actually probes them in is the dependency order Plan computes.
+// Checks returns the preflight checks as composite literals closing over opt,
+// in registration order (ssh.reachable first). The order the runner actually
+// probes them in is the dependency order Plan computes.
 func Checks(opt Options) []check.Check {
 	return []check.Check{
 		sshReachableCheck(opt),
 		archSupportedCheck(opt),
+		toolsPresentCheck(opt),
 		portsFreeCheck(opt),
 		timeSyncedCheck(opt),
 	}
