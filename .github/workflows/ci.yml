@@ -15,18 +15,15 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        module: [".", "api"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-          working-directory: ${{ matrix.module }}
+      # make lint loops both modules through the sha256-verified golangci-lint
+      # download (Makefile), so CI runs the same pinned path as local dev — no
+      # mutable golangci-lint-action tag in the supply chain.
+      - run: make lint
 
   test:
     runs-on: ubuntu-latest

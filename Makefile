@@ -5,14 +5,44 @@ ENVTEST_K8S_VERSION   := 1.36.0
 MODULES               := . api
 BIN                   := $(CURDIR)/bin
 
+# Host platform, normalized to the os/arch tokens the release artifacts use.
+HOST_OS   := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+
+# Pinned sha256 of the toolchain release artifacts (the .tar.gz the recipes
+# curl) — the supply-chain guard for the two binaries Make downloads. Renovate
+# does NOT bump these: when you bump a *_VERSION above, re-capture THAT tool's
+# four platform digests. golangci-lint publishes golangci-lint-<ver>-checksums.txt;
+# sqlc publishes no checksums.txt as of v1.31.1 — check its release page first,
+# and if one still isn't there, hash each sqlc_<ver>_<os>_<arch>.tar.gz yourself.
+GOLANGCI_LINT_SHA256_linux_amd64  := 8df580d2670fed8fa984aac0507099af8df275e665215f5c7a2ae3943893a553
+GOLANGCI_LINT_SHA256_linux_arm64  := 44cd40a8c76c86755375adfeea52cfd3533cb43d7bd647771e0ae065e166df3a
+GOLANGCI_LINT_SHA256_darwin_amd64 := f6f06d94b6241521c53d15450c5209b028270bf966f842afb11c030c79f5bc16
+GOLANGCI_LINT_SHA256_darwin_arm64 := a9c54498731b3128f79e090be6110f3e5fffccc617b08142ed244d4126c73f29
+SQLC_SHA256_linux_amd64  := 497ae4fcdfa64c5b0c311ffe4c2bd991e43991e82e5367792ed78bc2dca27354
+SQLC_SHA256_linux_arm64  := b7cae247740d0c51a1e657479e5b2d21e6fef428f596682a01bc55bf4ab8a23d
+SQLC_SHA256_darwin_amd64 := c5af76772e3785d21663a62697056b383f07629979b1bd25b93872e73dbd519b
+SQLC_SHA256_darwin_arm64 := 21602158c99eb1f2bae197a66abfb1941d1e9e50b23125bb193349c6b1acc71e
+
 .DEFAULT_GOAL := all
 .PHONY: all lint test build vulncheck
 
 all: lint test build
 
+# Download the pinned release tarball and verify its sha256 before extracting —
+# no `curl | sh` of an unpinned install.sh. (The official install.sh checksums
+# the binary, but it was itself fetched from a mutable HEAD.)
 $(BIN)/golangci-lint:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-		| sh -s -- -b $(BIN) $(GOLANGCI_LINT_VERSION)
+	@mkdir -p $(BIN)
+	@want="$(GOLANGCI_LINT_SHA256_$(HOST_OS)_$(HOST_ARCH))"; \
+	[ -n "$$want" ] || { echo "no pinned golangci-lint sha256 for $(HOST_OS)/$(HOST_ARCH)" >&2; exit 1; }; \
+	ver=$(GOLANGCI_LINT_VERSION:v%=%); dir="golangci-lint-$${ver}-$(HOST_OS)-$(HOST_ARCH)"; \
+	tmp=$$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }; trap 'rm -rf "$$tmp"' EXIT; \
+	url="https://github.com/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/$${dir}.tar.gz"; \
+	echo "downloading $$url"; curl -sSfL "$$url" -o "$$tmp/gcl.tar.gz"; \
+	got=$$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$tmp/gcl.tar.gz"; else shasum -a 256 "$$tmp/gcl.tar.gz"; fi | cut -d' ' -f1); \
+	[ "$$got" = "$$want" ] || { echo "golangci-lint checksum mismatch: got $$got want $$want" >&2; exit 1; }; \
+	tar -xzf "$$tmp/gcl.tar.gz" -C $(BIN) --strip-components=1 "$${dir}/golangci-lint"
 
 lint: $(BIN)/golangci-lint
 	@for m in $(MODULES); do \
@@ -39,11 +69,15 @@ vulncheck:
 
 $(BIN)/sqlc:
 	@mkdir -p $(BIN)
-	@os=$$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$$(uname -m); \
-	case $$arch in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac; \
+	@want="$(SQLC_SHA256_$(HOST_OS)_$(HOST_ARCH))"; \
+	[ -n "$$want" ] || { echo "no pinned sqlc sha256 for $(HOST_OS)/$(HOST_ARCH)" >&2; exit 1; }; \
 	ver=$(SQLC_VERSION:v%=%); \
-	url="https://github.com/sqlc-dev/sqlc/releases/download/$(SQLC_VERSION)/sqlc_$${ver}_$${os}_$${arch}.tar.gz"; \
-	echo "downloading $$url" && curl -sSfL "$$url" | tar -xz -C $(BIN) sqlc
+	tmp=$$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }; trap 'rm -rf "$$tmp"' EXIT; \
+	url="https://github.com/sqlc-dev/sqlc/releases/download/$(SQLC_VERSION)/sqlc_$${ver}_$(HOST_OS)_$(HOST_ARCH).tar.gz"; \
+	echo "downloading $$url"; curl -sSfL "$$url" -o "$$tmp/sqlc.tar.gz"; \
+	got=$$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$tmp/sqlc.tar.gz"; else shasum -a 256 "$$tmp/sqlc.tar.gz"; fi | cut -d' ' -f1); \
+	[ "$$got" = "$$want" ] || { echo "sqlc checksum mismatch: got $$got want $$want" >&2; exit 1; }; \
+	tar -xzf "$$tmp/sqlc.tar.gz" -C $(BIN) sqlc
 
 sqlc: $(BIN)/sqlc
 	cd internal/db && $(BIN)/sqlc generate
