@@ -38,6 +38,8 @@ const (
 	RegistryHost = "orkano-registry.orkano-system.svc.cluster.local"
 
 	// DefaultImage is the rootless BuildKit the spike proved, digest-pinned.
+	// On a bump, run `make verify-image-pins` to confirm the new digest is a
+	// multi-arch index (amd64+arm64), not a single-platform manifest.
 	DefaultImage = "moby/buildkit:v0.30.0-rootless@sha256:d76eb1caecac5733ef7553c1e90a1b21f1bb218cd1142d3553de0747b4a14ba9"
 
 	// podLabelKey/Value is the NetworkPolicy contract (config/netpol/): a
@@ -103,7 +105,8 @@ const (
 	// wins over distroless-but-personal-repo busybox and the runs-as-root
 	// SWS-scratch — the PR records the alternatives weighed. Like DefaultImage,
 	// this is a digest-pinned Go constant Renovate does NOT auto-update: bump it
-	// deliberately.
+	// deliberately, then run `make verify-image-pins` to confirm the new digest
+	// is a multi-arch index.
 	StaticServerImage = "nginxinc/nginx-unprivileged:1.30-alpine-slim@sha256:bcb4860e2d7877cf140e4c945f5f9cb304ccb5efbe1dd4fa606a2206142241bf"
 
 	// staticServeRoot is where StaticServerImage serves from; the generated

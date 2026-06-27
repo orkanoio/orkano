@@ -61,3 +61,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make vulncheck
+
+  image-pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # ubuntu-latest ships docker + buildx; verifies the hand-pinned product
+      # images are multi-arch indexes (linux/amd64+arm64), not single-platform.
+      - run: make verify-image-pins

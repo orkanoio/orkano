@@ -91,6 +91,16 @@ manifests:
 validate-examples: manifests
 	hack/validate-examples.sh
 
+.PHONY: verify-image-pins
+
+# Assert every hand-pinned product image (buildjob.DefaultImage/StaticServerImage
+# + the postgres catalog images) is a multi-arch index covering linux/amd64+arm64,
+# not a single-platform manifest that would silently break the other arch. Needs
+# docker buildx and hits the registry, so it is its own target/CI job — kept off
+# the make all / make test path.
+verify-image-pins:
+	go test -tags imagepins ./operator/internal/imagepins/ -run TestProductImagePinsAreMultiArch -count=1 -v
+
 .PHONY: local-loop
 
 # Event-path inner loop: kind + Postgres + receiver + operator (stubbed GitHub);

@@ -66,7 +66,8 @@ const (
 // entry for every value the enum serves — a missing one is a ProvisionFailed,
 // not a panic. Bump deliberately (Renovate does not rewrite Go map literals);
 // re-resolve the INDEX digest, not a single-platform manifest, or it breaks on
-// the other arch (`docker buildx imagetools inspect postgres:<v>`).
+// the other arch (`docker buildx imagetools inspect postgres:<v>`; `make
+// verify-image-pins` enforces this in CI).
 var postgresImages = map[string]string{
 	"14": "postgres:14@sha256:d462928b1898dd74b749ef486797968828c1e7fc9befb5e5ca03a33bfbc32d64",
 	"15": "postgres:15@sha256:c2ca90969ca293925ab474466e837689cc712321afdd9e4640bd0cf942fdca3a",
