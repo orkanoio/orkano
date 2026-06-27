@@ -216,9 +216,17 @@ build_load() {
 }
 
 pull_load() {
+  # Loading a name:tag@sha256 ref directly is a trap: `kind load` runs
+  # `docker save`, which drops RepoTags for a digest-pinned ref, so containerd
+  # imports it under a synthetic `import-<date>@sha256:...` name. That name then
+  # breaks containerd's checkpoint-image check at CreateContainer
+  # (CreateContainerError). Re-tag to the plain name:tag first so the loaded
+  # image carries a real name; the kubelet still resolves the manifest from the
+  # pinned digest, but the layer blobs are already on the node.
   for img in "$@"; do
     docker pull -q "$img" >/dev/null
-    kind load docker-image "$img" --name "$CLUSTER" >/dev/null
+    docker tag "$img" "${img%@*}"
+    kind load docker-image "${img%@*}" --name "$CLUSTER" >/dev/null
   done
 }
 
