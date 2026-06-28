@@ -24,6 +24,7 @@ const (
 	secretSuperuser = "orkano-postgres-superuser" //nolint:gosec // G101: Secret name, not a credential.
 	secretOperator  = "orkano-operator-db"
 	secretReceiver  = "orkano-receiver-db"
+	secretDashboard = "orkano-dashboard-db"
 	secretWebhook   = "orkano-webhook-secret"  //nolint:gosec // G101: Secret name, not a credential.
 	secretBootstrap = "orkano-bootstrap-token" //nolint:gosec // G101: Secret name, not a credential.
 )
@@ -36,6 +37,7 @@ type secretValues struct {
 	superuserPassword  string
 	receiverPassword   string
 	dispatcherPassword string
+	dashboardPassword  string
 	webhookSecret      string
 	bootstrapToken     string // plaintext, returned for one-time printing
 }
@@ -46,7 +48,7 @@ type secretValues struct {
 func generateSecretValues() (secretValues, error) {
 	var v secretValues
 	var err error
-	for _, p := range []*string{&v.superuserPassword, &v.receiverPassword, &v.dispatcherPassword, &v.webhookSecret} {
+	for _, p := range []*string{&v.superuserPassword, &v.receiverPassword, &v.dispatcherPassword, &v.dashboardPassword, &v.webhookSecret} {
 		if *p, err = randomHex(24); err != nil {
 			return secretValues{}, err
 		}
@@ -102,6 +104,10 @@ func ensureSecrets(ctx context.Context, n *node, v secretValues) (bootstrapToken
 		{secretReceiver, map[string]string{
 			"password": v.receiverPassword,
 			"dsn":      roleDSN("orkano_receiver", v.receiverPassword),
+		}},
+		{secretDashboard, map[string]string{
+			"password": v.dashboardPassword,
+			"dsn":      roleDSN("orkano_dashboard", v.dashboardPassword),
 		}},
 		{secretWebhook, map[string]string{"secret": v.webhookSecret}},
 		{secretBootstrap, map[string]string{"token-sha256": hex.EncodeToString(tokenHash[:])}},

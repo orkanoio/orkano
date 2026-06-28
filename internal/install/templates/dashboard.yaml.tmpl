@@ -1,0 +1,97 @@
+# Orkano dashboard (M2.2 component deploy, rendered per install). The
+# operator-facing control panel: serves the embedded SPA and writes Orkano
+# custom resources through its narrow-RBAC orkano-dashboard ServiceAccount
+# (INV-01: never cluster-admin). Image tag = the CLI's own version. Unlike the
+# receiver it MOUNTS its SA token — it is the one component besides the operator
+# that talks to the Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-dashboard
+    spec:
+      serviceAccountName: orkano-dashboard
+      # Explicit (the default): the dashboard needs its SA token to reach the
+      # Kubernetes API — so a copy-paste of the receiver's `false` would silently
+      # break it, not just tighten it.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: {{ .DashboardImage }}
+          env:
+            # The dashboard's own store (users/sessions/audit/history) as the
+            # least-privilege orkano_dashboard role (INV-03: only the DSN, by
+            # reference; it holds no user-app secret values).
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-db
+                  key: dsn
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem (ADR-0007) with a writable /tmp for scratch.
+        - name: tmp
+          emptyDir: {}
+---
+# ClusterIP only: the dashboard is never internet-reachable by default (INV-05).
+# Access is the onboarding wizard's job (orkano proxy / Tailscale / IAP); there
+# is deliberately no Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

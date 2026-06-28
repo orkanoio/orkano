@@ -21,6 +21,7 @@ func TestGenerateSecretValues(t *testing.T) {
 		"superuser":  v.superuserPassword,
 		"receiver":   v.receiverPassword,
 		"dispatcher": v.dispatcherPassword,
+		"dashboard":  v.dashboardPassword,
 		"webhook":    v.webhookSecret,
 	} {
 		if val == "" {
@@ -33,8 +34,14 @@ func TestGenerateSecretValues(t *testing.T) {
 	if v.bootstrapToken == "" {
 		t.Error("bootstrap token is empty")
 	}
-	// Distinct values (not all the same random draw reused).
-	if v.superuserPassword == v.receiverPassword || v.receiverPassword == v.dispatcherPassword {
+	// All role passwords distinct (no pointer in the generate loop reused another's
+	// draw) — checked all-pairs via a set, so no collision slips through a chain.
+	rolePasswords := []string{v.superuserPassword, v.receiverPassword, v.dispatcherPassword, v.dashboardPassword}
+	seen := make(map[string]struct{}, len(rolePasswords))
+	for _, p := range rolePasswords {
+		seen[p] = struct{}{}
+	}
+	if len(seen) != len(rolePasswords) {
 		t.Error("expected distinct role passwords")
 	}
 }
@@ -46,7 +53,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretWebhook, secretBootstrap} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretWebhook, secretBootstrap} {
 		if _, ok := n.secrets[name]; !ok {
 			t.Errorf("expected secret %s to be created", name)
 		}
@@ -72,12 +79,15 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 	if !strings.Contains(decodeSecretData(t, n.secrets[secretOperator], "dsn"), "postgres://orkano_dispatcher:") {
 		t.Error("operator DSN should use the orkano_dispatcher role")
 	}
+	if !strings.Contains(decodeSecretData(t, n.secrets[secretDashboard], "dsn"), "postgres://orkano_dashboard:") {
+		t.Error("dashboard DSN should use the orkano_dashboard role")
+	}
 }
 
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
-	// Pre-existing secrets (a prior install): mark all five present.
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretWebhook, secretBootstrap} {
+	// Pre-existing secrets (a prior install): mark all six present.
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretWebhook, secretBootstrap} {
 		n.secrets[name] = "preexisting"
 	}
 

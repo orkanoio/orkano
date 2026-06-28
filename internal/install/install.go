@@ -128,7 +128,7 @@ type Result struct {
 // DefaultReadinessTargets is the critical path Apply waits for after a full
 // component deploy: cert-manager (so the operator's Certificate watches and the
 // registry TLS can issue), the registry, the platform Postgres, and the
-// operator and receiver themselves.
+// operator, receiver, and dashboard themselves.
 func DefaultReadinessTargets() []Workload {
 	return []Workload{
 		{Namespace: "cert-manager", Kind: "deployment", Name: "cert-manager-webhook"},
@@ -138,6 +138,7 @@ func DefaultReadinessTargets() []Workload {
 		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-registry"},
 		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-operator"},
 		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-receiver"},
+		{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-dashboard"},
 	}
 }
 

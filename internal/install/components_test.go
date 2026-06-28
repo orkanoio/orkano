@@ -51,7 +51,7 @@ func TestRenderComponentsEmptyVersionRendersNothing(t *testing.T) {
 
 func TestRenderComponentsVersionTagsFirstPartyImages(t *testing.T) {
 	m := renderByName(t, Config{Version: "1.4.2"})
-	for _, name := range []string{"operator-deployment.yaml", "receiver.yaml", "platform-issuer.yaml", "migration-job.yaml"} {
+	for _, name := range []string{"operator-deployment.yaml", "receiver.yaml", "dashboard.yaml", "platform-issuer.yaml", "migration-job.yaml"} {
 		if _, ok := m[name]; !ok {
 			t.Errorf("expected %s to be rendered", name)
 		}
@@ -64,6 +64,26 @@ func TestRenderComponentsVersionTagsFirstPartyImages(t *testing.T) {
 	}
 	if !strings.Contains(m["receiver.yaml"], "ghcr.io/orkanoio/orkano-receiver:1.4.2") {
 		t.Error("receiver deployment should use the version-tagged receiver image")
+	}
+	if !strings.Contains(m["dashboard.yaml"], "ghcr.io/orkanoio/orkano-dashboard:1.4.2") {
+		t.Error("dashboard deployment should use the version-tagged dashboard image")
+	}
+}
+
+func TestRenderComponentsDashboard(t *testing.T) {
+	d := renderByName(t, Config{Version: "1.0.0"})["dashboard.yaml"]
+	if !strings.Contains(d, "serviceAccountName: orkano-dashboard") {
+		t.Error("dashboard should run under the orkano-dashboard ServiceAccount")
+	}
+	if !strings.Contains(d, "name: orkano-dashboard-db") {
+		t.Error("dashboard should read its DSN from the orkano-dashboard-db Secret")
+	}
+	// INV-05: ClusterIP only, never an Ingress; never a public Service type.
+	if strings.Contains(d, "kind: Ingress") {
+		t.Error("dashboard must not render an Ingress (INV-05, ClusterIP only)")
+	}
+	if strings.Contains(d, "type: NodePort") || strings.Contains(d, "type: LoadBalancer") {
+		t.Error("dashboard Service must stay ClusterIP (INV-05)")
 	}
 }
 
@@ -150,6 +170,7 @@ func TestApplyWritesComponentsWhenVersioned(t *testing.T) {
 	for _, name := range []string{
 		"operator-deployment.yaml",
 		"receiver.yaml",
+		"dashboard.yaml",
 		"platform-issuer.yaml",
 		"migration-job.yaml",
 		"components-platform-postgres.yaml", // static set still written

@@ -52,6 +52,11 @@ spec:
                 secretKeyRef:
                   name: orkano-operator-db
                   key: password
+            - name: ORKANO_DASHBOARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-db
+                  key: password
           resources:
             requests:
               cpu: 25m

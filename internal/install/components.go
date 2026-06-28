@@ -41,19 +41,20 @@ const receiverIngressTemplate = "receiver-ingress.yaml.tmpl"
 
 // templateData feeds the component templates.
 type templateData struct {
-	OperatorImage string
-	ReceiverImage string
-	ACMEServer    string
-	ACMEEmail     string
-	RepoAllowlist string // comma-joined owner/repo list
-	ReceiverHost  string // public hostname for the receiver Ingress (may be empty)
+	OperatorImage  string
+	ReceiverImage  string
+	DashboardImage string
+	ACMEServer     string
+	ACMEEmail      string
+	RepoAllowlist  string // comma-joined owner/repo list
+	ReceiverHost   string // public hostname for the receiver Ingress (may be empty)
 }
 
-// renderComponents renders the per-install component manifests (operator and
-// receiver Deployments, the orkano-platform ACME ClusterIssuer, and the
-// migration Job). It returns nil when cfg.Version is empty — the component
-// images are version-tagged, so there is nothing to render without a version
-// (the static-manifest-only path the engine-core tests exercise).
+// renderComponents renders the per-install component manifests (operator,
+// receiver, and dashboard Deployments, the orkano-platform ACME ClusterIssuer,
+// and the migration Job). It returns nil when cfg.Version is empty — the
+// component images are version-tagged, so there is nothing to render without a
+// version (the static-manifest-only path the engine-core tests exercise).
 func renderComponents(cfg Config) ([]manifestFile, error) {
 	if cfg.Version == "" {
 		return nil, nil
@@ -73,12 +74,13 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 	}
 
 	data := templateData{
-		OperatorImage: imageRepo + "/orkano-operator:" + cfg.Version,
-		ReceiverImage: imageRepo + "/orkano-receiver:" + cfg.Version,
-		ACMEServer:    acmeServer(cfg.ACMEProd),
-		ACMEEmail:     cfg.ACMEEmail,
-		RepoAllowlist: allowlist,
-		ReceiverHost:  cfg.ReceiverHost,
+		OperatorImage:  imageRepo + "/orkano-operator:" + cfg.Version,
+		ReceiverImage:  imageRepo + "/orkano-receiver:" + cfg.Version,
+		DashboardImage: imageRepo + "/orkano-dashboard:" + cfg.Version,
+		ACMEServer:     acmeServer(cfg.ACMEProd),
+		ACMEEmail:      cfg.ACMEEmail,
+		RepoAllowlist:  allowlist,
+		ReceiverHost:   cfg.ReceiverHost,
 	}
 
 	entries, err := componentTemplates.ReadDir("templates")

@@ -218,6 +218,16 @@ func TestApplyWritesAllStaticManifests(t *testing.T) {
 	}
 }
 
+func TestDefaultReadinessTargetsIncludesDashboard(t *testing.T) {
+	want := Workload{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-dashboard"}
+	for _, w := range DefaultReadinessTargets() {
+		if w == want {
+			return
+		}
+	}
+	t.Errorf("DefaultReadinessTargets must wait for the dashboard Deployment %+v", want)
+}
+
 func TestApplyIdempotent(t *testing.T) {
 	n := newFakeNode()
 	files, err := staticManifests()
