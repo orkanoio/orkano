@@ -79,6 +79,19 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		dr.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteDomain)
 	})
 
+	// "postgres", not the CRD plural "postgreses" (awkward English): the catalog
+	// is named by its engine (ADR-0014), so the path reads as the kind.
+	r.Route("/api/postgres", func(pr chi.Router) {
+		pr.Use(s.RequireSession)
+		pr.Get("/", s.handleListPostgres)
+		pr.Post("/", s.handleCreatePostgres)
+		pr.Get("/{name}", s.handleGetPostgres)
+		pr.Put("/{name}", s.handleUpdatePostgres)
+		// Deleting a database destroys its data (delete-and-recreate is the only
+		// way to change the immutable version, ADR-0014), so it gates on step-up.
+		pr.With(s.RequireStepUp).Delete("/{name}", s.handleDeletePostgres)
+	})
+
 	// The append-only audit log (INV-08), readable by any authenticated session.
 	r.With(s.RequireSession).Get("/api/audit", s.handleListAudit)
 
