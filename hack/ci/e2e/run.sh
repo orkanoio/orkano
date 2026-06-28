@@ -106,16 +106,52 @@ canary_connect() {
   kubectl exec "$2" -n "$1" -- timeout 8 nc -z -w 5 "$3" "$4" >/dev/null 2>&1
 }
 
+# ensure_certs_path makes a node's containerd read per-registry CA configs from a
+# certs.d directory and echoes that directory. kind sets
+# config_path=/etc/containerd/certs.d by default, but a non-default node image or
+# a kind regression can ship without it — so rather than assume it (and fatal),
+# honor any path already configured and otherwise add the setting and restart
+# containerd. The common case (config_path already present) takes the early
+# return and never restarts, so a healthy kind node is left untouched.
+ensure_certs_path() {
+  docker exec -i "$1" sh -s <<'NODE'
+set -e
+cfg=/etc/containerd/config.toml
+dir=$(sed -nE 's/.*config_path[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$cfg" 2>/dev/null | head -1)
+if [ -n "$dir" ]; then printf '%s\n' "$dir"; exit 0; fi
+
+dir=/etc/containerd/certs.d
+if grep -qE 'io\.containerd\.(cri\.v1\.images|grpc\.v1\.cri)"\.registry\]' "$cfg" 2>/dev/null; then
+  # A registry table exists but carries no config_path: inject the key into it.
+  tmp=$(mktemp)
+  awk -v d="$dir" '{ print } /\.registry\]/ && !ins { print "  config_path = \"" d "\""; ins=1 }' "$cfg" > "$tmp"
+  cat "$tmp" > "$cfg"; rm -f "$tmp"
+else
+  # No registry table at all: append the one for the running containerd major.
+  major=$(containerd --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+  if [ "$major" = "2" ]; then
+    section='[plugins."io.containerd.cri.v1.images".registry]'
+  else
+    section='[plugins."io.containerd.grpc.v1.cri".registry]'
+  fi
+  { printf '\n%s\n' "$section"; printf '  config_path = "%s"\n' "$dir"; } >> "$cfg"
+fi
+systemctl restart containerd
+grep -q 'config_path' "$cfg"   # parses back, else fail so the caller fatals
+printf '%s\n' "$dir"
+NODE
+}
+
 # wire_registry_pull is the kind analog of internal/install/registry.go: the App
 # Deployment pulls orkano-registry.orkano-system.svc.cluster.local/<app>@sha256:…,
 # but a kind node's containerd resolves neither cluster DNS nor the internal CA.
 # So map the registry FQDN -> its ClusterIP in each node's /etc/hosts and trust
-# the internal CA via a containerd registry-host config (kind sets
-# config_path=/etc/containerd/certs.d), then render the per-node ingress allow
+# the internal CA via a containerd registry-host config under the certs.d
+# directory ensure_certs_path guarantees, then render the per-node ingress allow
 # init owns in prod. The build PUSH already works (in-pod DNS + buildkitd.toml CA);
 # this is only the kubelet PULL side.
 wire_registry_pull() {
-  local clusterip ca node node_ips ip
+  local clusterip ca node node_ips ip certs_dir
   clusterip="$(kubectl get svc orkano-registry -n orkano-system -o 'jsonpath={.spec.clusterIP}')"
   [ -n "$clusterip" ] || fatal "orkano-registry Service has no ClusterIP"
   ca="$TMP/registry-ca.crt"
@@ -123,14 +159,20 @@ wire_registry_pull() {
   [ -s "$ca" ] || fatal "orkano-registry-tls carries no ca.crt"
 
   for node in "$CLUSTER-control-plane" "$CLUSTER-worker"; do
-    docker exec "$node" mkdir -p "/etc/containerd/certs.d/$REGISTRY_HOST"
-    docker cp "$ca" "$node:/etc/containerd/certs.d/$REGISTRY_HOST/ca.crt"
-    docker exec -i "$node" sh -c "cat > /etc/containerd/certs.d/$REGISTRY_HOST/hosts.toml" <<EOF
+    # Without a registry config_path the certs.d files are silently ignored and
+    # the pull x509-fails. kind v0.32 sets it by default, but don't assume it:
+    # ensure_certs_path adds + restarts only when it's genuinely missing, else
+    # it's a no-op that echoes the configured directory.
+    certs_dir="$(ensure_certs_path "$node")" \
+      || fatal "$node: could not configure containerd registry config_path (see node containerd state)"
+    docker exec "$node" mkdir -p "$certs_dir/$REGISTRY_HOST"
+    docker cp "$ca" "$node:$certs_dir/$REGISTRY_HOST/ca.crt"
+    docker exec -i "$node" sh -c "cat > $certs_dir/$REGISTRY_HOST/hosts.toml" <<EOF
 server = "https://$REGISTRY_HOST"
 
 [host."https://$REGISTRY_HOST"]
   capabilities = ["pull", "resolve"]
-  ca = "/etc/containerd/certs.d/$REGISTRY_HOST/ca.crt"
+  ca = "$certs_dir/$REGISTRY_HOST/ca.crt"
 EOF
     # Replace-in-place (not append): a reused cluster must not keep a stale
     # mapping if the registry ClusterIP ever changed (mirrors registry.go).
@@ -140,12 +182,7 @@ EOF
       cat /etc/hosts.new > /etc/hosts
       rm -f /etc/hosts.new
     "
-    # Without config_path the certs.d files are silently ignored and the pull
-    # x509-fails; fatal here (diagnosable) rather than as an opaque 4-min later
-    # ImagePullBackOff. kind v0.32 sets it by default.
-    docker exec "$node" grep -q '/etc/containerd/certs.d' /etc/containerd/config.toml \
-      || fatal "$node containerd has no registry config_path=/etc/containerd/certs.d (kind regression or non-default node image)"
-    echo "  $node: registry node-wiring written (certs.d + /etc/hosts)"
+    echo "  $node: registry node-wiring written ($certs_dir + /etc/hosts)"
   done
 
   # The cross-node kubelet-pull allow init renders at install (M1.5, smoke probe
