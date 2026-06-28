@@ -37,6 +37,7 @@ const envDBDSN = "ORKANO_DB_DSN"
 const (
 	envReceiverPassword   = "ORKANO_RECEIVER_PASSWORD"
 	envDispatcherPassword = "ORKANO_DISPATCHER_PASSWORD"
+	envDashboardPassword  = "ORKANO_DASHBOARD_PASSWORD"
 )
 
 var version = "dev"
@@ -77,10 +78,14 @@ func runMigrate(ctx context.Context) error {
 	if dispPw == "" {
 		return fmt.Errorf("%s is required", envDispatcherPassword)
 	}
+	dashPw := os.Getenv(envDashboardPassword)
+	if dashPw == "" {
+		return fmt.Errorf("%s is required", envDashboardPassword)
+	}
 	if err := db.Migrate(ctx, dsn); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
-	if err := db.SetupRoles(ctx, dsn, recvPw, dispPw); err != nil {
+	if err := db.SetupRoles(ctx, dsn, db.RolePasswords{Receiver: recvPw, Dispatcher: dispPw, Dashboard: dashPw}); err != nil {
 		return fmt.Errorf("set role passwords: %w", err)
 	}
 	return nil

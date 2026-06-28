@@ -38,14 +38,15 @@ func TestSetupRoles(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	const recvPw, dispPw = "recv-a1b2c3d4e5f6", "disp-f6e5d4c3b2a1"
-	if err := db.SetupRoles(ctx, dsn, recvPw, dispPw); err != nil {
+	const recvPw, dispPw, dashPw = "recv-a1b2c3d4e5f6", "disp-f6e5d4c3b2a1", "dash-0a1b2c3d4e5f"
+	pw := db.RolePasswords{Receiver: recvPw, Dispatcher: dispPw, Dashboard: dashPw}
+	if err := db.SetupRoles(ctx, dsn, pw); err != nil {
 		t.Fatalf("SetupRoles: %v", err)
 	}
 
 	// Each role can authenticate with its new password and exercise its one
 	// allowed operation through the real generated queries — proving the
-	// password took and the privilege shape from migration 00002 is intact.
+	// password took and the privilege shape from migrations 00002/00004 is intact.
 	recv := connectAs(t, dsn, db.ReceiverRole, recvPw)
 	if _, err := db.New(recv).EnqueueDelivery(ctx, db.EnqueueDeliveryParams{
 		DeliveryID: "setup-1", Repo: "orkanoio/orkano", EventType: "push",
@@ -58,10 +59,16 @@ func TestSetupRoles(t *testing.T) {
 	if _, err := db.New(disp).ClaimDelivery(ctx); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("dispatcher ClaimDelivery after SetupRoles: %v", err)
 	}
+	// CountUsers needs the dashboard role's SELECT on users (migration 00004); a
+	// fresh schema returns 0, proving the password took and the grant is present.
+	dash := connectAs(t, dsn, db.DashboardRole, dashPw)
+	if _, err := db.New(dash).CountUsers(ctx); err != nil {
+		t.Fatalf("dashboard CountUsers after SetupRoles: %v", err)
+	}
 
 	// Idempotent: re-running with the same passwords is a no-op (ALTER ROLE
 	// overwrites), and the role still authenticates and works.
-	if err := db.SetupRoles(ctx, dsn, recvPw, dispPw); err != nil {
+	if err := db.SetupRoles(ctx, dsn, pw); err != nil {
 		t.Fatalf("SetupRoles re-run: %v", err)
 	}
 	again := connectAs(t, dsn, db.ReceiverRole, recvPw)
@@ -78,10 +85,24 @@ func TestSetupRoles(t *testing.T) {
 	assertAuthFailed(t, "wrong password", err)
 
 	// Rotation: a fresh install with new passwords takes effect — the old
-	// password stops working and the new one works.
-	const recvPw2 = "recv-NEW-0a1b2c3d4e5f"
-	if err := db.SetupRoles(ctx, dsn, recvPw2, "disp-NEW-5f4e3d2c1b0a"); err != nil {
+	// password stops working and the new one works. Checked for the receiver and
+	// the dashboard (added in 00004) so a role-specific ALTER ROLE no-op or
+	// ordering bug in the loop would surface, not just for the first role.
+	const recvPw2, dashPw2 = "recv-NEW-0a1b2c3d4e5f", "dash-NEW-9f8e7d6c5b4a"
+	if err := db.SetupRoles(ctx, dsn, db.RolePasswords{
+		Receiver: recvPw2, Dispatcher: "disp-NEW-5f4e3d2c1b0a", Dashboard: dashPw2,
+	}); err != nil {
 		t.Fatalf("SetupRoles rotation: %v", err)
+	}
+	oldDash := connectAs(t, dsn, db.DashboardRole, dashPw)
+	if _, err := oldDash.Exec(ctx, "SELECT 1"); err == nil {
+		t.Fatal("old dashboard password should be rejected after rotation")
+	} else {
+		assertAuthFailed(t, "old dashboard password after rotation", err)
+	}
+	rotatedDash := connectAs(t, dsn, db.DashboardRole, dashPw2)
+	if _, err := db.New(rotatedDash).CountUsers(ctx); err != nil {
+		t.Fatalf("dashboard usable after rotation: %v", err)
 	}
 	old := connectAs(t, dsn, db.ReceiverRole, recvPw)
 	_, err = old.Exec(ctx, "SELECT 1")
@@ -101,18 +122,21 @@ func TestSetupRolesValidation(t *testing.T) {
 	ctx := context.Background()
 	const unreachableDSN = "postgres://unused:unused@127.0.0.1:1/none"
 
+	const validPw = "ok-password"
 	for _, tc := range []struct {
-		name           string
-		receiver, disp string
+		name string
+		pw   db.RolePasswords
 	}{
-		{"empty receiver", "", "ok-password"},
-		{"empty dispatcher", "ok-password", ""},
-		{"receiver has quote", "pw'; DROP ROLE x;--", "ok-password"},
-		{"dispatcher has backslash", "ok-password", `pw\ninjected`},
-		{"dispatcher has space", "ok-password", "pw with space"},
+		{"empty receiver", db.RolePasswords{Receiver: "", Dispatcher: validPw, Dashboard: validPw}},
+		{"empty dispatcher", db.RolePasswords{Receiver: validPw, Dispatcher: "", Dashboard: validPw}},
+		{"empty dashboard", db.RolePasswords{Receiver: validPw, Dispatcher: validPw, Dashboard: ""}},
+		{"receiver has quote", db.RolePasswords{Receiver: "pw'; DROP ROLE x;--", Dispatcher: validPw, Dashboard: validPw}},
+		{"dispatcher has backslash", db.RolePasswords{Receiver: validPw, Dispatcher: `pw\ninjected`, Dashboard: validPw}},
+		{"dispatcher has space", db.RolePasswords{Receiver: validPw, Dispatcher: "pw with space", Dashboard: validPw}},
+		{"dashboard has quote", db.RolePasswords{Receiver: validPw, Dispatcher: validPw, Dashboard: "pw'--"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := db.SetupRoles(ctx, unreachableDSN, tc.receiver, tc.disp); err == nil {
+			if err := db.SetupRoles(ctx, unreachableDSN, tc.pw); err == nil {
 				t.Fatal("expected validation error, got nil")
 			}
 		})

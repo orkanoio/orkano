@@ -96,10 +96,10 @@ func runMigrate(argv []string) {
 	if err := db.Migrate(ctx, *dsn); err != nil {
 		log.Fatalf("migrate: applying migrations: %v", err)
 	}
-	// Both least-privilege roles get the same fixed dev password — the loop's
+	// Every least-privilege role gets the same fixed dev password — the loop's
 	// Postgres is a throwaway container bound to 127.0.0.1. SetupRoles is the
 	// same install-time path the platform's migration Job runs in prod.
-	if err := db.SetupRoles(ctx, *dsn, rolePassword, rolePassword); err != nil {
+	if err := db.SetupRoles(ctx, *dsn, db.RolePasswords{Receiver: rolePassword, Dispatcher: rolePassword, Dashboard: rolePassword}); err != nil {
 		log.Fatalf("migrate: setting role passwords: %v", err)
 	}
 
