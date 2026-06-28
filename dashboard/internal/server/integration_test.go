@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -16,12 +17,95 @@ import (
 	"github.com/pquerna/otp/totp"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/dashboard/internal/server"
 	"github.com/orkanoio/orkano/internal/db"
 )
+
+// migratedPostgres starts a throwaway Postgres, applies the migrations, and
+// returns its superuser DSN. Skips cleanly when no container runtime is reachable.
+func migratedPostgres(t *testing.T) string {
+	t.Helper()
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ctx := context.Background()
+	pg, err := postgres.Run(ctx, postgresImage,
+		postgres.WithDatabase("orkano"),
+		postgres.WithUsername("orkano"),
+		postgres.WithPassword("orkano-test"),
+		postgres.BasicWaitStrategies(),
+	)
+	testcontainers.CleanupContainer(t, pg)
+	if err != nil {
+		t.Fatalf("start postgres: %v", err)
+	}
+	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("connection string: %v", err)
+	}
+	if err := db.Migrate(ctx, dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return dsn
+}
+
+// newServer builds the real chi server over a pool + a (fake) K8s client. The
+// viewer client is the same fake; impersonation has no effect against a fake
+// client, and this suite proves the DB/auth/HTTP paths, not RBAC (that is
+// rbac_matrix_test's job).
+func newServer(t *testing.T, pool *pgxpool.Pool, k8s client.Client) *server.Server {
+	t.Helper()
+	srv, err := server.New(server.Config{
+		K8s:                k8s,
+		ViewerClient:       k8s,
+		DB:                 pool,
+		Store:              server.NewStore(pool),
+		Cipher:             mustIntegrationCipher(t),
+		BootstrapTokenHash: auth.HashToken(installToken),
+		SPA:                integrationSPA(),
+	})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	return srv
+}
+
+// connectAs opens a pool authenticated as a specific role by swapping the
+// credentials in the superuser DSN (pgxpool connects lazily, so a permission
+// failure surfaces on the first query).
+func connectAs(t *testing.T, dsn, user, password string) *pgxpool.Pool {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	u.User = url.UserPassword(user, password)
+	pool, err := pgxpool.New(context.Background(), u.String())
+	if err != nil {
+		t.Fatalf("connect as %s: %v", user, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// integrationScheme carries the orkano + core types so the fake K8s client can
+// serve the App/catalog handlers.
+func integrationScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("client-go scheme: %v", err)
+	}
+	if err := orkanov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("orkano scheme: %v", err)
+	}
+	return scheme
+}
 
 // integrationSPA is a minimal embedded-app stand-in (the server requires a SPA
 // with an index.html).
@@ -42,46 +126,15 @@ const installToken = "bootstrap-install-token-integration"
 // redeem and every query work end to end, and that the audit log accrues rows.
 // Skipped cleanly when no container runtime is reachable.
 func TestBootstrapAuthFullFlow(t *testing.T) {
-	testcontainers.SkipIfProviderIsNotHealthy(t)
-
 	ctx := context.Background()
-	pg, err := postgres.Run(ctx, postgresImage,
-		postgres.WithDatabase("orkano"),
-		postgres.WithUsername("orkano"),
-		postgres.WithPassword("orkano-test"),
-		postgres.BasicWaitStrategies(),
-	)
-	testcontainers.CleanupContainer(t, pg)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	if err := db.Migrate(ctx, dsn); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
+	dsn := migratedPostgres(t)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 
-	cipher := mustIntegrationCipher(t)
-	srv, err := server.New(server.Config{
-		K8s:                fake.NewClientBuilder().Build(),
-		DB:                 pool,
-		Store:              server.NewStore(pool),
-		Cipher:             cipher,
-		BootstrapTokenHash: auth.HashToken(installToken),
-		SPA:                integrationSPA(),
-	})
-	if err != nil {
-		t.Fatalf("server.New: %v", err)
-	}
+	srv := newServer(t, pool, fake.NewClientBuilder().Build())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -170,43 +223,15 @@ const maxFailedLoginsForTest = 5
 // UPDATE), and (b) account lockout — maxFailedLogins wrong-password logins against
 // the confirmed admin and the next returns 423. Skipped without a container runtime.
 func TestBootstrapAuthRecoveryAndLockout(t *testing.T) {
-	testcontainers.SkipIfProviderIsNotHealthy(t)
-
 	ctx := context.Background()
-	pg, err := postgres.Run(ctx, postgresImage,
-		postgres.WithDatabase("orkano"),
-		postgres.WithUsername("orkano"),
-		postgres.WithPassword("orkano-test"),
-		postgres.BasicWaitStrategies(),
-	)
-	testcontainers.CleanupContainer(t, pg)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	if err := db.Migrate(ctx, dsn); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	dsn := migratedPostgres(t)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 
-	srv, err := server.New(server.Config{
-		K8s:                fake.NewClientBuilder().Build(),
-		DB:                 pool,
-		Store:              server.NewStore(pool),
-		Cipher:             mustIntegrationCipher(t),
-		BootstrapTokenHash: auth.HashToken(installToken),
-		SPA:                integrationSPA(),
-	})
-	if err != nil {
-		t.Fatalf("server.New: %v", err)
-	}
+	srv := newServer(t, pool, fake.NewClientBuilder().Build())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -257,6 +282,102 @@ func TestBootstrapAuthRecoveryAndLockout(t *testing.T) {
 		map[string]string{"username": "admin", "password": "correct-horse-battery"}, http.StatusLocked, nil)
 }
 
+// TestAppCatalogAPIUnderDashboardRole drives a representative M2.4 flow — create
+// an App, write a secret env var, read the deploy timeline and the audit log —
+// over the real chi server whose Store runs as the least-privilege
+// orkano_dashboard role. It proves that role's INSERT+SELECT grants on
+// deploy_history and audit_log are sufficient end to end (INV-08), against a fake
+// K8s client. Skipped without a container runtime.
+func TestAppCatalogAPIUnderDashboardRole(t *testing.T) {
+	ctx := context.Background()
+	dsn := migratedPostgres(t)
+	const dashPw = "dash-integration-pw-1"
+	if err := db.SetupRoles(ctx, dsn, db.RolePasswords{
+		Receiver: "recv-pw-x", Dispatcher: "disp-pw-x", Dashboard: dashPw,
+	}); err != nil {
+		t.Fatalf("setup roles: %v", err)
+	}
+	rolePool := connectAs(t, dsn, db.DashboardRole, dashPw)
+
+	k8s := fake.NewClientBuilder().
+		WithScheme(integrationScheme(t)).
+		WithStatusSubresource(&orkanov1alpha1.App{}).
+		Build()
+	srv := newServer(t, rolePool, k8s)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// Bootstrap an admin and obtain an authenticated session (all under the role).
+	c := mustClient(t)
+	var redeemResp struct {
+		OtpauthURL string `json:"otpauthUrl"`
+	}
+	postJSON(t, c, ts.URL+"/api/auth/redeem", map[string]string{
+		"token": installToken, "username": "admin", "password": "correct-horse-battery",
+	}, http.StatusOK, &redeemResp)
+	secret := secretFromOtpauth(t, redeemResp.OtpauthURL)
+	postJSON(t, c, ts.URL+"/api/auth/totp/confirm", map[string]string{"code": mustCode(t, secret)}, http.StatusOK, nil)
+
+	// 1. Create an App (session tier) — records a deploy + audits, both under the role.
+	appSpec := map[string]any{
+		"source": map[string]any{"github": map[string]any{"repo": "orkanoio/demo"}},
+		"build":  map[string]any{"strategy": "Dockerfile"},
+	}
+	postJSON(t, c, ts.URL+"/api/apps", map[string]any{"name": "demo", "spec": appSpec}, http.StatusCreated, nil)
+
+	// The App really landed in the (fake) cluster, readable via the viewer client.
+	var appResp struct {
+		Name string `json:"name"`
+	}
+	getJSON(t, c, ts.URL+"/api/apps/demo", http.StatusOK, &appResp)
+	if appResp.Name != "demo" {
+		t.Fatalf("get app = %+v", appResp)
+	}
+
+	// 2. Step up, then write a secret env var (step-up tier).
+	postJSON(t, c, ts.URL+"/api/auth/stepup", map[string]string{"code": mustCode(t, secret)}, http.StatusNoContent, nil)
+	putJSON(t, c, ts.URL+"/api/apps/demo/env",
+		map[string]any{"secrets": map[string]string{"API_KEY": "a-secret-value"}}, http.StatusOK, nil)
+
+	// 3. The deploy timeline shows the create — proves RecordDeploy INSERT +
+	// ListAppDeploys SELECT under the role. The proof is content-based by
+	// necessity: recordDeploy is best-effort (a missing INSERT grant is a logged
+	// 42501, not an HTTP error), so the row's presence here IS the evidence the
+	// role can both write and read it.
+	var deploys struct {
+		Items []struct {
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	getJSON(t, c, ts.URL+"/api/apps/demo/deploys", http.StatusOK, &deploys)
+	if len(deploys.Items) == 0 || deploys.Items[0].Status != "created" {
+		t.Fatalf("deploys = %+v, want a 'created' row", deploys.Items)
+	}
+
+	// 4. The audit log shows app.create + env.update — proves AppendAuditEntry
+	// INSERT + ListAuditEntries SELECT under the role (INV-08), and that the secret
+	// value never reached the audit detail (INV-03).
+	var audit struct {
+		Items []struct {
+			Action string          `json:"action"`
+			Detail json.RawMessage `json:"detail"`
+		} `json:"items"`
+	}
+	getJSON(t, c, ts.URL+"/api/audit", http.StatusOK, &audit)
+	actions := map[string]bool{}
+	for _, e := range audit.Items {
+		actions[e.Action] = true
+		if strings.Contains(string(e.Detail), "a-secret-value") {
+			t.Fatal("audit detail leaked the secret value (INV-03)")
+		}
+	}
+	for _, want := range []string{"app.create", "env.update"} {
+		if !actions[want] {
+			t.Fatalf("audit log missing action %q (have %v)", want, actions)
+		}
+	}
+}
+
 func mustIntegrationCipher(t *testing.T) *auth.Cipher {
 	t.Helper()
 	key := make([]byte, 32)
@@ -302,6 +423,20 @@ func postJSON(t *testing.T, c *http.Client, url string, body any, wantStatus int
 		rdr = strings.NewReader("")
 	}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	doReq(t, c, req, wantStatus, out)
+}
+
+func putJSON(t *testing.T, c *http.Client, url string, body any, wantStatus int, out any) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut, url, strings.NewReader(string(b)))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
