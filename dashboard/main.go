@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -79,13 +80,21 @@ func run(log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	k8s, err := newK8sClient()
+	k8s, restCfg, err := newK8sClient()
 	if err != nil {
 		return err
+	}
+	// Read views run as a per-request client impersonating the viewer group, so
+	// the cluster's RBAC + audit trail see the human, not the dashboard SA
+	// (ADR-0013). It reuses the base client's scheme + RESTMapper to skip
+	// per-request discovery.
+	viewerClient := func(username string) (client.Client, error) {
+		return server.NewViewerClient(restCfg, k8s.Scheme(), k8s.RESTMapper(), username)
 	}
 
 	srv, err := server.New(server.Config{
 		K8s:                k8s,
+		ViewerClient:       viewerClient,
 		DB:                 pool,
 		Store:              server.NewStore(pool),
 		Cipher:             cipher,
@@ -133,18 +142,18 @@ func run(log *slog.Logger) error {
 // Orkano custom resources. The scheme carries the orkano.io types plus core (for
 // the value-blind Secret writes of ADR-0013); RBAC — not the scheme — bounds
 // what the client may actually do (the orkano-dashboard Role).
-func newK8sClient() (client.Client, error) {
+func newK8sClient() (client.Client, *rest.Config, error) {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(orkanov1alpha1.AddToScheme(scheme))
 
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
-		return nil, fmt.Errorf("load kube config: %w", err)
+		return nil, nil, fmt.Errorf("load kube config: %w", err)
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		return nil, fmt.Errorf("create kube client: %w", err)
+		return nil, nil, fmt.Errorf("create kube client: %w", err)
 	}
-	return c, nil
+	return c, cfg, nil
 }

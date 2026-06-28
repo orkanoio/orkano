@@ -39,9 +39,13 @@ type Pinger interface {
 // BootstrapTokenHash are required; SPA is the embedded UI tree; Logger defaults
 // to a discarding logger and Now to time.Now when nil.
 type Config struct {
-	// K8s writes Orkano custom resources. Held here for the M2.4 App/catalog API;
-	// the skeleton only proves it is wired (a nil client fails New).
+	// K8s writes Orkano custom resources as the dashboard ServiceAccount (the
+	// mutation path). Read views go through ViewerClient instead.
 	K8s client.Client
+	// ViewerClient builds a per-request client impersonating the viewer group as
+	// the given human username, so read views run under the human's identity in
+	// the cluster's RBAC + audit trail, not the dashboard SA (ADR-0013). Required.
+	ViewerClient func(username string) (client.Client, error)
 	// DB backs the /readyz probe (and, later, the dashboard's own tables).
 	DB Pinger
 	// Store is the dashboard's own metadata store (users, sessions, audit,
@@ -78,6 +82,9 @@ func (s *Server) now() time.Time { return s.cfg.Now() }
 func New(cfg Config) (*Server, error) {
 	if cfg.K8s == nil {
 		return nil, errors.New("server: K8s client is required")
+	}
+	if cfg.ViewerClient == nil {
+		return nil, errors.New("server: ViewerClient is required")
 	}
 	if cfg.DB == nil {
 		return nil, errors.New("server: DB pinger is required")

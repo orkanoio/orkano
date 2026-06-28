@@ -68,6 +68,8 @@ func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The App must exist — we also need its UID for the Secret's owner reference.
+	// This Get is part of the SA write path (not a read view), so it stays on the
+	// SA client like the Secret + spec writes below.
 	var app orkanov1alpha1.App
 	if err := s.cfg.K8s.Get(r.Context(), client.ObjectKey{Namespace: appsNamespace, Name: name}, &app); err != nil {
 		s.auditEnv(r, user, name, keys, err)

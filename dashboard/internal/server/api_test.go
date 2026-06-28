@@ -54,8 +54,17 @@ func apiServer(t *testing.T, store *fakeStore, objs ...client.Object) *Server {
 // need a fake client with interceptors (e.g. to fail a specific write).
 func serverWith(t *testing.T, store *fakeStore, k8s client.Client) *Server {
 	t.Helper()
+	// By default the viewer (read) client is the same fake as the SA (write)
+	// client, so read tests see the seeded objects; TestReadsUseViewerClient
+	// overrides it with a distinct client to prove reads route through it.
+	return serverWithViewer(t, store, k8s, func(string) (client.Client, error) { return k8s, nil })
+}
+
+func serverWithViewer(t *testing.T, store *fakeStore, k8s client.Client, viewer func(string) (client.Client, error)) *Server {
+	t.Helper()
 	s, err := New(Config{
 		K8s:                k8s,
+		ViewerClient:       viewer,
 		DB:                 fakePinger{},
 		Store:              store,
 		Cipher:             testCipherInstance,

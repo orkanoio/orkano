@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/pquerna/otp/totp"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
@@ -315,8 +316,10 @@ const testBootstrapToken = "install-token-xyz"
 
 func authServer(t *testing.T, store *fakeStore) *Server {
 	t.Helper()
+	k8s := fake.NewClientBuilder().Build()
 	s, err := New(Config{
-		K8s:                fake.NewClientBuilder().Build(),
+		K8s:                k8s,
+		ViewerClient:       func(string) (client.Client, error) { return k8s, nil },
 		DB:                 fakePinger{},
 		Store:              store,
 		Cipher:             testCipherInstance,

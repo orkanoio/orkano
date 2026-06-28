@@ -36,8 +36,10 @@ func testSPA() fstest.MapFS {
 
 func newTestServer(t *testing.T, db Pinger) *Server {
 	t.Helper()
+	k8s := fake.NewClientBuilder().Build()
 	s, err := New(Config{
-		K8s:                fake.NewClientBuilder().Build(),
+		K8s:                k8s,
+		ViewerClient:       func(string) (client.Client, error) { return k8s, nil },
 		DB:                 db,
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),
@@ -65,6 +67,7 @@ func TestNewValidatesConfig(t *testing.T) {
 	full := func() Config {
 		return Config{
 			K8s:                okClient(),
+			ViewerClient:       func(string) (client.Client, error) { return okClient(), nil },
 			DB:                 fakePinger{},
 			Store:              newFakeStore(),
 			Cipher:             testCipher(t),
@@ -77,6 +80,7 @@ func TestNewValidatesConfig(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{"nil k8s", func(c *Config) { c.K8s = nil }},
+		{"nil viewer client", func(c *Config) { c.ViewerClient = nil }},
 		{"nil db", func(c *Config) { c.DB = nil }},
 		{"nil spa", func(c *Config) { c.SPA = nil }},
 		{"nil store", func(c *Config) { c.Store = nil }},
@@ -175,8 +179,10 @@ func TestSPARejectsTraversal(t *testing.T) {
 func TestServeIndexMissing(t *testing.T) {
 	// An SPA tree with no index.html surfaces a 500, not a panic — proves the
 	// fallback's error path.
+	k8s := fake.NewClientBuilder().Build()
 	s, err := New(Config{
-		K8s:                fake.NewClientBuilder().Build(),
+		K8s:                k8s,
+		ViewerClient:       func(string) (client.Client, error) { return k8s, nil },
 		DB:                 fakePinger{},
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),

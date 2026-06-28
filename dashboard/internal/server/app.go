@@ -46,8 +46,12 @@ type appUpdateRequest struct {
 }
 
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
+	vc, ok := s.viewerClient(w, r)
+	if !ok {
+		return
+	}
 	var list orkanov1alpha1.AppList
-	if err := s.cfg.K8s.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
+	if err := vc.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
 		s.writeK8sError(w, "apps.list", err)
 		return
 	}
@@ -59,9 +63,13 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
+	vc, ok := s.viewerClient(w, r)
+	if !ok {
+		return
+	}
 	var app orkanov1alpha1.App
 	key := client.ObjectKey{Namespace: appsNamespace, Name: chi.URLParam(r, "name")}
-	if err := s.cfg.K8s.Get(r.Context(), key, &app); err != nil {
+	if err := vc.Get(r.Context(), key, &app); err != nil {
 		s.writeK8sError(w, "apps.get", err)
 		return
 	}
@@ -101,7 +109,10 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	// Read-modify-write preserves the live object's metadata + resourceVersion (so
 	// the Update gets optimistic-concurrency protection) and never reads or writes
-	// the status subresource the operator owns.
+	// the status subresource the operator owns. This Get is the read leg of an SA
+	// write, NOT a user-facing read view, so it stays on the SA client — the whole
+	// write path runs as the SA, and a write must never fail because the viewer
+	// (impersonation) client is misconfigured.
 	var app orkanov1alpha1.App
 	key := client.ObjectKey{Namespace: appsNamespace, Name: name}
 	if err := s.cfg.K8s.Get(r.Context(), key, &app); err != nil {

@@ -39,8 +39,12 @@ type domainCreateRequest struct {
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
+	vc, ok := s.viewerClient(w, r)
+	if !ok {
+		return
+	}
 	var list orkanov1alpha1.DomainList
-	if err := s.cfg.K8s.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
+	if err := vc.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
 		s.writeK8sError(w, "domains.list", err)
 		return
 	}
@@ -52,9 +56,13 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetDomain(w http.ResponseWriter, r *http.Request) {
+	vc, ok := s.viewerClient(w, r)
+	if !ok {
+		return
+	}
 	var d orkanov1alpha1.Domain
 	key := client.ObjectKey{Namespace: appsNamespace, Name: chi.URLParam(r, "name")}
-	if err := s.cfg.K8s.Get(r.Context(), key, &d); err != nil {
+	if err := vc.Get(r.Context(), key, &d); err != nil {
 		s.writeK8sError(w, "domains.get", err)
 		return
 	}
