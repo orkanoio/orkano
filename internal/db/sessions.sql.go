@@ -65,14 +65,15 @@ func (q *Queries) DeleteUserSessions(ctx context.Context, userID int64) error {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT token_hash, user_id, created_at, expires_at, last_used_at
+SELECT token_hash, user_id, created_at, expires_at, last_used_at, reauth_at
 FROM sessions
 WHERE token_hash = $1 AND expires_at > now()
 `
 
 // Resolve an opaque session by the hash of its cookie token, only while
 // unexpired, returning the owning user id so the request runs as that identity.
-// An expired (or revoked) row yields no rows -> pgx.ErrNoRows.
+// reauth_at lets a sensitive action require a recent step-up. An expired (or
+// revoked) row yields no rows -> pgx.ErrNoRows.
 func (q *Queries) GetSession(ctx context.Context, tokenHash string) (Session, error) {
 	row := q.db.QueryRow(ctx, getSession, tokenHash)
 	var i Session
@@ -82,8 +83,20 @@ func (q *Queries) GetSession(ctx context.Context, tokenHash string) (Session, er
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
+		&i.ReauthAt,
 	)
 	return i, err
+}
+
+const markSessionReauth = `-- name: MarkSessionReauth :exec
+UPDATE sessions SET reauth_at = now() WHERE token_hash = $1
+`
+
+// Stamp a fresh step-up re-auth on this session (the second factor was just
+// re-proved), arming any action that gates on a recent re-auth.
+func (q *Queries) MarkSessionReauth(ctx context.Context, tokenHash string) error {
+	_, err := q.db.Exec(ctx, markSessionReauth, tokenHash)
+	return err
 }
 
 const touchSession = `-- name: TouchSession :exec

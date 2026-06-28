@@ -28,12 +28,21 @@ type DeployHistory struct {
 	Status       string
 }
 
+type RecoveryCode struct {
+	ID        int64
+	UserID    int64
+	CodeHash  string
+	UsedAt    pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+}
+
 type Session struct {
 	TokenHash  string
 	UserID     int64
 	CreatedAt  pgtype.Timestamptz
 	ExpiresAt  pgtype.Timestamptz
 	LastUsedAt pgtype.Timestamptz
+	ReauthAt   pgtype.Timestamptz
 }
 
 type User struct {
@@ -44,6 +53,8 @@ type User struct {
 	TotpConfirmedAt pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	FailedLogins    int32
+	LockedUntil     pgtype.Timestamptz
 }
 
 type WebhookDelivery struct {

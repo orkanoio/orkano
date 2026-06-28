@@ -8,14 +8,20 @@ VALUES ($1, $2, $3);
 -- name: GetSession :one
 -- Resolve an opaque session by the hash of its cookie token, only while
 -- unexpired, returning the owning user id so the request runs as that identity.
--- An expired (or revoked) row yields no rows -> pgx.ErrNoRows.
-SELECT token_hash, user_id, created_at, expires_at, last_used_at
+-- reauth_at lets a sensitive action require a recent step-up. An expired (or
+-- revoked) row yields no rows -> pgx.ErrNoRows.
+SELECT token_hash, user_id, created_at, expires_at, last_used_at, reauth_at
 FROM sessions
 WHERE token_hash = $1 AND expires_at > now();
 
 -- name: TouchSession :exec
 -- Slide the idle clock on use; expires_at stays the hard lifetime cap.
 UPDATE sessions SET last_used_at = now() WHERE token_hash = $1;
+
+-- name: MarkSessionReauth :exec
+-- Stamp a fresh step-up re-auth on this session (the second factor was just
+-- re-proved), arming any action that gates on a recent re-auth.
+UPDATE sessions SET reauth_at = now() WHERE token_hash = $1;
 
 -- name: DeleteSession :exec
 -- Logout / instant revocation (ADR-0003): the next request with this cookie

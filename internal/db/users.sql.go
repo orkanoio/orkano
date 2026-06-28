@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const confirmUserTOTP = `-- name: ConfirmUserTOTP :exec
+UPDATE users SET totp_confirmed_at = now(), updated_at = now() WHERE id = $1
+`
+
+// Stamp the second factor as enrolled, completing bootstrap.
+func (q *Queries) ConfirmUserTOTP(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, confirmUserTOTP, id)
+	return err
+}
+
+const countConfirmedAdmins = `-- name: CountConfirmedAdmins :one
+SELECT count(*) FROM users WHERE totp_confirmed_at IS NOT NULL
+`
+
+// Redemption of the install token is open only while this is 0: a confirmed admin
+// (second factor enrolled) means bootstrap is done.
+func (q *Queries) CountConfirmedAdmins(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countConfirmedAdmins)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 `
@@ -27,7 +50,7 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (username, password_hash, totp_secret, totp_confirmed_at)
 VALUES ($1, $2, $3, $4)
-RETURNING id, username, password_hash, totp_secret, totp_confirmed_at, created_at, updated_at
+RETURNING id, username, password_hash, totp_secret, totp_confirmed_at, failed_logins, locked_until, created_at, updated_at
 `
 
 type CreateUserParams struct {
@@ -37,44 +60,84 @@ type CreateUserParams struct {
 	TotpConfirmedAt pgtype.Timestamptz
 }
 
+type CreateUserRow struct {
+	ID              int64
+	Username        string
+	PasswordHash    string
+	TotpSecret      string
+	TotpConfirmedAt pgtype.Timestamptz
+	FailedLogins    int32
+	LockedUntil     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 // The bootstrap admin (single-tenant v1). Created in one shot with the bcrypt
 // hash and the TOTP seed already set — ADR-0003 admits no state where an admin
 // exists without a second factor.
-func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
 	row := q.db.QueryRow(ctx, createUser,
 		arg.Username,
 		arg.PasswordHash,
 		arg.TotpSecret,
 		arg.TotpConfirmedAt,
 	)
-	var i User
+	var i CreateUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
 		&i.PasswordHash,
 		&i.TotpSecret,
 		&i.TotpConfirmedAt,
+		&i.FailedLogins,
+		&i.LockedUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const deleteUnconfirmedUsers = `-- name: DeleteUnconfirmedUsers :exec
+DELETE FROM users WHERE totp_confirmed_at IS NULL
+`
+
+// Clear an abandoned enrollment (a user row created but TOTP never confirmed)
+// before a fresh install-token redeem. Not a bypass: the install token is still
+// required per redeem attempt.
+func (q *Queries) DeleteUnconfirmedUsers(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteUnconfirmedUsers)
+	return err
+}
+
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, username, password_hash, totp_secret, totp_confirmed_at, created_at, updated_at
+SELECT id, username, password_hash, totp_secret, totp_confirmed_at, failed_logins, locked_until, created_at, updated_at
 FROM users
 WHERE id = $1
 `
 
-func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
+type GetUserByIDRow struct {
+	ID              int64
+	Username        string
+	PasswordHash    string
+	TotpSecret      string
+	TotpConfirmedAt pgtype.Timestamptz
+	FailedLogins    int32
+	LockedUntil     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id int64) (GetUserByIDRow, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
-	var i User
+	var i GetUserByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
 		&i.PasswordHash,
 		&i.TotpSecret,
 		&i.TotpConfirmedAt,
+		&i.FailedLogins,
+		&i.LockedUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -82,23 +145,79 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, password_hash, totp_secret, totp_confirmed_at, created_at, updated_at
+SELECT id, username, password_hash, totp_secret, totp_confirmed_at, failed_logins, locked_until, created_at, updated_at
 FROM users
 WHERE lower(username) = lower($1)
 `
 
+type GetUserByUsernameRow struct {
+	ID              int64
+	Username        string
+	PasswordHash    string
+	TotpSecret      string
+	TotpConfirmedAt pgtype.Timestamptz
+	FailedLogins    int32
+	LockedUntil     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 // Login lookup; matched case-insensitively against the lowercased unique index.
-func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
+// Returns the lockout state so the handler can refuse a locked account.
+func (q *Queries) GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error) {
 	row := q.db.QueryRow(ctx, getUserByUsername, username)
-	var i User
+	var i GetUserByUsernameRow
 	err := row.Scan(
 		&i.ID,
 		&i.Username,
 		&i.PasswordHash,
 		&i.TotpSecret,
 		&i.TotpConfirmedAt,
+		&i.FailedLogins,
+		&i.LockedUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const incrementFailedLogins = `-- name: IncrementFailedLogins :one
+UPDATE users
+SET failed_logins = failed_logins + 1, updated_at = now()
+WHERE id = $1
+RETURNING failed_logins
+`
+
+// Bump the consecutive-failure counter on a bad attempt; returns the new count so
+// the handler can lock once it crosses the threshold.
+func (q *Queries) IncrementFailedLogins(ctx context.Context, id int64) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementFailedLogins, id)
+	var failed_logins int32
+	err := row.Scan(&failed_logins)
+	return failed_logins, err
+}
+
+const lockUser = `-- name: LockUser :exec
+UPDATE users SET locked_until = $1, updated_at = now() WHERE id = $2
+`
+
+type LockUserParams struct {
+	LockedUntil pgtype.Timestamptz
+	UserID      int64
+}
+
+// Lock the account until @locked_until (the handler computes the deadline).
+func (q *Queries) LockUser(ctx context.Context, arg LockUserParams) error {
+	_, err := q.db.Exec(ctx, lockUser, arg.LockedUntil, arg.UserID)
+	return err
+}
+
+const resetFailedLogins = `-- name: ResetFailedLogins :exec
+UPDATE users SET failed_logins = 0, locked_until = NULL, updated_at = now() WHERE id = $1
+`
+
+// Clear the lockout state on a successful login.
+func (q *Queries) ResetFailedLogins(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, resetFailedLogins, id)
+	return err
 }
