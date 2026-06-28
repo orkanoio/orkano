@@ -78,6 +78,19 @@ func TestRenderComponentsDashboard(t *testing.T) {
 	if !strings.Contains(d, "name: orkano-dashboard-db") {
 		t.Error("dashboard should read its DSN from the orkano-dashboard-db Secret")
 	}
+	// The TOTP-seed encryption key and the install-token hash are injected via
+	// secretKeyRef (no secrets-read RBAC needed, ADR-0013).
+	for _, want := range []string{
+		"name: ORKANO_DASHBOARD_ENC_KEY",
+		"name: orkano-dashboard-enc-key",
+		"name: ORKANO_BOOTSTRAP_TOKEN_SHA256",
+		"name: orkano-bootstrap-token",
+		"key: token-sha256",
+	} {
+		if !strings.Contains(d, want) {
+			t.Errorf("dashboard manifest missing %q", want)
+		}
+	}
 	// INV-05: ClusterIP only, never an Ingress; never a public Service type.
 	if strings.Contains(d, "kind: Ingress") {
 		t.Error("dashboard must not render an Ingress (INV-05, ClusterIP only)")

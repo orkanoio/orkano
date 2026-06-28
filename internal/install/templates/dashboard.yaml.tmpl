@@ -44,6 +44,22 @@ spec:
                 secretKeyRef:
                   name: orkano-dashboard-db
                   key: dsn
+            # The app-layer key that encrypts the TOTP seed at rest, so a Postgres
+            # dump alone cannot bypass 2FA (the attacker also needs this Secret).
+            # Injected via secretKeyRef (the kubelet mounts it), so the dashboard
+            # needs no secrets-read RBAC — ADR-0013's value-blind-only grant holds.
+            - name: ORKANO_DASHBOARD_ENC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-enc-key
+                  key: key
+            # The install-token hash the dashboard checks redemption against, same
+            # secretKeyRef-not-RBAC reasoning as above.
+            - name: ORKANO_BOOTSTRAP_TOKEN_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-bootstrap-token
+                  key: token-sha256
           ports:
             - name: http
               containerPort: 8080

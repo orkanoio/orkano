@@ -34,6 +34,14 @@ func TestGenerateSecretValues(t *testing.T) {
 	if v.bootstrapToken == "" {
 		t.Error("bootstrap token is empty")
 	}
+	// The dashboard encryption key is base64 of exactly 32 bytes (AES-256).
+	key, err := base64.StdEncoding.DecodeString(v.dashboardEncKey)
+	if err != nil {
+		t.Errorf("dashboard enc key %q is not std-base64: %v", v.dashboardEncKey, err)
+	}
+	if len(key) != 32 {
+		t.Errorf("dashboard enc key decodes to %d bytes, want 32", len(key))
+	}
 	// All role passwords distinct (no pointer in the generate loop reused another's
 	// draw) — checked all-pairs via a set, so no collision slips through a chain.
 	rolePasswords := []string{v.superuserPassword, v.receiverPassword, v.dispatcherPassword, v.dashboardPassword}
@@ -53,7 +61,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretWebhook, secretBootstrap} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap} {
 		if _, ok := n.secrets[name]; !ok {
 			t.Errorf("expected secret %s to be created", name)
 		}
@@ -86,8 +94,8 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
-	// Pre-existing secrets (a prior install): mark all six present.
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretWebhook, secretBootstrap} {
+	// Pre-existing secrets (a prior install): mark all present.
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap} {
 		n.secrets[name] = "preexisting"
 	}
 

@@ -21,12 +21,13 @@ const (
 
 	// These are Secret object names, not credentials; gosec G101 false-positives
 	// on the words "superuser"/"secret"/"token" in the values.
-	secretSuperuser = "orkano-postgres-superuser" //nolint:gosec // G101: Secret name, not a credential.
-	secretOperator  = "orkano-operator-db"
-	secretReceiver  = "orkano-receiver-db"
-	secretDashboard = "orkano-dashboard-db"
-	secretWebhook   = "orkano-webhook-secret"  //nolint:gosec // G101: Secret name, not a credential.
-	secretBootstrap = "orkano-bootstrap-token" //nolint:gosec // G101: Secret name, not a credential.
+	secretSuperuser       = "orkano-postgres-superuser" //nolint:gosec // G101: Secret name, not a credential.
+	secretOperator        = "orkano-operator-db"
+	secretReceiver        = "orkano-receiver-db"
+	secretDashboard       = "orkano-dashboard-db"
+	secretDashboardEncKey = "orkano-dashboard-enc-key"
+	secretWebhook         = "orkano-webhook-secret"  //nolint:gosec // G101: Secret name, not a credential.
+	secretBootstrap       = "orkano-bootstrap-token" //nolint:gosec // G101: Secret name, not a credential.
 )
 
 // secretValues are the credentials generated once per install. They are written
@@ -40,6 +41,10 @@ type secretValues struct {
 	dashboardPassword  string
 	webhookSecret      string
 	bootstrapToken     string // plaintext, returned for one-time printing
+	// dashboardEncKey is the AES-256 key (base64 of 32 bytes) the dashboard uses
+	// to encrypt TOTP seeds at rest. Generate-once: rotating it would make every
+	// stored seed undecryptable, locking every user out of 2FA.
+	dashboardEncKey string
 }
 
 // generateSecretValues produces fresh, URL-safe credentials. The role passwords
@@ -54,6 +59,10 @@ func generateSecretValues() (secretValues, error) {
 		}
 	}
 	if v.bootstrapToken, err = randomToken(32); err != nil {
+		return secretValues{}, err
+	}
+	// The dashboard's NewCipher decodes base64 of exactly 32 bytes (AES-256).
+	if v.dashboardEncKey, err = randomKeyB64(32); err != nil {
 		return secretValues{}, err
 	}
 	return v, nil
@@ -73,6 +82,16 @@ func randomToken(n int) (string, error) {
 		return "", fmt.Errorf("install: generate token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// randomKeyB64 returns base64.StdEncoding of n random bytes — the form the
+// dashboard's NewCipher decodes back into a raw AES key.
+func randomKeyB64(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("install: generate key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
 }
 
 // roleDSN builds a libpq URL for a role with an in-cluster, no-TLS connection.
@@ -109,6 +128,7 @@ func ensureSecrets(ctx context.Context, n *node, v secretValues) (bootstrapToken
 			"password": v.dashboardPassword,
 			"dsn":      roleDSN("orkano_dashboard", v.dashboardPassword),
 		}},
+		{secretDashboardEncKey, map[string]string{"key": v.dashboardEncKey}},
 		{secretWebhook, map[string]string{"secret": v.webhookSecret}},
 		{secretBootstrap, map[string]string{"token-sha256": hex.EncodeToString(tokenHash[:])}},
 	}
