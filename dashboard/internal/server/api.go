@@ -37,7 +37,13 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
 		ar.Put("/{name}", s.handleUpdateApp)
-		ar.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteApp)
+		// Destructive mutations — delete, and the env editor's secret rotation —
+		// need a fresh second factor on top of the session.
+		ar.Group(func(dr chi.Router) {
+			dr.Use(s.RequireStepUp)
+			dr.Delete("/{name}", s.handleDeleteApp)
+			dr.Put("/{name}/env", s.handleSetEnv)
+		})
 	})
 
 	r.Route("/api/domains", func(dr chi.Router) {

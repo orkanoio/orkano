@@ -565,20 +565,31 @@ func (s *Server) readChallenge(r *http.Request, stage string) (challenge, bool) 
 
 // --- audit ---
 
-// audit appends one audit entry, best-effort. detail may carry the client IP but
-// NEVER a password, code, token, or seed (INV-03/INV-08). A write failure is
-// logged, never surfaced to the caller.
+// audit appends one audit entry, best-effort, with the client IP as the only
+// detail. A write failure is logged, never surfaced to the caller.
 func (s *Server) audit(ctx context.Context, actor, action, target, outcome string, r *http.Request) {
+	s.auditDetail(ctx, actor, action, target, outcome, r, nil)
+}
+
+// auditDetail appends one audit entry with optional extra fields merged into the
+// jsonb detail alongside the client IP. extra must carry only non-secret metadata
+// — e.g. which env-var NAMES changed — NEVER a password, code, token, seed, or
+// secret value (INV-03/INV-08).
+func (s *Server) auditDetail(ctx context.Context, actor, action, target, outcome string, r *http.Request, extra map[string]any) {
 	if actor == "" {
 		actor = "anonymous"
 	}
-	detail, _ := json.Marshal(map[string]string{"ip": clientIP(r)})
+	detail := map[string]any{"ip": clientIP(r)}
+	for k, v := range extra {
+		detail[k] = v
+	}
+	payload, _ := json.Marshal(detail)
 	if err := s.cfg.Store.AppendAuditEntry(ctx, db.AppendAuditEntryParams{
 		Actor:   actor,
 		Action:  action,
 		Target:  target,
 		Outcome: outcome,
-		Detail:  detail,
+		Detail:  payload,
 	}); err != nil {
 		s.log.Warn("audit append failed", "action", action, "err", err)
 	}

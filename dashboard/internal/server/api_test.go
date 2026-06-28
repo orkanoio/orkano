@@ -47,6 +47,13 @@ func apiServer(t *testing.T, store *fakeStore, objs ...client.Object) *Server {
 		WithStatusSubresource(&orkanov1alpha1.App{}, &orkanov1alpha1.Domain{}).
 		WithObjects(objs...).
 		Build()
+	return serverWith(t, store, k8s)
+}
+
+// serverWith builds a server over a caller-supplied K8s client — for tests that
+// need a fake client with interceptors (e.g. to fail a specific write).
+func serverWith(t *testing.T, store *fakeStore, k8s client.Client) *Server {
+	t.Helper()
 	s, err := New(Config{
 		K8s:                k8s,
 		DB:                 fakePinger{},
