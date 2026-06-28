@@ -20,6 +20,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/orkanoio/orkano/dashboard/internal/auth"
 )
 
 // readyTimeout bounds the dependency checks /readyz performs so a wedged backend
@@ -33,18 +35,31 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// Config wires the server's collaborators. K8s and DB are required; SPA is the
-// embedded UI tree; Logger defaults to a discarding logger when nil.
+// Config wires the server's collaborators. K8s, DB, Store, Cipher, and
+// BootstrapTokenHash are required; SPA is the embedded UI tree; Logger defaults
+// to a discarding logger and Now to time.Now when nil.
 type Config struct {
 	// K8s writes Orkano custom resources. Held here for the M2.4 App/catalog API;
 	// the skeleton only proves it is wired (a nil client fails New).
 	K8s client.Client
 	// DB backs the /readyz probe (and, later, the dashboard's own tables).
 	DB Pinger
+	// Store is the dashboard's own metadata store (users, sessions, audit,
+	// recovery codes) behind the bootstrap-auth flows.
+	Store Store
+	// Cipher encrypts the TOTP seed at rest and seals the short-lived challenge
+	// cookies the auth flow uses mid-handshake.
+	Cipher *auth.Cipher
+	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
+	// presented token's hash against it in constant time.
+	BootstrapTokenHash string
 	// SPA is the embedded single-page app served on every non-API path.
 	SPA fs.FS
 	// Logger receives structured logs; nil discards them.
 	Logger *slog.Logger
+	// Now is the injectable clock for session/lockout/challenge deadlines; nil
+	// defaults to time.Now.
+	Now func() time.Time
 }
 
 // Server is the dashboard HTTP server.
@@ -52,7 +67,11 @@ type Server struct {
 	cfg    Config
 	log    *slog.Logger
 	router chi.Router
+	rl     *rateLimiter
 }
+
+// now returns the configured clock (or time.Now).
+func (s *Server) now() time.Time { return s.cfg.Now() }
 
 // New validates the configuration and builds the router. It returns an error
 // rather than panicking so main can report a clear startup failure.
@@ -66,12 +85,28 @@ func New(cfg Config) (*Server, error) {
 	if cfg.SPA == nil {
 		return nil, errors.New("server: SPA filesystem is required")
 	}
+	if cfg.Store == nil {
+		return nil, errors.New("server: Store is required")
+	}
+	if cfg.Cipher == nil {
+		return nil, errors.New("server: Cipher is required")
+	}
+	if cfg.BootstrapTokenHash == "" {
+		return nil, errors.New("server: BootstrapTokenHash is required")
+	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 
-	s := &Server{cfg: cfg, log: log}
+	s := &Server{
+		cfg: cfg,
+		log: log,
+		rl:  newRateLimiter(rateLimitMax, rateLimitWindow, cfg.Now),
+	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -79,6 +114,9 @@ func New(cfg Config) (*Server, error) {
 	// Liveness: process is up. Readiness: backing store reachable.
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
+
+	// Bootstrap-auth API, mounted ahead of the SPA catch-all.
+	s.mountAuthRoutes(r)
 
 	// Everything else is the SPA (client-side routing). The M2.4 API mounts under
 	// /api, which chi matches ahead of this catch-all.

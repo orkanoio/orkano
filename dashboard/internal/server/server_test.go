@@ -37,9 +37,12 @@ func testSPA() fstest.MapFS {
 func newTestServer(t *testing.T, db Pinger) *Server {
 	t.Helper()
 	s, err := New(Config{
-		K8s: fake.NewClientBuilder().Build(),
-		DB:  db,
-		SPA: testSPA(),
+		K8s:                fake.NewClientBuilder().Build(),
+		DB:                 db,
+		Store:              newFakeStore(),
+		Cipher:             testCipher(t),
+		BootstrapTokenHash: "deadbeef",
+		SPA:                testSPA(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -57,16 +60,33 @@ func do(t *testing.T, s *Server, method, target string) *httptest.ResponseRecord
 
 func TestNewValidatesConfig(t *testing.T) {
 	okClient := func() client.Client { return fake.NewClientBuilder().Build() }
+	// full is a complete config; each case zeroes exactly one required field, so a
+	// rejection proves that field is required (not some other omission).
+	full := func() Config {
+		return Config{
+			K8s:                okClient(),
+			DB:                 fakePinger{},
+			Store:              newFakeStore(),
+			Cipher:             testCipher(t),
+			BootstrapTokenHash: "deadbeef",
+			SPA:                testSPA(),
+		}
+	}
 	for _, tc := range []struct {
-		name string
-		cfg  Config
+		name   string
+		mutate func(*Config)
 	}{
-		{"nil k8s", Config{DB: fakePinger{}, SPA: testSPA()}},
-		{"nil db", Config{K8s: okClient(), SPA: testSPA()}},
-		{"nil spa", Config{K8s: okClient(), DB: fakePinger{}}},
+		{"nil k8s", func(c *Config) { c.K8s = nil }},
+		{"nil db", func(c *Config) { c.DB = nil }},
+		{"nil spa", func(c *Config) { c.SPA = nil }},
+		{"nil store", func(c *Config) { c.Store = nil }},
+		{"nil cipher", func(c *Config) { c.Cipher = nil }},
+		{"empty token hash", func(c *Config) { c.BootstrapTokenHash = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := New(tc.cfg); err == nil {
+			cfg := full()
+			tc.mutate(&cfg)
+			if _, err := New(cfg); err == nil {
 				t.Fatal("expected New to reject the incomplete config")
 			}
 		})
@@ -156,9 +176,12 @@ func TestServeIndexMissing(t *testing.T) {
 	// An SPA tree with no index.html surfaces a 500, not a panic — proves the
 	// fallback's error path.
 	s, err := New(Config{
-		K8s: fake.NewClientBuilder().Build(),
-		DB:  fakePinger{},
-		SPA: fstest.MapFS{"assets/app.js": {Data: []byte("x")}},
+		K8s:                fake.NewClientBuilder().Build(),
+		DB:                 fakePinger{},
+		Store:              newFakeStore(),
+		Cipher:             testCipher(t),
+		BootstrapTokenHash: "deadbeef",
+		SPA:                fstest.MapFS{"assets/app.js": {Data: []byte("x")}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

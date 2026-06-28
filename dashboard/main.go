@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/dashboard/internal/server"
 	"github.com/orkanoio/orkano/dashboard/web"
 )
@@ -31,9 +32,11 @@ import (
 var version = "dev"
 
 const (
-	envDSN      = "ORKANO_DB_DSN"
-	envAddr     = "ORKANO_ADDR"
-	defaultAddr = ":8080"
+	envDSN       = "ORKANO_DB_DSN"
+	envAddr      = "ORKANO_ADDR"
+	envEncKey    = "ORKANO_DASHBOARD_ENC_KEY"
+	envTokenHash = "ORKANO_BOOTSTRAP_TOKEN_SHA256" //nolint:gosec // G101: env var name, not a credential
+	defaultAddr  = ":8080"
 )
 
 func main() {
@@ -49,9 +52,22 @@ func run(log *slog.Logger) error {
 	if dsn == "" {
 		return fmt.Errorf("%s is required", envDSN)
 	}
+	encKey := os.Getenv(envEncKey)
+	if encKey == "" {
+		return fmt.Errorf("%s is required", envEncKey)
+	}
+	tokenHash := os.Getenv(envTokenHash)
+	if tokenHash == "" {
+		return fmt.Errorf("%s is required", envTokenHash)
+	}
 	addr := os.Getenv(envAddr)
 	if addr == "" {
 		addr = defaultAddr
+	}
+
+	cipher, err := auth.NewCipher(encKey)
+	if err != nil {
+		return fmt.Errorf("build cipher: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -69,10 +85,13 @@ func run(log *slog.Logger) error {
 	}
 
 	srv, err := server.New(server.Config{
-		K8s:    k8s,
-		DB:     pool,
-		SPA:    web.Assets(),
-		Logger: log,
+		K8s:                k8s,
+		DB:                 pool,
+		Store:              server.NewStore(pool),
+		Cipher:             cipher,
+		BootstrapTokenHash: tokenHash,
+		SPA:                web.Assets(),
+		Logger:             log,
 	})
 	if err != nil {
 		return err
