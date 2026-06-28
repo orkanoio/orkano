@@ -33,6 +33,8 @@ type fakeStore struct {
 	sessions   map[string]*db.Session
 	recovery   map[int64]map[string]bool // userID -> codeHash -> used
 	audit      []db.AppendAuditEntryParams
+	deploys    []db.DeployHistory
+	deployID   int64
 	nextUserID int64
 	failCreate bool
 	// confirmErr, when set, is returned by ConfirmUserTOTP — used to simulate the

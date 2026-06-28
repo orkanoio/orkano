@@ -88,6 +88,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.writeK8sError(w, "apps.create", err)
 		return
 	}
+	s.recordDeploy(r.Context(), req.Name, deployStatusCreated)
 	writeJSON(w, http.StatusCreated, appToResponse(app))
 }
 
@@ -117,6 +118,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		s.writeK8sError(w, "apps.update", err)
 		return
 	}
+	s.recordDeploy(r.Context(), name, deployStatusUpdated)
 	writeJSON(w, http.StatusOK, appToResponse(&app))
 }
 

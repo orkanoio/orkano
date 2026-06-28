@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,7 +19,27 @@ const (
 	// appsNamespace is the single namespace the orkano-dashboard Role grants CRD
 	// access in; every App/Domain/Postgres the API touches lives here.
 	appsNamespace = "orkano-apps"
+
+	// Pagination defaults for the deploy-history and audit read views.
+	defaultPageLimit = 50
+	maxPageLimit     = 200
 )
+
+// parsePage reads the limit/offset query params, clamping to sane bounds. An
+// absent, malformed, or out-of-range value falls back to the default rather than
+// erroring — a read view should not 400 on a bad page cursor.
+func parsePage(r *http.Request) (limit, offset int32) {
+	limit, offset = defaultPageLimit, 0
+	// ParseInt with bitSize 32 range-checks into int32, so the conversions cannot
+	// overflow (an out-of-range cursor just falls back to the default).
+	if n, err := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 32); err == nil && n > 0 && n <= maxPageLimit {
+		limit = int32(n)
+	}
+	if n, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 32); err == nil && n >= 0 {
+		offset = int32(n)
+	}
+	return limit, offset
+}
 
 // mountAPIRoutes registers the M2.4 App/catalog API under /api, as siblings of
 // the /api/auth subtree. It must be called before the SPA catch-all so chi
@@ -36,6 +57,7 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		ar.Get("/", s.handleListApps)
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
+		ar.Get("/{name}/deploys", s.handleListDeploys)
 		ar.Put("/{name}", s.handleUpdateApp)
 		// Destructive mutations — delete, and the env editor's secret rotation —
 		// need a fresh second factor on top of the session.
@@ -56,6 +78,9 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		// destructive mutation and gates on a fresh second factor.
 		dr.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteDomain)
 	})
+
+	// The append-only audit log (INV-08), readable by any authenticated session.
+	r.With(s.RequireSession).Get("/api/audit", s.handleListAudit)
 
 	// Any other /api path is a JSON 404, never the SPA shell — an API client must
 	// not receive HTML for an unknown endpoint. This pattern is more specific than

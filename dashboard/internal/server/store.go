@@ -31,6 +31,14 @@ type Store interface {
 	ConsumeRecoveryCode(ctx context.Context, arg db.ConsumeRecoveryCodeParams) (int64, error)
 	AppendAuditEntry(ctx context.Context, arg db.AppendAuditEntryParams) error
 
+	// The M2.4 read/write views: the deploy timeline an App detail page shows
+	// (Build CRs get GC'd, so this is the durable record) and the audit log
+	// (INV-08). *db.Queries supplies all three; the dashboard never UPDATE/DELETEs
+	// audit_log (the role forbids it).
+	RecordDeploy(ctx context.Context, arg db.RecordDeployParams) (db.DeployHistory, error)
+	ListAppDeploys(ctx context.Context, arg db.ListAppDeploysParams) ([]db.DeployHistory, error)
+	ListAuditEntries(ctx context.Context, arg db.ListAuditEntriesParams) ([]db.AuditLog, error)
+
 	// CreateAdmin atomically clears any abandoned enrollment, creates the single
 	// admin (TOTP unconfirmed), and stores its recovery-code hashes — all in one
 	// transaction so a redeem can never leave a half-built account.
