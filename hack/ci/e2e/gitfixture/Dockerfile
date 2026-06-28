@@ -9,11 +9,14 @@
 #
 # alpine + the apk git package provide the git binary git-fixture serves
 # through (alpine:3.22 is the same base hack/ci/substrate-smoke/fixture pins, so
-# it is already pulled). Build context = the dir run.sh assembles: the prebuilt
-# linux/amd64 local-loop-helper binary, this seed.sh, and the fixture/ tree, all
-# at the context root.
+# it is already pulled). git-daemon is REQUIRED on top: Alpine ships
+# git-http-backend (the smart-HTTP CGI git-fixture runs) in that subpackage, not
+# the base git package, so without it `git http-backend` is "not a git command"
+# and every clone 500s — the build can never fetch its source. Build context =
+# the dir run.sh assembles: the prebuilt local-loop-helper binary, this seed.sh,
+# and the fixture/ tree, all at the context root.
 FROM alpine:3.22
-RUN apk add --no-cache git
+RUN apk add --no-cache git git-daemon
 COPY local-loop-helper /usr/local/bin/local-loop-helper
 COPY seed.sh /usr/local/bin/seed.sh
 COPY fixture/ /fixture/
