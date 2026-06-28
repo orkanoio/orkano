@@ -586,17 +586,10 @@ func (s *Server) audit(ctx context.Context, actor, action, target, outcome strin
 
 // --- JSON helpers ---
 
-// decodeJSON reads a bounded JSON body into dst. It writes a 400 and returns
-// false on a read/parse error so the caller can simply return.
+// decodeJSON reads a bounded auth-request body into dst. It writes a 400 and
+// returns false on a read/parse error so the caller can simply return.
 func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request")
-		return false
-	}
-	return true
+	return decodeJSONLimit(w, r, dst, maxAuthBodyBytes)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

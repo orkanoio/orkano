@@ -1,24 +1,79 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 )
 
-// getWithCookie issues a GET carrying the given cookies, mirroring post() for the
-// read paths.
-func getWithCookie(t *testing.T, s *Server, target string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+// --- M2.4 CRUD test harness ---
+
+func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("add client-go scheme: %v", err)
+	}
+	if err := orkanov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add orkano scheme: %v", err)
+	}
+	return scheme
+}
+
+// apiServer builds a server whose K8s client carries the orkano scheme and is
+// seeded with objs, for the App/Domain/Postgres CRUD handler tests. App and
+// Domain carry a status subresource so the fake client's Update preserves the
+// operator-owned status the way the real apiserver does.
+func apiServer(t *testing.T, store *fakeStore, objs ...client.Object) *Server {
+	t.Helper()
+	k8s := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithStatusSubresource(&orkanov1alpha1.App{}, &orkanov1alpha1.Domain{}).
+		WithObjects(objs...).
+		Build()
+	s, err := New(Config{
+		K8s:                k8s,
+		DB:                 fakePinger{},
+		Store:              store,
+		Cipher:             testCipherInstance,
+		BootstrapTokenHash: auth.HashToken(testBootstrapToken),
+		SPA:                testSPA(),
+		Now:                fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+// apiReq issues an arbitrary-method JSON request carrying the given cookies.
+func apiReq(t *testing.T, s *Server, method, target string, body any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), method, target, rdr)
 	req.RemoteAddr = "10.0.0.1:5555"
 	for _, c := range cookies {
 		req.AddCookie(c)
@@ -26,6 +81,23 @@ func getWithCookie(t *testing.T, s *Server, target string, cookies ...*http.Cook
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+// authedSession seeds a confirmed admin + a live session and returns its cookie.
+func authedSession(t *testing.T, store *fakeStore) *http.Cookie {
+	t.Helper()
+	store.confirmedUser(t, "admin", "correct-horse-battery")
+	raw := mustSession(t, store, store.firstUserID())
+	return &http.Cookie{Name: sessionCookie, Value: raw}
+}
+
+// steppedUpSession is authedSession with a fresh second-factor marker, so it
+// clears the RequireStepUp-gated routes (delete, secret rotation).
+func steppedUpSession(t *testing.T, store *fakeStore) *http.Cookie {
+	t.Helper()
+	ck := authedSession(t, store)
+	freshenStepUp(t, store, ck.Value)
+	return ck
 }
 
 // freshenStepUp stamps a session's reauth marker to now so a RequireStepUp-gated
@@ -41,45 +113,7 @@ func freshenStepUp(t *testing.T, store *fakeStore, raw string) {
 	sess.ReauthAt = pgtype.Timestamptz{Time: fixedNow(), Valid: true}
 }
 
-// TestAPISkeletonTiers proves the two middleware tiers the M2.4 API mounts on:
-// the session tier (GET) admits any valid session; the step-up tier (POST)
-// additionally demands a fresh second factor. Both deny an unauthenticated
-// request. The skeleton handler returns 501 once a request clears the gate, so a
-// 501 proves the request reached the handler and a 401/403 proves it was stopped
-// at the middleware.
-func TestAPISkeletonTiers(t *testing.T) {
-	store := newFakeStore()
-	store.confirmedUser(t, "admin", "correct-horse-battery")
-	s := authServer(t, store)
-	uid := store.firstUserID()
-
-	// No session → both tiers deny with 401.
-	if rec := getReq(t, s, "/api/skeleton"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/skeleton no-session = %d, want 401", rec.Code)
-	}
-	if rec := post(t, s, "/api/skeleton", nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("POST /api/skeleton no-session = %d, want 401", rec.Code)
-	}
-
-	raw := mustSession(t, store, uid)
-	sessionCk := &http.Cookie{Name: sessionCookie, Value: raw}
-
-	// Valid session → the session tier (GET) reaches the handler (501).
-	if rec := getWithCookie(t, s, "/api/skeleton", sessionCk); rec.Code != http.StatusNotImplemented {
-		t.Fatalf("GET /api/skeleton with session = %d, want 501", rec.Code)
-	}
-
-	// Valid session but no step-up → the step-up tier (POST) is forbidden.
-	if rec := post(t, s, "/api/skeleton", nil, sessionCk); rec.Code != http.StatusForbidden {
-		t.Fatalf("POST /api/skeleton without step-up = %d, want 403", rec.Code)
-	}
-
-	// Fresh step-up → the step-up tier reaches the handler (501).
-	freshenStepUp(t, store, raw)
-	if rec := post(t, s, "/api/skeleton", nil, sessionCk); rec.Code != http.StatusNotImplemented {
-		t.Fatalf("POST /api/skeleton with step-up = %d, want 501", rec.Code)
-	}
-}
+// --- api.go unit tests ---
 
 // TestAPIUnknownPathIsJSON404 proves an unmatched /api path returns a JSON 404,
 // not the SPA HTML shell — an API client must never receive HTML for a wrong
@@ -107,14 +141,13 @@ func TestAPIUnknownPathIsJSON404(t *testing.T) {
 	}
 }
 
-// TestAPISkeletonCoexistsWithAuth proves mounting the /api skeleton and the
-// /api/* catch-all alongside the pre-existing /api/auth subtree does not shadow
-// the auth routes (a chi radix-tree overlap regression guard).
-func TestAPISkeletonCoexistsWithAuth(t *testing.T) {
+// TestAPIAuthRoutesNotShadowed proves mounting the /api/apps + /api/domains
+// subtrees and the /api/* JSON-404 catch-all alongside the pre-existing
+// /api/auth subtree does not shadow the auth routes (a chi radix-tree overlap
+// guard).
+func TestAPIAuthRoutesNotShadowed(t *testing.T) {
 	store := newFakeStore()
-	s := authServer(t, store)
-	// /api/auth/status still resolves to the auth handler (200 + a state body),
-	// not the /api/* 404 catch-all.
+	s := apiServer(t, store)
 	rec := getReq(t, s, "/api/auth/status")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/auth/status = %d, want 200", rec.Code)
