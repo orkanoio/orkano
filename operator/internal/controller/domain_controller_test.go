@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 )
@@ -375,5 +377,44 @@ func TestDomainNeverAdoptsForeignIngress(t *testing.T) {
 	}
 	if metav1.GetControllerOf(&got) != nil {
 		t.Errorf("foreign Ingress was adopted: %+v", metav1.GetControllerOf(&got))
+	}
+}
+
+// TestMapCertificateToDomain pins the cross-namespace guard: the Certificate
+// informer is shared with RegistryCertReconciler and watches orkano-system,
+// but Domains live only in orkano-apps. Mapping the registry's own
+// orkano-registry-tls Certificate to a Domain would enqueue a Get the scoped
+// cache rejects with "unknown namespace for the cache", looping forever.
+func TestMapCertificateToDomain(t *testing.T) {
+	newCert := func(ns, name string) client.Object {
+		c := &unstructured.Unstructured{}
+		c.SetGroupVersionKind(certificateGVK)
+		c.SetNamespace(ns)
+		c.SetName(name)
+		return c
+	}
+	req := func(ns, name string) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
+	}
+
+	cases := []struct {
+		name string
+		obj  client.Object
+		want []reconcile.Request
+	}{
+		{"apps tls cert maps to its Domain", newCert(appsNamespace, "e2e-web-example-test-tls"),
+			req(appsNamespace, "e2e-web-example-test")},
+		{"system registry cert maps to nothing", newCert(systemNamespace, "orkano-registry-tls"), nil},
+		{"build-namespace cert maps to nothing", newCert(buildNamespace, "whatever-tls"), nil},
+		{"cert without -tls suffix is ignored", newCert(appsNamespace, "not-a-tls-secret"), nil},
+		{"bare -tls (empty Domain name) is ignored", newCert(appsNamespace, tlsSecretSuffix), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapCertificateToDomain(context.Background(), tc.obj); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("mapCertificateToDomain(%s/%s) = %v, want %v",
+					tc.obj.GetNamespace(), tc.obj.GetName(), got, tc.want)
+			}
+		})
 	}
 }

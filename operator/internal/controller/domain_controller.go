@@ -425,6 +425,15 @@ func (r *DomainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Certificate after the TLS secret, which this controller derives from the
 // Domain name.
 func mapCertificateToDomain(_ context.Context, obj client.Object) []reconcile.Request {
+	// Domains live only in orkano-apps (the cache scopes them there), but the
+	// Certificate informer is shared with RegistryCertReconciler and watches
+	// orkano-system too. Without this guard the registry's own
+	// orkano-registry-tls Certificate maps to a phantom Domain
+	// orkano-system/orkano-registry, whose Get fails with "unknown namespace
+	// for the cache" and requeues forever.
+	if obj.GetNamespace() != appsNamespace {
+		return nil
+	}
 	name, found := strings.CutSuffix(obj.GetName(), tlsSecretSuffix)
 	if !found || name == "" {
 		return nil
