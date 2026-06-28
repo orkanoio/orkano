@@ -118,8 +118,11 @@ func New(cfg Config) (*Server, error) {
 	// Bootstrap-auth API, mounted ahead of the SPA catch-all.
 	s.mountAuthRoutes(r)
 
-	// Everything else is the SPA (client-side routing). The M2.4 API mounts under
-	// /api, which chi matches ahead of this catch-all.
+	// M2.4 App/catalog API, also under /api and ahead of the SPA catch-all.
+	s.mountAPIRoutes(r)
+
+	// Everything else is the SPA (client-side routing); chi matches the /api
+	// routes above ahead of this catch-all.
 	r.Handle("/*", s.spaHandler())
 
 	s.router = r
