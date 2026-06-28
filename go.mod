@@ -3,6 +3,7 @@ module github.com/orkanoio/orkano
 go 1.26.4
 
 require (
+	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-logr/logr v1.4.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/orkanoio/orkano/api v0.0.0-00010101000000-000000000000

@@ -2,7 +2,9 @@
 coverage.out
 .DS_Store
 hack/spikes/*/out/
-dist/
+# goreleaser's build output at the repo root (anchored so it does not also hide
+# dashboard/web/dist, the embedded SPA tree the dashboard binary serves).
+/dist/
 # Stray dev build of the local-loop helper (the tracked source is hack/local-loop/).
 /local-loop
 

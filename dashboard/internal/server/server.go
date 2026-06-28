@@ -1,0 +1,153 @@
+// Package server is the dashboard's HTTP layer: a chi router serving the
+// embedded SPA plus health probes, and holding the controller-runtime client
+// the dashboard uses to write Orkano custom resources (the App/catalog API lands
+// in M2.4). It never holds cluster-admin — its only Kubernetes reach is the
+// orkano-dashboard Role (CRUD on Orkano CRDs + value-blind Secret writes,
+// INV-01/ADR-0013).
+package server
+
+import (
+	"context"
+	"errors"
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// readyTimeout bounds the dependency checks /readyz performs so a wedged backend
+// can never hang the probe past the kubelet's own timeout.
+const readyTimeout = 2 * time.Second
+
+// Pinger reports whether a backing store is reachable. *pgxpool.Pool satisfies
+// it; tests supply a fake. An empty-statement ping needs no table privilege, so
+// it works under the least-privilege orkano_dashboard role.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// Config wires the server's collaborators. K8s and DB are required; SPA is the
+// embedded UI tree; Logger defaults to a discarding logger when nil.
+type Config struct {
+	// K8s writes Orkano custom resources. Held here for the M2.4 App/catalog API;
+	// the skeleton only proves it is wired (a nil client fails New).
+	K8s client.Client
+	// DB backs the /readyz probe (and, later, the dashboard's own tables).
+	DB Pinger
+	// SPA is the embedded single-page app served on every non-API path.
+	SPA fs.FS
+	// Logger receives structured logs; nil discards them.
+	Logger *slog.Logger
+}
+
+// Server is the dashboard HTTP server.
+type Server struct {
+	cfg    Config
+	log    *slog.Logger
+	router chi.Router
+}
+
+// New validates the configuration and builds the router. It returns an error
+// rather than panicking so main can report a clear startup failure.
+func New(cfg Config) (*Server, error) {
+	if cfg.K8s == nil {
+		return nil, errors.New("server: K8s client is required")
+	}
+	if cfg.DB == nil {
+		return nil, errors.New("server: DB pinger is required")
+	}
+	if cfg.SPA == nil {
+		return nil, errors.New("server: SPA filesystem is required")
+	}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
+	s := &Server{cfg: cfg, log: log}
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+
+	// Liveness: process is up. Readiness: backing store reachable.
+	r.Get("/healthz", s.handleHealthz)
+	r.Get("/readyz", s.handleReadyz)
+
+	// Everything else is the SPA (client-side routing). The M2.4 API mounts under
+	// /api, which chi matches ahead of this catch-all.
+	r.Handle("/*", s.spaHandler())
+
+	s.router = r
+	return s, nil
+}
+
+// Handler returns the root HTTP handler.
+func (s *Server) Handler() http.Handler { return s.router }
+
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	writeOK(w)
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
+	defer cancel()
+	if err := s.cfg.DB.Ping(ctx); err != nil {
+		s.log.Warn("readiness ping failed", "err", err)
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	writeOK(w)
+}
+
+func writeOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+// spaHandler serves files from the embedded SPA tree and falls back to
+// index.html for any path that is not a real file — so deep links into
+// client-side routes resolve. The path is cleaned against root first, so "."
+// and ".." collapse and the lookup can never escape the embedded tree.
+func (s *Server) spaHandler() http.HandlerFunc {
+	fileServer := http.FileServerFS(s.cfg.SPA)
+	return func(w http.ResponseWriter, r *http.Request) {
+		clean := path.Clean("/" + r.URL.Path)
+		name := strings.TrimPrefix(clean, "/")
+		if name == "" {
+			s.serveIndex(w)
+			return
+		}
+		info, err := fs.Stat(s.cfg.SPA, name)
+		if err != nil || info.IsDir() {
+			s.serveIndex(w)
+			return
+		}
+		// Serve the canonical path so http.FileServerFS does not 301-redirect a
+		// non-canonical request (which would also leak which files exist).
+		r.URL.Path = clean
+		fileServer.ServeHTTP(w, r)
+	}
+}
+
+func (s *Server) serveIndex(w http.ResponseWriter) {
+	b, err := fs.ReadFile(s.cfg.SPA, "index.html")
+	if err != nil {
+		s.log.Error("SPA index.html missing from embedded assets", "err", err)
+		http.Error(w, "dashboard UI unavailable", http.StatusInternalServerError)
+		return
+	}
+	// The shell must not be cached, or a deploy can serve a stale index.html that
+	// references hashed asset bundles no longer present.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
+}

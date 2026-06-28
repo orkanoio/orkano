@@ -27,6 +27,14 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: ["-s -w -X main.version={{.Version}}"]
+  - id: orkano-dashboard
+    main: ./dashboard
+    binary: orkano-dashboard
+    env: [CGO_ENABLED=0, GOWORK=off]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
 
 archives:
   - id: cli
@@ -80,6 +88,26 @@ dockers:
     build_flag_templates:
       - --platform=linux/arm64
       - --build-arg=BINARY=orkano-receiver
+  - id: dashboard-amd64
+    ids: [orkano-dashboard]
+    goarch: amd64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-dashboard:{{ .Version }}-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --build-arg=BINARY=orkano-dashboard
+  - id: dashboard-arm64
+    ids: [orkano-dashboard]
+    goarch: arm64
+    use: buildx
+    dockerfile: build/Dockerfile
+    image_templates:
+      - ghcr.io/orkanoio/orkano-dashboard:{{ .Version }}-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --build-arg=BINARY=orkano-dashboard
 
 docker_manifests:
   - name_template: ghcr.io/orkanoio/orkano-operator:{{ .Version }}
@@ -90,6 +118,10 @@ docker_manifests:
     image_templates:
       - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-amd64
       - ghcr.io/orkanoio/orkano-receiver:{{ .Version }}-arm64
+  - name_template: ghcr.io/orkanoio/orkano-dashboard:{{ .Version }}
+    image_templates:
+      - ghcr.io/orkanoio/orkano-dashboard:{{ .Version }}-amd64
+      - ghcr.io/orkanoio/orkano-dashboard:{{ .Version }}-arm64
 
 signs:
   - cmd: cosign
