@@ -39,7 +39,7 @@ func newTestServer(t *testing.T, db Pinger) *Server {
 	k8s := fake.NewClientBuilder().Build()
 	s, err := New(Config{
 		K8s:                k8s,
-		ViewerClient:       func(string) (client.Client, error) { return k8s, nil },
+		ViewerClient:       k8s,
 		DB:                 db,
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),
@@ -67,7 +67,7 @@ func TestNewValidatesConfig(t *testing.T) {
 	full := func() Config {
 		return Config{
 			K8s:                okClient(),
-			ViewerClient:       func(string) (client.Client, error) { return okClient(), nil },
+			ViewerClient:       okClient(),
 			DB:                 fakePinger{},
 			Store:              newFakeStore(),
 			Cipher:             testCipher(t),
@@ -182,7 +182,7 @@ func TestServeIndexMissing(t *testing.T) {
 	k8s := fake.NewClientBuilder().Build()
 	s, err := New(Config{
 		K8s:                k8s,
-		ViewerClient:       func(string) (client.Client, error) { return k8s, nil },
+		ViewerClient:       k8s,
 		DB:                 fakePinger{},
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),

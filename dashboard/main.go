@@ -84,12 +84,13 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Read views run as a per-request client impersonating the viewer group, so
-	// the cluster's RBAC + audit trail see the human, not the dashboard SA
-	// (ADR-0013). It reuses the base client's scheme + RESTMapper to skip
-	// per-request discovery.
-	viewerClient := func(username string) (client.Client, error) {
-		return server.NewViewerClient(restCfg, k8s.Scheme(), k8s.RESTMapper(), username)
+	// Read views run through a client impersonating the fixed, resourceNames-
+	// pinned viewer identity, so the cluster's RBAC + audit trail see a view-only
+	// identity, not the dashboard SA (ADR-0013/ADR-0015). It reuses the base
+	// client's scheme + RESTMapper to skip discovery.
+	viewerClient, err := server.NewViewerClient(restCfg, k8s.Scheme(), k8s.RESTMapper())
+	if err != nil {
+		return fmt.Errorf("create viewer client: %w", err)
 	}
 
 	srv, err := server.New(server.Config{

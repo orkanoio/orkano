@@ -1,64 +1,43 @@
 package server
 
 import (
-	"net/http"
-
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ViewerGroup is the fixed Kubernetes group the dashboard impersonates for every
-// read view. RBAC pins the dashboard SA's impersonate grant to exactly this group
-// via resourceNames (ADR-0013), and the group is bound to the read-only
-// orkano-viewer Role — so a read runs under the human's identity in the cluster
-// audit trail and RBAC, never the SA, while an arbitrary Impersonate-User still
-// cannot escalate beyond this group's view-only access (the group is the only
-// load-bearing identity). The literal MUST match the resourceNames pin in
-// config/rbac and the RoleBinding subject (a cross-file contract, landed with the
-// grant in a later sub-commit).
-const ViewerGroup = "orkano:viewers"
+// ViewerUser and ViewerGroup are the FIXED identity the dashboard impersonates
+// for every read view. Both are resourceNames-pinned in the dashboard's
+// impersonate ClusterRole (ADR-0015), so there is no unpinned impersonate
+// surface: a read runs as a stable, view-only identity in the cluster's RBAC +
+// audit trail — never the dashboard SA — and the individual human is attributed
+// in Orkano's own audit_log (INV-08). The group is bound to the read-only
+// orkano-viewer Role. Both literals MUST match the resourceNames pins and the
+// RoleBinding subject in config/rbac (a cross-file contract).
+const (
+	ViewerUser  = "orkano:viewer"
+	ViewerGroup = "orkano:viewers"
+)
 
-// viewerConfig copies base and sets the impersonation: the fixed viewer group
-// (the load-bearing RBAC identity) plus the human's username (for the cluster
-// audit trail). The base config is never mutated.
-func viewerConfig(base *rest.Config, username string) *rest.Config {
+// viewerConfig copies base and pins the impersonation to the fixed viewer
+// identity. The base config is never mutated.
+func viewerConfig(base *rest.Config) *rest.Config {
 	cfg := rest.CopyConfig(base)
 	cfg.Impersonate = rest.ImpersonationConfig{
-		UserName: username,
+		UserName: ViewerUser,
 		Groups:   []string{ViewerGroup},
 		// Extra is deliberately left unset: Impersonate-Extra-* headers are NOT
-		// constrained by the resourceNames pin, so feeding session-derived values
-		// into Extra would open an unpinned impersonation surface (ADR-0013).
+		// constrained by resourceNames, so feeding any value into Extra would open
+		// an unpinned impersonation surface (ADR-0013/ADR-0015).
 	}
 	return cfg
 }
 
-// NewViewerClient builds a per-request client impersonating the viewer group as
-// username. It reuses the base scheme + RESTMapper, so no per-call discovery
-// happens — only a lightweight REST client is constructed.
-func NewViewerClient(base *rest.Config, scheme *runtime.Scheme, mapper meta.RESTMapper, username string) (client.Client, error) {
-	return client.New(viewerConfig(base, username), client.Options{Scheme: scheme, Mapper: mapper})
-}
-
-// viewerClient builds the impersonating read client for the request's user. On a
-// build failure it writes a 500 and returns ok=false. Read views route through
-// this so the cluster sees the human identity (ADR-0013); writes stay on the SA
-// client (s.cfg.K8s).
-func (s *Server) viewerClient(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
-	user, ok := userFromContext(r.Context())
-	if !ok {
-		// Defence in depth: every read view is RequireSession-gated, so the user is
-		// always set here; this guards against a future route wired without it.
-		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
-		return nil, false
-	}
-	vc, err := s.cfg.ViewerClient(user.Username)
-	if err != nil {
-		s.log.Error("build viewer client failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error")
-		return nil, false
-	}
-	return vc, true
+// NewViewerClient builds the read client that impersonates the fixed viewer
+// identity. It is a singleton — the identity never varies, so there is no
+// per-request construction and no per-user state to leak — reusing the base
+// scheme + RESTMapper so it does no discovery.
+func NewViewerClient(base *rest.Config, scheme *runtime.Scheme, mapper meta.RESTMapper) (client.Client, error) {
+	return client.New(viewerConfig(base), client.Options{Scheme: scheme, Mapper: mapper})
 }

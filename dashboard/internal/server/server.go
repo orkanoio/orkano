@@ -42,10 +42,12 @@ type Config struct {
 	// K8s writes Orkano custom resources as the dashboard ServiceAccount (the
 	// mutation path). Read views go through ViewerClient instead.
 	K8s client.Client
-	// ViewerClient builds a per-request client impersonating the viewer group as
-	// the given human username, so read views run under the human's identity in
-	// the cluster's RBAC + audit trail, not the dashboard SA (ADR-0013). Required.
-	ViewerClient func(username string) (client.Client, error)
+	// ViewerClient reads Orkano CRs while impersonating the fixed, resourceNames-
+	// pinned viewer identity (ViewerUser + ViewerGroup), so reads run as a
+	// view-only identity in the cluster's RBAC + audit trail, never the dashboard
+	// SA (ADR-0013/ADR-0015). It is a singleton — the identity never varies.
+	// Required.
+	ViewerClient client.Client
 	// DB backs the /readyz probe (and, later, the dashboard's own tables).
 	DB Pinger
 	// Store is the dashboard's own metadata store (users, sessions, audit,

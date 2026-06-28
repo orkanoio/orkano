@@ -57,10 +57,10 @@ func serverWith(t *testing.T, store *fakeStore, k8s client.Client) *Server {
 	// By default the viewer (read) client is the same fake as the SA (write)
 	// client, so read tests see the seeded objects; TestReadsUseViewerClient
 	// overrides it with a distinct client to prove reads route through it.
-	return serverWithViewer(t, store, k8s, func(string) (client.Client, error) { return k8s, nil })
+	return serverWithViewer(t, store, k8s, k8s)
 }
 
-func serverWithViewer(t *testing.T, store *fakeStore, k8s client.Client, viewer func(string) (client.Client, error)) *Server {
+func serverWithViewer(t *testing.T, store *fakeStore, k8s, viewer client.Client) *Server {
 	t.Helper()
 	s, err := New(Config{
 		K8s:                k8s,

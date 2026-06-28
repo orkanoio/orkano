@@ -46,12 +46,8 @@ type appUpdateRequest struct {
 }
 
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
-	vc, ok := s.viewerClient(w, r)
-	if !ok {
-		return
-	}
 	var list orkanov1alpha1.AppList
-	if err := vc.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
+	if err := s.cfg.ViewerClient.List(r.Context(), &list, client.InNamespace(appsNamespace)); err != nil {
 		s.writeK8sError(w, "apps.list", err)
 		return
 	}
@@ -63,13 +59,9 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
-	vc, ok := s.viewerClient(w, r)
-	if !ok {
-		return
-	}
 	var app orkanov1alpha1.App
 	key := client.ObjectKey{Namespace: appsNamespace, Name: chi.URLParam(r, "name")}
-	if err := vc.Get(r.Context(), key, &app); err != nil {
+	if err := s.cfg.ViewerClient.Get(r.Context(), key, &app); err != nil {
 		s.writeK8sError(w, "apps.get", err)
 		return
 	}
