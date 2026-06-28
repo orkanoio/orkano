@@ -446,14 +446,32 @@ func manifestTuples(t *testing.T, m *rbacManifests, humanRoles map[string]bool) 
 			}
 		}
 	}
-	subjectIdentity := func(s rbacv1.Subject, where string) string {
-		if s.Kind != rbacv1.ServiceAccountKind {
-			t.Fatalf("%s binds subject kind %q; config/ ships ServiceAccount bindings only", where, s.Kind)
+	subjectIdentity := func(s rbacv1.Subject, where, roleName string) string {
+		switch s.Kind {
+		case rbacv1.ServiceAccountKind:
+			if _, ok := m.serviceAccounts[s.Namespace+"/"+s.Name]; !ok {
+				t.Fatalf("%s binds ServiceAccount %s/%s, which no manifest defines", where, s.Namespace, s.Name)
+			}
+			return "system:serviceaccount:" + s.Namespace + ":" + s.Name
+		case rbacv1.GroupKind:
+			// config/ ships exactly one Group subject: the dashboard's fixed viewer
+			// group bound to the read-only orkano-viewer Role (ADR-0015). Pin the
+			// name so a renamed or additional Group binding fails loudly here rather
+			// than slipping past the doc<->manifest equality, which keys a group
+			// binding on role:<name> and so would not otherwise notice the subject.
+			const viewerGroupSubject = "orkano:viewers"
+			if s.Name != viewerGroupSubject {
+				t.Fatalf("%s binds Group %q; config/ ships only the fixed viewer group %q as a Group subject", where, s.Name, viewerGroupSubject)
+			}
+			// Model its permissions under the role:<name> identity the matrix uses
+			// for human roles, so the doc's human-role rows still match. The SAR walk
+			// separately binds a sar-probe user per human role, and a dedicated check
+			// below proves the group binding itself authorizes.
+			return humanIdentityPrefix + roleName
+		default:
+			t.Fatalf("%s binds subject kind %q; config/ ships ServiceAccount and Group bindings only", where, s.Kind)
+			return ""
 		}
-		if _, ok := m.serviceAccounts[s.Namespace+"/"+s.Name]; !ok {
-			t.Fatalf("%s binds ServiceAccount %s/%s, which no manifest defines", where, s.Namespace, s.Name)
-		}
-		return "system:serviceaccount:" + s.Namespace + ":" + s.Name
 	}
 
 	for _, rb := range m.roleBindings {
@@ -467,7 +485,7 @@ func manifestTuples(t *testing.T, m *rbacManifests, humanRoles map[string]bool) 
 		}
 		bound[rb.Namespace+"/"+rb.RoleRef.Name] = true
 		for _, s := range rb.Subjects {
-			expand(subjectIdentity(s, where), rb.Namespace, role.Rules, where)
+			expand(subjectIdentity(s, where, rb.RoleRef.Name), rb.Namespace, role.Rules, where)
 		}
 	}
 	for _, crb := range m.clusterRoleBindings {
@@ -481,7 +499,7 @@ func manifestTuples(t *testing.T, m *rbacManifests, humanRoles map[string]bool) 
 		}
 		bound["clusterrole/"+crb.RoleRef.Name] = true
 		for _, s := range crb.Subjects {
-			expand(subjectIdentity(s, where), "", clusterRole.Rules, where)
+			expand(subjectIdentity(s, where, crb.RoleRef.Name), "", clusterRole.Rules, where)
 		}
 	}
 	for key, role := range m.roles {
@@ -617,6 +635,31 @@ func sarUser(identity string) string {
 	return identity
 }
 
+// sarAllowedAs is sarAllowed for a request from a user IN the given groups —
+// used to prove a Group binding (the dashboard's impersonated viewer group)
+// actually authorizes its Role's permissions.
+func sarAllowedAs(t *testing.T, ctx context.Context, user string, groups []string, namespace, group, resource, verb string) bool {
+	t.Helper()
+	res, sub, _ := strings.Cut(resource, "/")
+	sar := &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:   user,
+			Groups: groups,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace:   namespace,
+				Verb:        verb,
+				Group:       group,
+				Resource:    res,
+				Subresource: sub,
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, sar); err != nil {
+		t.Fatalf("SubjectAccessReview for groups %v failed: %v", groups, err)
+	}
+	return sar.Status.Allowed
+}
+
 func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	ctx := context.Background()
 	docTuples := parseRBACMatrixDoc(t)
@@ -688,6 +731,7 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{identity: operatorIdentity, namespace: appsNamespace, group: "apps", resource: "deployments", verb: "get"},
 		{identity: operatorIdentity, namespace: buildNamespace, group: "batch", resource: "jobs", verb: "get"},
 		{identity: operatorIdentity, namespace: systemNamespace, group: "coordination.k8s.io", resource: "leases", verb: "get"},
+		{identity: dashboardIdentity, namespace: "", group: "", resource: "groups", resourceName: "orkano:viewers", verb: "impersonate"},
 	}
 	for name := range humanRoles {
 		canaries = append(canaries, rbacTuple{identity: humanIdentityPrefix + name, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"})
@@ -712,6 +756,31 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		if sarAllowed(t, ctx, operatorIdentity, systemNamespace, "apps", "deployments", "orkano-dashboard", verb) {
 			t.Errorf("operator may %s deployments/orkano-dashboard in orkano-system, but the resourceNames pin should deny it", verb)
 		}
+	}
+
+	// The dashboard's impersonate grant is pinned by resourceNames to exactly one
+	// fixed user and one fixed group; prove the pins bind by naming identities it
+	// must never impersonate — nameless, a privileged group, and the cross-pin
+	// (the user pin is orkano:viewer, the group pin orkano:viewers). The denied
+	// walk suppresses these because a cluster grant authorizes every scope but its
+	// key ignores resourceName, so this explicit wrong-name probe is the real guard.
+	for _, bad := range []struct{ resource, name string }{
+		{"users", ""}, {"users", "system:masters"}, {"users", "orkano:viewers"},
+		{"groups", ""}, {"groups", "system:masters"}, {"groups", "orkano:viewer"},
+	} {
+		if sarAllowed(t, ctx, dashboardIdentity, "", "", bad.resource, bad.name, "impersonate") {
+			t.Errorf("dashboard may impersonate %s/%q, but only the pinned viewer identity is allowed", bad.resource, bad.name)
+		}
+	}
+
+	// The shipped orkano:viewers -> orkano-viewer binding makes the impersonated
+	// reads work out of the box: wait for the group binding to authorize a read...
+	eventually(t, "the orkano:viewers group binding to authorize a read", func(ctx context.Context) (bool, error) {
+		return sarAllowedAs(t, ctx, "orkano:viewer", []string{"orkano:viewers"}, appsNamespace, "orkano.io", "apps", "get"), nil
+	})
+	// ...but the group is read-only, so it cannot mutate.
+	if sarAllowedAs(t, ctx, "orkano:viewer", []string{"orkano:viewers"}, appsNamespace, "orkano.io", "apps", "delete") {
+		t.Error("a member of orkano:viewers may delete apps, but orkano-viewer is read-only")
 	}
 
 	// The denied walk: every combination of the identities, the doc's

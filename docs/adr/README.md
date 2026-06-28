@@ -21,3 +21,4 @@ Rules:
 | [0012](0012-build-namespace-psa-baseline.md) | Build namespace runs at PSA baseline with AppArmor confinement | Accepted |
 | [0013](0013-dashboard-value-blind-secrets-no-impersonation.md) | Make dashboard secret writes value-blind and defer impersonation to Phase 2 | Accepted |
 | [0014](0014-postgres-catalog-kind.md) | Model the service catalog as an engine-specific Postgres kind | Accepted |
+| [0015](0015-dashboard-impersonation-fixed-viewer-identity.md) | Dashboard read views impersonate a fixed, fully pinned viewer identity | Accepted |

@@ -8,13 +8,14 @@ Namespaces (ADR-0005): user apps live in `orkano-apps`, builds run in `orkano-bu
 
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
-| apps, domains (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| apps, domains, postgreses (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | builds (orkano.io) | get, list, watch, create, delete | `orkano-apps` — create is the manual-redeploy button; delete is cancel/cleanup |
 | secrets (core) | **create, update — no get, list, watch, patch, or delete** | `orkano-apps` |
+| users[orkano:viewer], groups[orkano:viewers] (core) | impersonate | cluster-scoped — read views run as a fixed, fully resourceNames-pinned viewer identity (ADR-0015); no other user or group can be named |
 
 The value-blind secrets row is the most load-bearing line in this document. The env editor must be able to store a secret value the admin types in, but nothing about editing requires reading values back — existing keys can be listed from the App's `secretRef`s, and a changed value is a blind whole-object replace. `create` and `update` are exactly the mutation verbs whose response bodies provably return nothing beyond the caller's own payload; `patch` is excluded because a PATCH response returns the stored object, values included, even for a patch that touches only a label, and `delete` is excluded because the dashboard has no business destroying secrets it didn't create (ADR-0013; the response-body behavior is pinned against the live apiserver by `TestSecretVerbValueBlindness`). With this set, a fully compromised dashboard can corrupt app secrets (visible, recoverable) but cannot exfiltrate them (silent, unrecoverable). This is what makes INV-01's "cannot dump cluster secrets" hold even for app-level secrets in the dashboard's own namespace.
 
-The dashboard holds no impersonation grant in Phase 1 (ADR-0013): an unrestricted `impersonate` verb can name `system:masters` — cluster-admin — and only `resourceNames` can restrict its targets. Phase 2 reintroduces impersonation together with its consumer, pinned to a dedicated viewer group, and teaches the matrix test to express `resourceNames` in the same commit.
+The dashboard's read views run under an impersonated viewer identity (ADR-0013/ADR-0015), so the cluster's RBAC and audit trail attribute a read to a view-only identity rather than the dashboard ServiceAccount. An unrestricted `impersonate` verb can name `system:masters` — cluster-admin — and only `resourceNames` can restrict its targets, so the grant is pinned to exactly one fixed user (`orkano:viewer`) and one fixed group (`orkano:viewers`): the dashboard can name no other identity, and the impersonated group is bound to the read-only `orkano-viewer` Role. The individual human is attributed in Orkano's own append-only audit_log (INV-08). Because `impersonate` on `users`/`groups` is cluster-scoped, this grant is a ClusterRole (`orkano-dashboard-impersonate`), not part of the namespaced dashboard Role; `rbac_matrix_test` proves the pin binds by asserting the dashboard cannot impersonate any other name (e.g. `system:masters`).
 
 ## Operator ServiceAccount
 
@@ -44,12 +45,12 @@ No Kubernetes permissions at all: `automountServiceAccountToken: false`, no Role
 
 No Kubernetes permissions and no token mounted (`automountServiceAccountToken: false`), `baseline` Pod Security level on `orkano-builds` with the dedicated AppArmor profile (ADR-0012), egress allowlisted to source + registry only (INV-02). Registry push credentials are per-build, injected as a Secret-backed env/file, never a SA token.
 
-## Human roles (bindable to OIDC identities; consumed via the dashboard's Phase 2 impersonation)
+## Human roles (bindable to OIDC identities; consumed via the dashboard's impersonation, ADR-0015)
 
 | Role | Resources | Verbs | Scope |
 |---|---|---|---|
-| orkano-admin | apps, builds, domains (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| orkano-admin | apps, builds, domains, postgreses (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
-| orkano-viewer | apps, builds, domains (orkano.io); pods, pods/log (core) | get, list, watch | `orkano-apps` |
+| orkano-viewer | apps, builds, domains, postgreses (orkano.io); pods, pods/log (core) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group |
 
 Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.

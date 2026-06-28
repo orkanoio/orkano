@@ -4,9 +4,11 @@
 # nothing beyond the caller's own payload (probed by
 # TestSecretVerbValueBlindness), so a compromised dashboard can corrupt app
 # secrets (visible, recoverable) but never exfiltrate them. patch is never
-# granted: a PATCH response returns the stored object, values included
-# (ADR-0013). No impersonation grant until Phase 2 ships its consumer pinned
-# via resourceNames — unrestricted impersonate can name system:masters.
+# granted ON SECRETS: a PATCH response returns the stored object, values
+# included (ADR-0013). The dashboard's read views run under an impersonated, fully
+# resourceNames-pinned viewer identity — that grant is a cluster-scoped
+# ClusterRole and lives in dashboard-impersonate.yaml (ADR-0015), since
+# impersonate on users/groups cannot be granted by a namespaced Role.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -14,7 +16,7 @@ metadata:
   namespace: orkano-apps
 rules:
   - apiGroups: ["orkano.io"]
-    resources: ["apps", "domains"]
+    resources: ["apps", "domains", "postgreses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["orkano.io"]
     resources: ["builds"]

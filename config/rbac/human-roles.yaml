@@ -1,8 +1,10 @@
 # Human roles, bindable to OIDC identities and consumed via the dashboard's
-# Phase 2 impersonation (ADR-0013; bindings are created at install/Phase 2,
-# not shipped here). Humans get no secrets verbs at all in v1 — secret writes
-# flow through the dashboard SA's value-blind path, and values are never
-# displayed.
+# impersonation (ADR-0013/ADR-0015). orkano-viewer is the dashboard's fixed
+# impersonation target — bound to the orkano:viewers group in
+# dashboard-impersonate.yaml — so it backs every read view; orkano-admin ships
+# unbound for direct OIDC binding. Humans get no secrets verbs at all in v1 —
+# secret writes flow through the dashboard SA's value-blind path, and values are
+# never displayed.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -10,7 +12,7 @@ metadata:
   namespace: orkano-apps
 rules:
   - apiGroups: ["orkano.io"]
-    resources: ["apps", "builds", "domains"]
+    resources: ["apps", "builds", "domains", "postgreses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
@@ -23,7 +25,7 @@ metadata:
   namespace: orkano-apps
 rules:
   - apiGroups: ["orkano.io"]
-    resources: ["apps", "builds", "domains"]
+    resources: ["apps", "builds", "domains", "postgreses"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
