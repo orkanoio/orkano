@@ -615,7 +615,10 @@ func TestDashboardSchemaHasNoSecretValueColumns(t *testing.T) {
 		table string
 		cols  []string
 	}{
-		{"users", []string{"id", "username", "password_hash", "totp_secret", "totp_confirmed_at", "created_at", "updated_at", "failed_logins", "locked_until"}},
+		// oidc_issuer/oidc_subject (00006) are a NON-secret pointer to an IdP
+		// identity (ADR-0016), not a credential — they belong here, the value never
+		// does.
+		{"users", []string{"id", "username", "password_hash", "totp_secret", "totp_confirmed_at", "created_at", "updated_at", "failed_logins", "locked_until", "oidc_issuer", "oidc_subject"}},
 		{"sessions", []string{"token_hash", "user_id", "created_at", "expires_at", "last_used_at", "reauth_at"}},
 		{"audit_log", []string{"id", "occurred_at", "actor", "action", "target", "outcome", "detail"}},
 		{"deploy_history", []string{"id", "occurred_at", "app_namespace", "app_name", "build_name", "image", "status"}},
@@ -639,5 +642,153 @@ func TestDashboardSchemaHasNoSecretValueColumns(t *testing.T) {
 		if !slices.Equal(got, tc.cols) {
 			t.Errorf("%s columns drifted: got %v, want %v", tc.table, got, tc.cols)
 		}
+	}
+}
+
+// TestDashboardOIDCUserRoundTrip exercises the M2.5 OIDC queries (migration
+// 00006): just-in-time provisioning of a credential-less OIDC identity, the
+// lookup-or-create keyed on (issuer, subject), and the constraints that make the
+// identity model from ADR-0016 hold — the pair is unique, set together, and an
+// OIDC row never interferes with the single-confirmed-admin invariant.
+func TestDashboardOIDCUserRoundTrip(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	q := db.New(pool)
+
+	const issuer = "https://idp.example/realms/orkano"
+
+	// A miss before provisioning is ErrNoRows (the handler's "provision one" signal).
+	if _, err := q.GetUserByOIDC(ctx, db.GetUserByOIDCParams{Issuer: pgText(issuer), Subject: pgText("abc-123")}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetUserByOIDC miss: want ErrNoRows, got %v", err)
+	}
+
+	created, err := q.CreateOIDCUser(ctx, db.CreateOIDCUserParams{
+		Username: "alice@example.com", Issuer: pgText(issuer), Subject: pgText("abc-123"),
+	})
+	if err != nil {
+		t.Fatalf("CreateOIDCUser: %v", err)
+	}
+	if !created.OidcSubject.Valid || created.OidcSubject.String != "abc-123" || created.OidcIssuer.String != issuer {
+		t.Fatalf("CreateOIDCUser returned wrong identity: %+v", created)
+	}
+
+	// The lookup finds the same row; it is a credential-less session anchor:
+	// empty hash + seed, NULL totp_confirmed_at, the subject signal present.
+	got, err := q.GetUserByOIDC(ctx, db.GetUserByOIDCParams{Issuer: pgText(issuer), Subject: pgText("abc-123")})
+	if err != nil {
+		t.Fatalf("GetUserByOIDC hit: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("GetUserByOIDC returned id %d, want %d", got.ID, created.ID)
+	}
+	if got.PasswordHash != "" || got.TotpSecret != "" || got.TotpConfirmedAt.Valid {
+		t.Fatalf("OIDC user must carry no credential: %+v", got)
+	}
+	if !got.OidcSubject.Valid {
+		t.Fatalf("OIDC user must expose the subject signal: %+v", got)
+	}
+	// GetUserByID (the resolveSession path) also surfaces the subject.
+	byID, err := q.GetUserByID(ctx, created.ID)
+	if err != nil || byID.OidcSubject.String != "abc-123" {
+		t.Fatalf("GetUserByID subject: %+v, err %v", byID, err)
+	}
+	// GetUserByUsername (the password-login path) finds the row by its IdP email
+	// and surfaces the subject, so handleLogin can deflect it as an unknown user.
+	byName, err := q.GetUserByUsername(ctx, "alice@example.com")
+	if err != nil || !byName.OidcSubject.Valid || byName.OidcSubject.String != "abc-123" {
+		t.Fatalf("GetUserByUsername OIDC: %+v, err %v", byName, err)
+	}
+
+	// Re-provisioning the SAME identity trips the (issuer, subject) unique index —
+	// the DB guard behind the handler's idempotent lookup-or-create.
+	_, err = q.CreateOIDCUser(ctx, db.CreateOIDCUserParams{
+		Username: "alice-again@example.com", Issuer: pgText(issuer), Subject: pgText("abc-123"),
+	})
+	assertPgCode(t, "duplicate (issuer,subject)", err, "23505")
+
+	// Distinct identities coexist: a different subject, and the same subject under
+	// a different issuer, are both their own identity.
+	if _, err := q.CreateOIDCUser(ctx, db.CreateOIDCUserParams{
+		Username: "bob@example.com", Issuer: pgText(issuer), Subject: pgText("def-456"),
+	}); err != nil {
+		t.Fatalf("second distinct OIDC user: %v", err)
+	}
+	if _, err := q.CreateOIDCUser(ctx, db.CreateOIDCUserParams{
+		Username: "alice@other", Issuer: pgText("https://other.example"), Subject: pgText("abc-123"),
+	}); err != nil {
+		t.Fatalf("same subject under a different issuer: %v", err)
+	}
+
+	// A confirmed local admin coexists with the OIDC rows, and the
+	// single-confirmed-admin index still forbids a SECOND confirmed admin — proof
+	// the OIDC rows (totp_confirmed_at NULL) never touch that invariant.
+	if _, err := q.CreateUser(ctx, db.CreateUserParams{
+		Username: "admin", PasswordHash: "h", TotpSecret: "s", TotpConfirmedAt: tsAt(time.Now().UTC()),
+	}); err != nil {
+		t.Fatalf("create local admin alongside OIDC users: %v", err)
+	}
+	// The local admin carries no OIDC pointer — the negative of the subject signal.
+	if admin, err := q.GetUserByUsername(ctx, "admin"); err != nil || admin.OidcSubject.Valid {
+		t.Fatalf("local admin must have no oidc_subject: %+v, err %v", admin, err)
+	}
+	_, err = q.CreateUser(ctx, db.CreateUserParams{
+		Username: "admin2", PasswordHash: "h", TotpSecret: "s", TotpConfirmedAt: tsAt(time.Now().UTC()),
+	})
+	assertPgCode(t, "second confirmed admin", err, "23505")
+
+	// DeleteUnconfirmedUsers (the redeem cleanup) must clear an abandoned local
+	// enrollment but PRESERVE OIDC rows — they are permanent anchors, also NULL
+	// totp_confirmed_at (ADR-0016 §5, the bug the oidc_subject IS NULL guard fixes).
+	if _, err := q.CreateUser(ctx, db.CreateUserParams{Username: "abandoned", PasswordHash: "h", TotpSecret: "s"}); err != nil {
+		t.Fatalf("create abandoned enrollment: %v", err)
+	}
+	if err := q.DeleteUnconfirmedUsers(ctx); err != nil {
+		t.Fatalf("DeleteUnconfirmedUsers: %v", err)
+	}
+	if _, err := q.GetUserByUsername(ctx, "abandoned"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("abandoned enrollment should be swept, got %v", err)
+	}
+	if _, err := q.GetUserByOIDC(ctx, db.GetUserByOIDCParams{Issuer: pgText(issuer), Subject: pgText("abc-123")}); err != nil {
+		t.Fatalf("OIDC user must survive DeleteUnconfirmedUsers: %v", err)
+	}
+
+	// The pair-together CHECK: a subject without an issuer is not an identity.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO users (username, password_hash, totp_secret, oidc_subject) VALUES ('orphan', '', '', 'no-issuer')`)
+	assertPgCode(t, "subject without issuer", err, "23514")
+
+	// The least-privilege orkano_dashboard role can provision + look up OIDC users
+	// (it already holds users CRUD; the new queries authorize under it).
+	if _, err := pool.Exec(ctx, "ALTER ROLE orkano_dashboard WITH PASSWORD 'dash-pw'"); err != nil {
+		t.Fatalf("set dashboard password: %v", err)
+	}
+	dq := db.New(connectAs(t, dsn, "orkano_dashboard", "dash-pw"))
+	if _, err := dq.CreateOIDCUser(ctx, db.CreateOIDCUserParams{
+		Username: "carol@example.com", Issuer: pgText(issuer), Subject: pgText("ghi-789"),
+	}); err != nil {
+		t.Fatalf("CreateOIDCUser under dashboard role: %v", err)
+	}
+	if _, err := dq.GetUserByOIDC(ctx, db.GetUserByOIDCParams{Issuer: pgText(issuer), Subject: pgText("ghi-789")}); err != nil {
+		t.Fatalf("GetUserByOIDC under dashboard role: %v", err)
+	}
+}
+
+// pgText wraps a non-NULL text value for a pgtype.Text query parameter.
+func pgText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
+
+// assertPgCode fails unless err is a Postgres error carrying the given SQLSTATE.
+func assertPgCode(t *testing.T, op string, err error, code string) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Fatalf("%s: want SQLSTATE %s, got %v", op, code, err)
 	}
 }

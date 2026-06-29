@@ -55,6 +55,8 @@ type User struct {
 	UpdatedAt       pgtype.Timestamptz
 	FailedLogins    int32
 	LockedUntil     pgtype.Timestamptz
+	OidcIssuer      pgtype.Text
+	OidcSubject     pgtype.Text
 }
 
 type WebhookDelivery struct {
