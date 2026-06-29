@@ -91,6 +91,13 @@ func TestRenderComponentsDashboard(t *testing.T) {
 			t.Errorf("dashboard manifest missing %q", want)
 		}
 	}
+	// OIDC config (ADR-0016) is injected from an OPTIONAL Secret, so a fresh
+	// install runs with OIDC disabled until the wizard creates orkano-oidc.
+	for _, want := range []string{"name: orkano-oidc", "optional: true"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("dashboard manifest missing OIDC envFrom %q", want)
+		}
+	}
 	// INV-05: ClusterIP only, never an Ingress; never a public Service type.
 	if strings.Contains(d, "kind: Ingress") {
 		t.Error("dashboard must not render an Ingress (INV-05, ClusterIP only)")

@@ -60,6 +60,20 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
+          # OIDC sign-in config (ADR-0016), OPTIONAL. The Secret's keys ARE the env
+          # var names: ORKANO_OIDC_ISSUER, _CLIENT_ID, _CLIENT_SECRET,
+          # _REDIRECT_URL, _ALLOWED_EMAILS, _ALLOWED_GROUPS, and the optional
+          # _SCOPES, _GROUPS_CLAIM. optional:true means the dashboard starts with
+          # OIDC disabled until the onboarding wizard (M2.6) creates this Secret
+          # and rolls the pod — no init flags, fail-closed by absence. The client
+          # secret stays in this K8s Secret, never in Postgres. The Secret lives in
+          # orkano-system (this pod's namespace) and is admin/wizard-controlled —
+          # the dashboard SA can write Secrets only in orkano-apps, so it cannot
+          # inject env into its own pod. Explicit env above wins any name clash.
+          envFrom:
+            - secretRef:
+                name: orkano-oidc
+                optional: true
           ports:
             - name: http
               containerPort: 8080
