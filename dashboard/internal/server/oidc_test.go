@@ -325,6 +325,150 @@ func assertSSOError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 	}
 }
 
+func TestOIDCStepUp(t *testing.T) {
+	const issuer, subject = "https://idp.example", "sub-1"
+	identity := &oidc.Identity{Subject: subject, Issuer: issuer, Email: "alice@example.com", EmailVerified: true}
+
+	// stepUpLogin runs GET /oidc/login?stepup=1 with the given session cookie.
+	stepUpLogin := func(t *testing.T, s *Server, sessCk *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		var cookies []*http.Cookie
+		if sessCk != nil {
+			cookies = append(cookies, sessCk)
+		}
+		return getWithCookies(t, s, "/api/auth/oidc/login?stepup=1", cookies...)
+	}
+
+	t.Run("requires a session", func(t *testing.T) {
+		fake := &fakeOIDC{allow: true, identity: identity}
+		s := oidcServer(t, newFakeStore(), fake)
+		assertSSOError(t, stepUpLogin(t, s, nil), ssoNoSession)
+	})
+
+	t.Run("refuses a local-admin session", func(t *testing.T) {
+		store := newFakeStore()
+		store.users[3] = &db.User{ID: 3, Username: "admin", PasswordHash: "h", TotpSecret: "s",
+			TotpConfirmedAt: pgtype.Timestamptz{Time: fixedNow(), Valid: true}}
+		raw := mustSession(t, store, 3)
+		fake := &fakeOIDC{allow: true, identity: identity}
+		s := oidcServer(t, store, fake)
+		assertSSOError(t, stepUpLogin(t, s, &http.Cookie{Name: sessionCookie, Value: raw}), ssoNotOIDC)
+	})
+
+	t.Run("happy path marks reauth", func(t *testing.T) {
+		store := newFakeStore()
+		seedOIDCUser(store, 5, "alice@example.com", issuer, subject)
+		raw := mustSession(t, store, 5)
+		fake := &fakeOIDC{allow: true, identity: identity}
+		s := oidcServer(t, store, fake)
+
+		login := stepUpLogin(t, s, &http.Cookie{Name: sessionCookie, Value: raw})
+		if login.Code != http.StatusFound {
+			t.Fatalf("stepup login status = %d", login.Code)
+		}
+		if !fake.lastReauth {
+			t.Fatal("stepup must request prompt=login (reauth)")
+		}
+		flowCk := cookieNamed(login, oidcCookie)
+		if flowCk == nil {
+			t.Fatal("stepup login set no flow cookie")
+		}
+		// The callback carries ONLY the flow cookie — the Strict session cookie is
+		// not sent on the cross-site IdP redirect, which is the whole reason the
+		// flow cookie carries the session hash.
+		cb := getWithCookies(t, s, "/api/auth/oidc/callback?code=c&state="+url.QueryEscape(fake.lastState), flowCk)
+		if cb.Code != http.StatusFound || cb.Result().Header.Get("Location") != "/" {
+			t.Fatalf("stepup callback: status %d loc %q", cb.Code, cb.Result().Header.Get("Location"))
+		}
+		// reauth_at is now stamped on the initiating session.
+		store.mu.Lock()
+		sess := store.sessions[auth.HashToken(raw)]
+		store.mu.Unlock()
+		if sess == nil || !sess.ReauthAt.Valid {
+			t.Fatalf("step-up did not mark reauth_at: %+v", sess)
+		}
+		// And a new login session was NOT minted (step-up reuses the session).
+		if cookieNamed(cb, sessionCookie) != nil {
+			t.Fatal("step-up must not mint a new session cookie")
+		}
+	})
+
+	t.Run("session revoked mid-flow", func(t *testing.T) {
+		store := newFakeStore()
+		seedOIDCUser(store, 6, "alice@example.com", issuer, subject)
+		raw := mustSession(t, store, 6)
+		fake := &fakeOIDC{allow: true, identity: identity}
+		s := oidcServer(t, store, fake)
+
+		login := stepUpLogin(t, s, &http.Cookie{Name: sessionCookie, Value: raw})
+		flowCk := cookieNamed(login, oidcCookie)
+		// Revoke the session while the user is away at the IdP.
+		store.mu.Lock()
+		delete(store.sessions, auth.HashToken(raw))
+		store.mu.Unlock()
+
+		cb := getWithCookies(t, s, "/api/auth/oidc/callback?code=c&state="+url.QueryEscape(fake.lastState), flowCk)
+		assertSSOError(t, cb, ssoNoSession)
+	})
+
+	t.Run("step-up unblocks a RequireStepUp route end to end", func(t *testing.T) {
+		store := newFakeStore()
+		seedOIDCUser(store, 12, "alice@example.com", issuer, subject)
+		raw := mustSession(t, store, 12)
+		sessCk := &http.Cookie{Name: sessionCookie, Value: raw}
+		fake := &fakeOIDC{allow: true, identity: identity}
+		s := oidcServer(t, store, fake)
+
+		// A bare RequireStepUp-guarded probe: 403 before step-up.
+		probe := s.RequireStepUp(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		before := httptest.NewRecorder()
+		preq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil)
+		preq.AddCookie(sessCk)
+		probe.ServeHTTP(before, preq)
+		if before.Code != http.StatusForbidden {
+			t.Fatalf("pre-step-up: status %d, want 403", before.Code)
+		}
+
+		// Run the OIDC step-up.
+		login := stepUpLogin(t, s, sessCk)
+		flowCk := cookieNamed(login, oidcCookie)
+		getWithCookies(t, s, "/api/auth/oidc/callback?code=c&state="+url.QueryEscape(fake.lastState), flowCk)
+
+		// Now RequireStepUp admits the same session.
+		after := httptest.NewRecorder()
+		areq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil)
+		areq.AddCookie(sessCk)
+		probe.ServeHTTP(after, areq)
+		if after.Code != http.StatusNoContent {
+			t.Fatalf("post-step-up: status %d, want 204 (RequireStepUp should admit)", after.Code)
+		}
+	})
+
+	t.Run("rejects a different subject", func(t *testing.T) {
+		store := newFakeStore()
+		seedOIDCUser(store, 8, "alice@example.com", issuer, subject)
+		raw := mustSession(t, store, 8)
+		// The IdP returns a DIFFERENT (but allowlisted) identity than the session's.
+		evil := &oidc.Identity{Subject: "sub-evil", Issuer: issuer, Email: "alice@example.com", EmailVerified: true}
+		fake := &fakeOIDC{allow: true, identity: evil}
+		s := oidcServer(t, store, fake)
+
+		login := stepUpLogin(t, s, &http.Cookie{Name: sessionCookie, Value: raw})
+		flowCk := cookieNamed(login, oidcCookie)
+		cb := getWithCookies(t, s, "/api/auth/oidc/callback?code=c&state="+url.QueryEscape(fake.lastState), flowCk)
+		assertSSOError(t, cb, ssoNotAllowed)
+
+		store.mu.Lock()
+		sess := store.sessions[auth.HashToken(raw)]
+		store.mu.Unlock()
+		if sess != nil && sess.ReauthAt.Valid {
+			t.Fatal("a subject mismatch must NOT mark reauth_at")
+		}
+	})
+}
+
 func TestOIDCUserCannotPasswordLogin(t *testing.T) {
 	store := newFakeStore()
 	seedOIDCUser(store, 9, "alice@example.com", "https://idp.example", "sub-1")

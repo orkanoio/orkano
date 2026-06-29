@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/dashboard/internal/oidc"
 	"github.com/orkanoio/orkano/internal/db"
 )
@@ -53,15 +54,24 @@ const (
 	ssoNotAllowed    = "not_allowed"
 	ssoInternal      = "internal_error"
 	ssoIdP           = "idp_error"
+	ssoNoSession     = "no_session"
+	ssoNotOIDC       = "not_oidc"
 )
 
 // oidcFlow is the JSON sealed into the flow cookie. It carries no secret beyond
-// the per-flow random values; an absolute expiry is checked server-side.
+// the per-flow random values; an absolute expiry is checked server-side. For a
+// step-up re-auth it ALSO carries the initiating session's hash + user id: the
+// SameSite=Strict session cookie is NOT sent on the cross-site IdP→callback
+// navigation, so the callback cannot read the live session and must learn it from
+// here (sealed, Lax) instead.
 type oidcFlow struct {
-	State    string `json:"state"`
-	Nonce    string `json:"nonce"`
-	Verifier string `json:"verifier"`
-	Expires  int64  `json:"exp"`
+	State       string `json:"state"`
+	Nonce       string `json:"nonce"`
+	Verifier    string `json:"verifier"`
+	Reauth      bool   `json:"reauth,omitempty"`
+	UID         int64  `json:"uid,omitempty"`
+	SessionHash string `json:"sess,omitempty"`
+	Expires     int64  `json:"exp"`
 }
 
 // handleOIDCLogin starts the authorization-code flow: mint per-flow secrets, seal
@@ -72,16 +82,46 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		s.redirectSSOError(w, r, ssoDisabled)
 		return
 	}
+
+	// ?stepup=1 re-authenticates an EXISTING OIDC session for a destructive action
+	// (the password+TOTP step-up endpoint refuses an OIDC session). It needs a live
+	// OIDC session, whose hash+id it carries in the flow cookie so the callback can
+	// find it without the Strict session cookie (not sent cross-site).
+	reauth := r.URL.Query().Get("stepup") == "1"
+	flow := oidcFlow{Reauth: reauth}
+	if reauth {
+		user, _, ok := s.resolveSession(r)
+		if !ok {
+			s.redirectSSOError(w, r, ssoNoSession)
+			return
+		}
+		if !user.OIDC {
+			// A local admin steps up with password+TOTP, not an OIDC round-trip.
+			s.redirectSSOError(w, r, ssoNotOIDC)
+			return
+		}
+		c, err := r.Cookie(sessionCookie)
+		if err != nil || c.Value == "" {
+			s.redirectSSOError(w, r, ssoNoSession)
+			return
+		}
+		flow.UID = user.ID
+		flow.SessionHash = auth.HashToken(c.Value)
+	}
+
 	state, nonce, verifier, err := oidc.NewFlowSecrets()
 	if err != nil {
 		s.log.Error("oidc flow secrets failed", "err", err)
 		s.redirectSSOError(w, r, ssoInternal)
 		return
 	}
-	if !s.setOIDCCookie(w, r, oidcFlow{State: state, Nonce: nonce, Verifier: verifier}) {
+	flow.State, flow.Nonce, flow.Verifier = state, nonce, verifier
+	if !s.setOIDCCookie(w, r, flow) {
 		return
 	}
-	http.Redirect(w, r, s.cfg.OIDC.AuthCodeURL(state, nonce, verifier, false), http.StatusFound)
+	target := s.cfg.OIDC.AuthCodeURL(state, nonce, verifier, reauth)
+	//nolint:gosec // G710: the URL is the admin-configured IdP authorization endpoint plus server-generated state/nonce/PKCE; `reauth` only toggles prompt=login — no request-controlled redirect target
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // handleOIDCCallback completes the flow: validate state, exchange + verify the
@@ -100,15 +140,23 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// Exchange of a spent code fails (ssoExchange).
 	s.clearOIDCCookie(w, r)
 
+	// Attribute a failed callback to the flow the user actually started, so a
+	// step-up denial isn't logged as a login (INV-08). Unknown when the cookie is
+	// absent — default to login.
+	action := "auth.oidc_login"
+	if ok && flow.Reauth {
+		action = "auth.oidc_stepup"
+	}
+
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
 		// The IdP itself reported a failure (access_denied, etc.). Don't reflect it.
-		s.audit(ctx, "anonymous", "auth.oidc_login", "", "failure", r)
+		s.audit(ctx, "anonymous", action, "", "failure", r)
 		s.redirectSSOError(w, r, ssoIdP)
 		return
 	}
 	if !ok {
-		s.audit(ctx, "anonymous", "auth.oidc_login", "", "failure", r)
+		s.audit(ctx, "anonymous", action, "", "failure", r)
 		s.redirectSSOError(w, r, ssoNoFlow)
 		return
 	}
@@ -116,13 +164,13 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// guard so two empties can't match (subtle.ConstantTimeCompare("","")==1).
 	state := q.Get("state")
 	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(flow.State)) != 1 {
-		s.audit(ctx, "anonymous", "auth.oidc_login", "", "failure", r)
+		s.audit(ctx, "anonymous", action, "", "failure", r)
 		s.redirectSSOError(w, r, ssoStateMismatch)
 		return
 	}
 	code := q.Get("code")
 	if code == "" {
-		s.audit(ctx, "anonymous", "auth.oidc_login", "", "failure", r)
+		s.audit(ctx, "anonymous", action, "", "failure", r)
 		s.redirectSSOError(w, r, ssoExchange)
 		return
 	}
@@ -130,15 +178,20 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	id, err := s.cfg.OIDC.Exchange(ctx, code, flow.Nonce, flow.Verifier)
 	if err != nil {
 		s.log.Warn("oidc exchange failed", "err", err)
-		s.audit(ctx, "anonymous", "auth.oidc_login", "", "failure", r)
+		s.audit(ctx, "anonymous", action, "", "failure", r)
 		s.redirectSSOError(w, r, ssoExchange)
 		return
 	}
 	if !s.cfg.OIDC.Authorize(id) {
 		// Verified but not on the allowlist: audit by the claimed identity so a
-		// denied sign-in is attributable (INV-08), then refuse.
-		s.audit(ctx, oidcActor(id), "auth.oidc_login", oidcActor(id), "denied", r)
+		// denied sign-in/step-up is attributable (INV-08), then refuse.
+		s.audit(ctx, oidcActor(id), action, oidcActor(id), "denied", r)
 		s.redirectSSOError(w, r, ssoNotAllowed)
+		return
+	}
+
+	if flow.Reauth {
+		s.completeOIDCStepUp(w, r, flow, id)
 		return
 	}
 
@@ -158,6 +211,61 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setSessionCookie(w, r, raw)
 	s.audit(ctx, username, "auth.oidc_login", username, "success", r)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// completeOIDCStepUp marks the initiating session's reauth_at after a fresh IdP
+// re-authentication — the OIDC analog of the password+TOTP step-up. It binds the
+// re-verified identity to the SAME session and user that started the flow: the
+// session (by hash from the sealed cookie) must still be live, belong to the flow
+// UID, and resolve to a user whose stored subject equals the just-verified one.
+func (s *Server) completeOIDCStepUp(w http.ResponseWriter, r *http.Request, flow oidcFlow, id *oidc.Identity) {
+	ctx := r.Context()
+	if flow.SessionHash == "" {
+		s.audit(ctx, oidcActor(id), "auth.oidc_stepup", oidcActor(id), "failure", r)
+		s.redirectSSOError(w, r, ssoNoSession)
+		return
+	}
+	sess, err := s.cfg.Store.GetSession(ctx, flow.SessionHash)
+	if err != nil {
+		// Expired or revoked mid-flow — nothing to step up. A revoked session
+		// arriving here is worth recording (INV-08).
+		s.audit(ctx, oidcActor(id), "auth.oidc_stepup", oidcActor(id), "failure", r)
+		s.redirectSSOError(w, r, ssoNoSession)
+		return
+	}
+	if sess.UserID != flow.UID {
+		// An internal binding invariant violation (the sealed cookie is
+		// server-generated, so this is unreachable normally).
+		s.audit(ctx, oidcActor(id), "auth.oidc_stepup", oidcActor(id), "failure", r)
+		s.redirectSSOError(w, r, ssoInternal)
+		return
+	}
+	user, err := s.cfg.Store.GetUserByID(ctx, sess.UserID)
+	if err != nil {
+		s.log.Error("oidc stepup user lookup failed", "err", err)
+		s.redirectSSOError(w, r, ssoInternal)
+		return
+	}
+	// The re-verified subject must be the SAME identity the session belongs to, or
+	// a different IdP account (even an allowlisted one) could step up someone
+	// else's session. Constant-time + empty guard.
+	if !user.OidcSubject.Valid || id.Subject == "" ||
+		subtle.ConstantTimeCompare([]byte(user.OidcSubject.String), []byte(id.Subject)) != 1 {
+		s.audit(ctx, user.Username, "auth.oidc_stepup", user.Username, "failure", r)
+		s.redirectSSOError(w, r, ssoNotAllowed)
+		return
+	}
+	// If the session were revoked in the window between GetSession and here, this
+	// UPDATE is a benign no-op (0 rows): the next resolveSession fails anyway, so a
+	// stale "success" audit is the only effect — not an escalation.
+	if err := s.cfg.Store.MarkSessionReauth(ctx, flow.SessionHash); err != nil {
+		s.log.Error("mark session reauth failed", "err", err)
+		s.audit(ctx, user.Username, "auth.oidc_stepup", user.Username, "failure", r)
+		s.redirectSSOError(w, r, ssoInternal)
+		return
+	}
+	s.audit(ctx, user.Username, "auth.oidc_stepup", user.Username, "success", r)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
