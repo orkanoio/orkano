@@ -56,6 +56,11 @@ type Config struct {
 	// Cipher encrypts the TOTP seed at rest and seals the short-lived challenge
 	// cookies the auth flow uses mid-handshake.
 	Cipher *auth.Cipher
+	// OIDC, when non-nil, enables SSO sign-in (ADR-0016). It is OPTIONAL: a nil
+	// value (no issuer configured, or a misconfiguration main logged and skipped)
+	// leaves OIDC disabled while the local admin keeps working — break-glass. main
+	// must only set it to a usable authenticator, never a typed-nil pointer.
+	OIDC OIDCAuthenticator
 	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
 	// presented token's hash against it in constant time.
 	BootstrapTokenHash string

@@ -75,6 +75,8 @@ func (f *fakeStore) GetUserByUsername(_ context.Context, username string) (db.Ge
 				TotpConfirmedAt: u.TotpConfirmedAt,
 				FailedLogins:    u.FailedLogins,
 				LockedUntil:     u.LockedUntil,
+				OidcIssuer:      u.OidcIssuer,
+				OidcSubject:     u.OidcSubject,
 			}, nil
 		}
 	}
@@ -96,7 +98,49 @@ func (f *fakeStore) GetUserByID(_ context.Context, id int64) (db.GetUserByIDRow,
 		TotpConfirmedAt: u.TotpConfirmedAt,
 		FailedLogins:    u.FailedLogins,
 		LockedUntil:     u.LockedUntil,
+		OidcIssuer:      u.OidcIssuer,
+		OidcSubject:     u.OidcSubject,
 	}, nil
+}
+
+func (f *fakeStore) GetUserByOIDC(_ context.Context, arg db.GetUserByOIDCParams) (db.GetUserByOIDCRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.users {
+		if u.OidcSubject.Valid && u.OidcIssuer.String == arg.Issuer.String && u.OidcSubject.String == arg.Subject.String {
+			return db.GetUserByOIDCRow{
+				ID: u.ID, Username: u.Username,
+				PasswordHash: u.PasswordHash, TotpSecret: u.TotpSecret,
+				TotpConfirmedAt: u.TotpConfirmedAt,
+				OidcIssuer:      u.OidcIssuer, OidcSubject: u.OidcSubject,
+			}, nil
+		}
+	}
+	return db.GetUserByOIDCRow{}, pgx.ErrNoRows
+}
+
+func (f *fakeStore) CreateOIDCUser(_ context.Context, arg db.CreateOIDCUserParams) (db.CreateOIDCUserRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCreate {
+		return db.CreateOIDCUserRow{}, errors.New("forced create failure")
+	}
+	// Enforce the lower(username) unique index so a collision test is meaningful.
+	for _, u := range f.users {
+		if strings.EqualFold(u.Username, arg.Username) {
+			return db.CreateOIDCUserRow{}, &pgconn.PgError{Code: "23505"}
+		}
+		if u.OidcSubject.Valid && u.OidcIssuer.String == arg.Issuer.String && u.OidcSubject.String == arg.Subject.String {
+			return db.CreateOIDCUserRow{}, &pgconn.PgError{Code: "23505"}
+		}
+	}
+	f.nextUserID++
+	u := &db.User{
+		ID: f.nextUserID, Username: arg.Username,
+		OidcIssuer: arg.Issuer, OidcSubject: arg.Subject,
+	}
+	f.users[u.ID] = u
+	return db.CreateOIDCUserRow{ID: u.ID, Username: u.Username, OidcIssuer: u.OidcIssuer, OidcSubject: u.OidcSubject}, nil
 }
 
 func (f *fakeStore) ConfirmUserTOTP(_ context.Context, id int64) error {
@@ -230,9 +274,11 @@ func (f *fakeStore) CreateAdmin(_ context.Context, arg CreateAdminParams) (db.Cr
 	if f.failCreate {
 		return db.CreateUserRow{}, errors.New("forced create failure")
 	}
-	// DeleteUnconfirmedUsers semantics.
+	// DeleteUnconfirmedUsers semantics: clears an abandoned local enrollment but
+	// PRESERVES OIDC rows (also totp-unconfirmed but permanent anchors — the
+	// `AND oidc_subject IS NULL` guard in migration 00006).
 	for id, u := range f.users {
-		if !u.TotpConfirmedAt.Valid {
+		if !u.TotpConfirmedAt.Valid && !u.OidcSubject.Valid {
 			delete(f.users, id)
 			delete(f.recovery, id)
 		}

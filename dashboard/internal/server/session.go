@@ -34,10 +34,13 @@ const userCtxKey ctxKey = iota
 
 // sessionUser is the authenticated identity stashed on the request context by
 // RequireSession. It carries only the id and username — never the password hash
-// or TOTP seed.
+// or TOTP seed. OIDC marks an IdP-linked identity (no local password/TOTP), so
+// the password-only step-up endpoint can refuse it and the SPA can offer the
+// OIDC re-auth path instead.
 type sessionUser struct {
 	ID       int64
 	Username string
+	OIDC     bool
 }
 
 // mintSession creates a server-side session for userID and returns the raw
@@ -115,7 +118,11 @@ func (s *Server) resolveSession(r *http.Request) (*sessionUser, *db.Session, boo
 		return nil, nil, false
 	}
 	user, err := s.cfg.Store.GetUserByID(ctx, sess.UserID)
-	if err != nil || !user.TotpConfirmedAt.Valid {
+	// A session is valid for a TOTP-confirmed local admin OR an OIDC-linked
+	// identity (ADR-0016). The OIDC arm keys on the POSITIVE subject signal, never
+	// on a NULL totp_confirmed_at alone — an abandoned local-admin enrollment also
+	// has NULL totp_confirmed_at and must stay inadmissible.
+	if err != nil || (!user.TotpConfirmedAt.Valid && !user.OidcSubject.Valid) {
 		return nil, nil, false
 	}
 	// Best-effort idle-clock slide; failure must not deny an otherwise valid
@@ -123,7 +130,7 @@ func (s *Server) resolveSession(r *http.Request) (*sessionUser, *db.Session, boo
 	if err := s.cfg.Store.TouchSession(ctx, hash); err != nil {
 		s.log.Warn("touch session failed", "err", err)
 	}
-	return &sessionUser{ID: user.ID, Username: user.Username}, &sess, true
+	return &sessionUser{ID: user.ID, Username: user.Username, OIDC: user.OidcSubject.Valid}, &sess, true
 }
 
 // RequireSession is middleware that admits only requests carrying a valid

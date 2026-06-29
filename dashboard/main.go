@@ -26,6 +26,7 @@ import (
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
+	"github.com/orkanoio/orkano/dashboard/internal/oidc"
 	"github.com/orkanoio/orkano/dashboard/internal/server"
 	"github.com/orkanoio/orkano/dashboard/web"
 )
@@ -93,7 +94,7 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("create viewer client: %w", err)
 	}
 
-	srv, err := server.New(server.Config{
+	cfg := server.Config{
 		K8s:                k8s,
 		ViewerClient:       viewerClient,
 		DB:                 pool,
@@ -102,7 +103,23 @@ func run(log *slog.Logger) error {
 		BootstrapTokenHash: tokenHash,
 		SPA:                web.Assets(),
 		Logger:             log,
-	})
+	}
+
+	// OIDC is optional (ADR-0016). A misconfigured or unreachable IdP must NOT take
+	// the dashboard down — log it and leave OIDC disabled so the break-glass local
+	// admin still logs in. Only a usable authenticator is wired in.
+	oidcAuth, oidcErr := oidc.New(ctx, os.Getenv)
+	switch {
+	case errors.Is(oidcErr, oidc.ErrNotConfigured):
+		log.Info("OIDC not configured; SSO disabled, local admin login only")
+	case oidcErr != nil:
+		log.Warn("OIDC disabled: misconfigured or IdP unreachable; local admin login still works", "err", oidcErr)
+	default:
+		cfg.OIDC = oidcAuth
+		log.Info("OIDC enabled", "issuer", oidcAuth.Config().Issuer)
+	}
+
+	srv, err := server.New(cfg)
 	if err != nil {
 		return err
 	}

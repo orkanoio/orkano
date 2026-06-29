@@ -70,6 +70,12 @@ func (s *Server) mountAuthRoutes(r chi.Router) {
 			lr.Post("/login", s.handleLogin)
 			lr.Post("/login/totp", s.handleLoginTOTP)
 
+			// OIDC sign-in (ADR-0016). GET, browser-driven redirects; rate-limited
+			// like the credential endpoints since the callback does a token
+			// exchange. No-ops to an SSO error redirect when OIDC is disabled.
+			lr.Get("/oidc/login", s.handleOIDCLogin)
+			lr.Get("/oidc/callback", s.handleOIDCCallback)
+
 			lr.Group(func(pr chi.Router) {
 				pr.Use(s.RequireSession)
 				pr.Post("/logout", s.handleLogout)
@@ -83,6 +89,23 @@ func (s *Server) mountAuthRoutes(r chi.Router) {
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// oidcEnabled drives the SPA's "Sign in with SSO" button. Present on every
+	// state so the button shows on the bootstrap and login screens alike.
+	oidcEnabled := s.cfg.OIDC != nil
+
+	// Resolve the session FIRST: an authenticated session is authenticated
+	// regardless of bootstrap state — an OIDC user can be signed in before any
+	// local admin was ever created (CountConfirmedAdmins would still be 0).
+	if user, _, ok := s.resolveSession(r); ok {
+		// "oidc" tells the SPA which step-up style to use for destructive actions:
+		// an OIDC session re-auths at the IdP, a local admin re-proves password+TOTP.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"state": "authenticated", "username": user.Username,
+			"oidc": user.OIDC, "oidcEnabled": oidcEnabled,
+		})
+		return
+	}
+
 	n, err := s.cfg.Store.CountConfirmedAdmins(ctx)
 	if err != nil {
 		s.log.Error("count admins failed", "err", err)
@@ -90,14 +113,10 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n == 0 {
-		writeJSON(w, http.StatusOK, map[string]string{"state": "needs_bootstrap"})
+		writeJSON(w, http.StatusOK, map[string]any{"state": "needs_bootstrap", "oidcEnabled": oidcEnabled})
 		return
 	}
-	if user, _, ok := s.resolveSession(r); ok {
-		writeJSON(w, http.StatusOK, map[string]string{"state": "authenticated", "username": user.Username})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"state": "needs_login"})
+	writeJSON(w, http.StatusOK, map[string]any{"state": "needs_login", "oidcEnabled": oidcEnabled})
 }
 
 // --- 2. redeem ---
@@ -296,6 +315,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An OIDC-linked identity has no local password (its hash is ''). Treat it
+	// exactly like an unknown user — run the same dummy bcrypt so response timing
+	// can't reveal that this username is an OIDC identity, then refuse. OIDC users
+	// sign in via /api/auth/oidc/login, never here (ADR-0016 §6).
+	if user.OidcSubject.Valid {
+		_ = auth.VerifyPassword(dummyPasswordHash, req.Password)
+		s.audit(ctx, user.Username, "auth.login", user.Username, "failure", r)
+		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
+		return
+	}
+
 	if user.LockedUntil.Valid && user.LockedUntil.Time.After(s.now()) {
 		s.audit(ctx, user.Username, "auth.login", user.Username, "locked", r)
 		writeJSONError(w, http.StatusLocked, "account_locked")
@@ -430,6 +460,16 @@ type stepUpRequest struct {
 func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, _ := userFromContext(ctx)
+
+	// An OIDC session has no local password or TOTP seed to re-prove (opening its
+	// empty seed would error). Its step-up is an OIDC re-auth round-trip
+	// (GET /api/auth/oidc/login?stepup=1, M2.5 4b), not this endpoint — refuse
+	// cleanly so the SPA knows to take that path.
+	if user.OIDC {
+		writeJSONError(w, http.StatusBadRequest, "oidc_stepup_required")
+		return
+	}
+
 	var req stepUpRequest
 	if !s.decodeJSON(w, r, &req) {
 		return

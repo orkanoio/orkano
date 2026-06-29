@@ -19,6 +19,11 @@ type Store interface {
 	CountConfirmedAdmins(ctx context.Context) (int64, error)
 	GetUserByUsername(ctx context.Context, username string) (db.GetUserByUsernameRow, error)
 	GetUserByID(ctx context.Context, id int64) (db.GetUserByIDRow, error)
+	// The OIDC sign-in pair (ADR-0016): look up an IdP-linked identity by its
+	// durable (issuer, subject) key, or just-in-time provision a credential-less
+	// anchor for a first login. *db.Queries supplies both.
+	GetUserByOIDC(ctx context.Context, arg db.GetUserByOIDCParams) (db.GetUserByOIDCRow, error)
+	CreateOIDCUser(ctx context.Context, arg db.CreateOIDCUserParams) (db.CreateOIDCUserRow, error)
 	ConfirmUserTOTP(ctx context.Context, id int64) error
 	IncrementFailedLogins(ctx context.Context, id int64) (int32, error)
 	LockUser(ctx context.Context, arg db.LockUserParams) error
