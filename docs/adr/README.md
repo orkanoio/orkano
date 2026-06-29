@@ -22,3 +22,4 @@ Rules:
 | [0013](0013-dashboard-value-blind-secrets-no-impersonation.md) | Make dashboard secret writes value-blind and defer impersonation to Phase 2 | Accepted |
 | [0014](0014-postgres-catalog-kind.md) | Model the service catalog as an engine-specific Postgres kind | Accepted |
 | [0015](0015-dashboard-impersonation-fixed-viewer-identity.md) | Dashboard read views impersonate a fixed, fully pinned viewer identity | Accepted |
+| [0016](0016-oidc-integration-model.md) | OIDC sign-in via env-configured, allowlist-gated, just-in-time identities | Accepted |
