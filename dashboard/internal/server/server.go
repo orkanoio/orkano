@@ -64,6 +64,22 @@ type Config struct {
 	// leaves OIDC disabled while the local admin keeps working — break-glass. main
 	// must only set it to a usable authenticator, never a typed-nil pointer.
 	OIDC OIDCAuthenticator
+	// GitHub exchanges a manifest code for App credentials in the GitHub App
+	// manifest flow (M2.6). OPTIONAL: New defaults it to a client against
+	// api.github.com (the default is always constructable — no discovery), so
+	// production never has to set it and tests supply a fake.
+	GitHub ManifestExchanger
+	// GitHubBaseURL is the github.com base the App-creation form POSTs to; empty
+	// defaults to https://github.com. Set it for GitHub Enterprise.
+	GitHubBaseURL string
+	// WebhookURL is the receiver's public webhook endpoint baked into the generated
+	// GitHub App manifest. The manifest flow refuses (409) without it — GitHub must
+	// be able to deliver signed webhooks somewhere.
+	WebhookURL string
+	// PublicURL is the dashboard's external base URL used to build the manifest
+	// redirect (callback) URL. Empty derives it from the request (scheme + Host),
+	// which is trustworthy on the dashboard's private access paths (INV-05).
+	PublicURL string
 	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
 	// presented token's hash against it in constant time.
 	BootstrapTokenHash string
@@ -120,6 +136,13 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	// The GitHub manifest exchanger is always constructable (no startup I/O), so
+	// default it rather than require it — tests override with a fake. Its base is
+	// the API host (api.github.com), distinct from GitHubBaseURL (the github.com
+	// form host); main overrides it for GitHub Enterprise.
+	if cfg.GitHub == nil {
+		cfg.GitHub = NewGitHubExchanger("")
 	}
 
 	s := &Server{

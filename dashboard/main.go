@@ -38,7 +38,14 @@ const (
 	envAddr      = "ORKANO_ADDR"
 	envEncKey    = "ORKANO_DASHBOARD_ENC_KEY"
 	envTokenHash = "ORKANO_BOOTSTRAP_TOKEN_SHA256" //nolint:gosec // G101: env var name, not a credential
-	defaultAddr  = ":8080"
+	// GitHub App manifest flow config (M2.6). All optional: the webhook URL is
+	// required only to use the flow (the manifest needs a delivery endpoint), the
+	// rest default to public GitHub.
+	envWebhookURL    = "ORKANO_WEBHOOK_URL"
+	envPublicURL     = "ORKANO_PUBLIC_URL"
+	envGitHubBaseURL = "ORKANO_GITHUB_BASE_URL"     // github.com form host
+	envGitHubAPIBase = "ORKANO_GITHUB_API_BASE_URL" // api.github.com conversion host
+	defaultAddr      = ":8080"
 )
 
 func main() {
@@ -111,6 +118,14 @@ func run(log *slog.Logger) error {
 		BootstrapTokenHash: tokenHash,
 		SPA:                web.Assets(),
 		Logger:             log,
+		WebhookURL:         os.Getenv(envWebhookURL),
+		PublicURL:          os.Getenv(envPublicURL),
+		GitHubBaseURL:      os.Getenv(envGitHubBaseURL),
+	}
+	// Override the manifest-conversion endpoint only for GitHub Enterprise; the
+	// default (api.github.com) is wired by server.New.
+	if apiBase := os.Getenv(envGitHubAPIBase); apiBase != "" {
+		cfg.GitHub = server.NewGitHubExchanger(apiBase)
 	}
 
 	// OIDC is optional (ADR-0016). A misconfigured or unreachable IdP must NOT take

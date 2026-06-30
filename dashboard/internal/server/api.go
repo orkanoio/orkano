@@ -98,6 +98,15 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 	// The append-only audit log (INV-08), readable by any authenticated session.
 	r.With(s.RequireSession).Get("/api/audit", s.handleListAudit)
 
+	// GitHub App manifest flow (M2.6). The start endpoint needs a session; the
+	// callback is reached by GitHub's cross-site redirect, on which the
+	// SameSite=Strict session cookie is NOT sent, so it authenticates via the
+	// sealed Lax flow cookie the (RequireSession-gated) start set — mirroring OIDC.
+	r.Route("/api/github/app", func(gr chi.Router) {
+		gr.With(s.RequireSession).Get("/manifest", s.handleGitHubManifest)
+		gr.Get("/callback", s.handleGitHubCallback)
+	})
+
 	// Any other /api path is a JSON 404, never the SPA shell — an API client must
 	// not receive HTML for an unknown endpoint. This pattern is more specific than
 	// the root "/*" SPA catch-all, so chi matches it for unmatched /api paths only.
