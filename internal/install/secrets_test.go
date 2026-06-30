@@ -61,7 +61,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp} {
 		if _, ok := n.secrets[name]; !ok {
 			t.Errorf("expected secret %s to be created", name)
 		}
@@ -80,6 +80,15 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Error("bootstrap-token Secret must not store the plaintext token")
 	}
 
+	// The GitHub App Secret is an empty placeholder — no credential value, just a
+	// target for the M2.6 wizard's value-blind update.
+	if got := n.secrets[secretGitHubApp]; !strings.Contains(got, "data: {}") {
+		t.Errorf("github-app placeholder should carry empty data, got: %s", got)
+	}
+	if strings.Contains(n.secrets[secretGitHubApp], "private-key.pem") {
+		t.Error("github-app placeholder must not carry a private key at install time")
+	}
+
 	// The role DSNs embed the matching roles and the platform Postgres host.
 	if !strings.Contains(decodeSecretData(t, n.secrets[secretReceiver], "dsn"), "postgres://orkano_receiver:") {
 		t.Error("receiver DSN should use the orkano_receiver role")
@@ -95,7 +104,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
 	// Pre-existing secrets (a prior install): mark all present.
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp} {
 		n.secrets[name] = "preexisting"
 	}
 

@@ -28,6 +28,12 @@ const (
 	secretDashboardEncKey = "orkano-dashboard-enc-key"
 	secretWebhook         = "orkano-webhook-secret"  //nolint:gosec // G101: Secret name, not a credential.
 	secretBootstrap       = "orkano-bootstrap-token" //nolint:gosec // G101: Secret name, not a credential.
+	// secretGitHubApp is created EMPTY: the GitHub App credential does not exist
+	// until an admin runs the M2.6 onboarding manifest flow, which fills app-id +
+	// private-key.pem via a value-blind UPDATE (the dashboard's orkano-system grant
+	// is update-only, so the placeholder must already exist for the update to land).
+	// Generate-once like the rest, so a re-install never wipes a connected App.
+	secretGitHubApp = "orkano-github-app" //nolint:gosec // G101: Secret name, not a credential.
 )
 
 // secretValues are the credentials generated once per install. They are written
@@ -131,6 +137,9 @@ func ensureSecrets(ctx context.Context, n *node, v secretValues) (bootstrapToken
 		{secretDashboardEncKey, map[string]string{"key": v.dashboardEncKey}},
 		{secretWebhook, map[string]string{"secret": v.webhookSecret}},
 		{secretBootstrap, map[string]string{"token-sha256": hex.EncodeToString(tokenHash[:])}},
+		// Empty placeholder for the M2.6 GitHub App manifest flow to fill (see the
+		// secretGitHubApp const). No generated value — its credentials come from GitHub.
+		{secretGitHubApp, map[string]string{}},
 	}
 
 	for _, s := range specs {
@@ -172,7 +181,14 @@ func (n *node) createSecretIfAbsent(ctx context.Context, name string, manifest [
 // keys are fixed constants, never input, so the YAML cannot be injected.
 func secretManifest(name string, data map[string]string) []byte {
 	var b strings.Builder
-	fmt.Fprintf(&b, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: %s\ntype: Opaque\ndata:\n", name, systemNS)
+	fmt.Fprintf(&b, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: %s\ntype: Opaque\n", name, systemNS)
+	if len(data) == 0 {
+		// An explicit empty map (placeholder Secret), not `data:` with a null value
+		// which kubectl rejects.
+		b.WriteString("data: {}\n")
+		return []byte(b.String())
+	}
+	b.WriteString("data:\n")
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)

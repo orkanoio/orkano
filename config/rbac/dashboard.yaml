@@ -38,3 +38,39 @@ subjects:
   - kind: ServiceAccount
     name: orkano-dashboard
     namespace: orkano-system
+---
+# The GitHub App manifest flow (M2.6) writes the App credential and the webhook
+# secret into orkano-system, where the operator and receiver read them. This is
+# the dashboard's only reach into orkano-system, and it is the narrowest possible:
+# UPDATE only (no get/create/delete), pinned by resourceNames to exactly the two
+# platform Secrets. update (not create) because create cannot be resourceNames-
+# pinned in Kubernetes RBAC — so the install pre-creates an empty orkano-github-app
+# placeholder (orkano-webhook-secret already exists), and the flow blind-overwrites
+# them. A fully compromised dashboard can thus rotate these two credentials
+# (visible, recoverable) but cannot read them (value-blind, ADR-0013/INV-07) and
+# cannot touch any other orkano-system Secret (the superuser password, the enc-key,
+# the bootstrap token).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-dashboard-credentials
+  namespace: orkano-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["update"]
+    resourceNames: ["orkano-github-app", "orkano-webhook-secret"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-dashboard-credentials
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-dashboard-credentials
+subjects:
+  - kind: ServiceAccount
+    name: orkano-dashboard
+    namespace: orkano-system

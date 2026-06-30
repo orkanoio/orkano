@@ -732,6 +732,8 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{identity: operatorIdentity, namespace: buildNamespace, group: "batch", resource: "jobs", verb: "get"},
 		{identity: operatorIdentity, namespace: systemNamespace, group: "coordination.k8s.io", resource: "leases", verb: "get"},
 		{identity: dashboardIdentity, namespace: "", group: "", resource: "groups", resourceName: "orkano:viewers", verb: "impersonate"},
+		// The dashboard's orkano-system credential-write grant (orkano-dashboard-credentials).
+		{identity: dashboardIdentity, namespace: systemNamespace, resource: "secrets", resourceName: "orkano-github-app", verb: "update"},
 	}
 	for name := range humanRoles {
 		canaries = append(canaries, rbacTuple{identity: humanIdentityPrefix + name, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"})
@@ -755,6 +757,21 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	for _, verb := range []string{"get", "update"} {
 		if sarAllowed(t, ctx, operatorIdentity, systemNamespace, "apps", "deployments", "orkano-dashboard", verb) {
 			t.Errorf("operator may %s deployments/orkano-dashboard in orkano-system, but the resourceNames pin should deny it", verb)
+		}
+	}
+
+	// The dashboard's orkano-system secret-write grant is pinned by resourceNames to
+	// exactly orkano-github-app + orkano-webhook-secret; prove the pin binds by naming
+	// the most sensitive co-residents it must never reach (and that update is the only
+	// verb, never get/create/delete). The denied walk covers only the nameless request.
+	for _, bad := range []string{"orkano-postgres-superuser", "orkano-dashboard-enc-key", "orkano-bootstrap-token"} {
+		if sarAllowed(t, ctx, dashboardIdentity, systemNamespace, "", "secrets", bad, "update") {
+			t.Errorf("dashboard may update secrets/%s in orkano-system, but the resourceNames pin should deny it", bad)
+		}
+	}
+	for _, verb := range []string{"get", "create", "delete", "patch"} {
+		if sarAllowed(t, ctx, dashboardIdentity, systemNamespace, "", "secrets", "orkano-github-app", verb) {
+			t.Errorf("dashboard may %s secrets/orkano-github-app in orkano-system, but only update is granted", verb)
 		}
 	}
 
