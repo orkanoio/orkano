@@ -65,6 +65,7 @@ func serverWithViewer(t *testing.T, store *fakeStore, k8s, viewer client.Client)
 	s, err := New(Config{
 		K8s:                k8s,
 		ViewerClient:       viewer,
+		PodLogs:            &fakePodStreamer{},
 		DB:                 fakePinger{},
 		Store:              store,
 		Cipher:             testCipherInstance,

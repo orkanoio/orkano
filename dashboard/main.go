@@ -93,10 +93,18 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create viewer client: %w", err)
 	}
+	// Live logs stream through a client-go clientset (the controller-runtime client
+	// cannot stream the pods/log subresource), impersonating the same fixed viewer
+	// identity so the read runs as the view-only identity, not the dashboard SA.
+	viewerLogs, err := server.NewViewerPodLogStreamer(restCfg)
+	if err != nil {
+		return fmt.Errorf("create viewer log streamer: %w", err)
+	}
 
 	cfg := server.Config{
 		K8s:                k8s,
 		ViewerClient:       viewerClient,
+		PodLogs:            viewerLogs,
 		DB:                 pool,
 		Store:              server.NewStore(pool),
 		Cipher:             cipher,

@@ -40,6 +40,7 @@ func newTestServer(t *testing.T, db Pinger) *Server {
 	s, err := New(Config{
 		K8s:                k8s,
 		ViewerClient:       k8s,
+		PodLogs:            &fakePodStreamer{},
 		DB:                 db,
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),
@@ -68,6 +69,7 @@ func TestNewValidatesConfig(t *testing.T) {
 		return Config{
 			K8s:                okClient(),
 			ViewerClient:       okClient(),
+			PodLogs:            &fakePodStreamer{},
 			DB:                 fakePinger{},
 			Store:              newFakeStore(),
 			Cipher:             testCipher(t),
@@ -81,6 +83,7 @@ func TestNewValidatesConfig(t *testing.T) {
 	}{
 		{"nil k8s", func(c *Config) { c.K8s = nil }},
 		{"nil viewer client", func(c *Config) { c.ViewerClient = nil }},
+		{"nil pod logs", func(c *Config) { c.PodLogs = nil }},
 		{"nil db", func(c *Config) { c.DB = nil }},
 		{"nil spa", func(c *Config) { c.SPA = nil }},
 		{"nil store", func(c *Config) { c.Store = nil }},
@@ -183,6 +186,7 @@ func TestServeIndexMissing(t *testing.T) {
 	s, err := New(Config{
 		K8s:                k8s,
 		ViewerClient:       k8s,
+		PodLogs:            &fakePodStreamer{},
 		DB:                 fakePinger{},
 		Store:              newFakeStore(),
 		Cipher:             testCipher(t),

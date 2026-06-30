@@ -18,6 +18,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -63,6 +64,7 @@ func newServer(t *testing.T, pool *pgxpool.Pool, k8s client.Client) *server.Serv
 	srv, err := server.New(server.Config{
 		K8s:                k8s,
 		ViewerClient:       k8s,
+		PodLogs:            server.NewPodLogStreamer(k8sfake.NewSimpleClientset()),
 		DB:                 pool,
 		Store:              server.NewStore(pool),
 		Cipher:             mustIntegrationCipher(t),

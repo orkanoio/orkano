@@ -58,6 +58,9 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
 		ar.Get("/{name}/deploys", s.handleListDeploys)
+		// Live logs (Server-Sent Events) — a read view, streamed through the viewer
+		// impersonation like the other reads.
+		ar.Get("/{name}/logs", s.handleAppLogs)
 		ar.Put("/{name}", s.handleUpdateApp)
 		// Destructive mutations — delete, and the env editor's secret rotation —
 		// need a fresh second factor on top of the session.

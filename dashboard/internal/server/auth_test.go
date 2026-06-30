@@ -365,6 +365,7 @@ func authServer(t *testing.T, store *fakeStore) *Server {
 	s, err := New(Config{
 		K8s:                k8s,
 		ViewerClient:       k8s,
+		PodLogs:            &fakePodStreamer{},
 		DB:                 fakePinger{},
 		Store:              store,
 		Cipher:             testCipherInstance,

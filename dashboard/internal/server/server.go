@@ -56,6 +56,9 @@ type Config struct {
 	// Cipher encrypts the TOTP seed at rest and seals the short-lived challenge
 	// cookies the auth flow uses mid-handshake.
 	Cipher *auth.Cipher
+	// PodLogs streams an App's pod logs for the live-logs view (SSE), through the
+	// fixed viewer impersonation (ADR-0015) like every other read. Required.
+	PodLogs PodLogStreamer
 	// OIDC, when non-nil, enables SSO sign-in (ADR-0016). It is OPTIONAL: a nil
 	// value (no issuer configured, or a misconfiguration main logged and skipped)
 	// leaves OIDC disabled while the local admin keeps working — break-glass. main
@@ -92,6 +95,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.ViewerClient == nil {
 		return nil, errors.New("server: ViewerClient is required")
+	}
+	if cfg.PodLogs == nil {
+		return nil, errors.New("server: PodLogs streamer is required")
 	}
 	if cfg.DB == nil {
 		return nil, errors.New("server: DB pinger is required")

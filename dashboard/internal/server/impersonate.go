@@ -3,6 +3,7 @@ package server
 import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -40,4 +41,18 @@ func viewerConfig(base *rest.Config) *rest.Config {
 // scheme + RESTMapper so it does no discovery.
 func NewViewerClient(base *rest.Config, scheme *runtime.Scheme, mapper meta.RESTMapper) (client.Client, error) {
 	return client.New(viewerConfig(base), client.Options{Scheme: scheme, Mapper: mapper})
+}
+
+// NewViewerPodLogStreamer builds the production pod-log streamer: a client-go
+// clientset that impersonates the fixed viewer identity, wrapped as a
+// PodLogStreamer. Log tailing needs client-go's GetLogs(...).Stream — the
+// controller-runtime client cannot stream subresources — so this is a second,
+// purpose-built client alongside NewViewerClient, sharing the same pinned
+// impersonation (ADR-0015).
+func NewViewerPodLogStreamer(base *rest.Config) (PodLogStreamer, error) {
+	cs, err := kubernetes.NewForConfig(viewerConfig(base))
+	if err != nil {
+		return nil, err
+	}
+	return NewPodLogStreamer(cs), nil
 }
