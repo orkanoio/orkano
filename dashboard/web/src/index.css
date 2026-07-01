@@ -47,7 +47,9 @@
   --muted-foreground: #94a3b8;
   --accent: #1e293b;
   --accent-foreground: #f8fafc;
-  --destructive: #ef4444;
+  /* red-400, not red-500: error text renders at /90 opacity on --card, and
+     #ef4444 lands under the WCAG AA 4.5:1 contrast floor there. */
+  --destructive: #f87171;
   --border: rgb(255 255 255 / 10%);
   --input: rgb(255 255 255 / 15%);
   --ring: #14a3a1;

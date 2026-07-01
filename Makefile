@@ -77,10 +77,12 @@ vulncheck:
 web:
 	cd dashboard/web && npm ci --ignore-scripts && npm run build
 
-# web + prove the webdist-tagged embed compiles and vets. The tagged files are
-# invisible to make lint/test (golangci-lint runs untagged — the same caveat
-# as the imagepins tag), so CI runs this target as its own job.
+# web + the SPA's vitest suite + prove the webdist-tagged embed compiles and
+# vets. The tagged files are invisible to make lint/test (golangci-lint runs
+# untagged — the same caveat as the imagepins tag), so CI runs this target as
+# its own job.
 verify-web: web
+	cd dashboard/web && npm run test
 	go build -tags webdist ./dashboard/...
 	go vet -tags webdist ./dashboard/...
 	go test -tags webdist ./dashboard/web/
