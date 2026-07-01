@@ -2,6 +2,12 @@ version: 2
 
 project_name: orkano
 
+# The dashboard binary embeds the Vite-built SPA (-tags webdist on its build
+# below), so the web build must run first. Needs Node — release.yml sets it up.
+before:
+  hooks:
+    - make web
+
 builds:
   - id: orkano
     main: ./cli
@@ -34,6 +40,9 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     flags: [-trimpath]
+    # webdist embeds the Vite build from dashboard/web/dist (the before hook
+    # above produced it) instead of the Node-free placeholder page.
+    tags: [webdist]
     ldflags: ["-s -w -X main.version={{.Version}}"]
 
 archives:

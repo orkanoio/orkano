@@ -9,7 +9,7 @@ The original planning notes proposed this stack; this ADR confirms it through th
 
 ## Decision
 
-React 18 + TypeScript (strict, no `any`) + Vite + TanStack Query + Tailwind CSS + shadcn/ui, built as a SPA and served by the dashboard's Go binary via `go:embed` — no Node server in the product.
+React (18 when written; 19 as shipped by the M2.6 scaffold — the decision is the stack, not the major) + TypeScript (strict, no `any`) + Vite + TanStack Query + Tailwind CSS + shadcn/ui, built as a SPA and served by the dashboard's Go binary via `go:embed` — no Node server in the product.
 
 - **React + TS** is the largest pool of drive-by OSS frontend contributors; choosing Svelte/Solid would filter that pool for taste, not product benefit.
 - **TanStack Query** removes the bespoke fetch/cache/invalidation state machines that dominate dashboard bug reports — exactly the code one reviewer doesn't want to re-derive per PR.

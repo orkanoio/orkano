@@ -26,11 +26,13 @@ func (blockingPinger) Ping(ctx context.Context) error { <-ctx.Done(); return ctx
 
 const indexBody = "<!doctype html><title>orkano</title><div id=root>spa</div>"
 
-// testSPA is a minimal embedded-app stand-in: an index shell and one asset.
+// testSPA is a minimal embedded-app stand-in: an index shell, one hashed
+// asset, and one root-level file (Vite's public/ passthrough).
 func testSPA() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":    {Data: []byte(indexBody)},
 		"assets/app.js": {Data: []byte("console.log('orkano')")},
+		"orkano.svg":    {Data: []byte("<svg/>")},
 	}
 }
 
@@ -147,6 +149,22 @@ func TestSPAServesRealFile(t *testing.T) {
 	}
 	if rec.Body.String() != "console.log('orkano')" {
 		t.Errorf("asset body = %q", rec.Body.String())
+	}
+	// Everything under assets/ is content-hashed by Vite, so it must be cached
+	// forever (embedded files carry no modtime — without the header every asset
+	// would re-download on each page load).
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Errorf("asset Cache-Control = %q, want immutable", cc)
+	}
+
+	// Root-level files (Vite public/ passthrough) are NOT content-hashed, so
+	// they must not get the immutable header.
+	rec = do(t, s, http.MethodGet, "/orkano.svg")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public file status = %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "" {
+		t.Errorf("public file Cache-Control = %q, want unset", cc)
 	}
 }
 

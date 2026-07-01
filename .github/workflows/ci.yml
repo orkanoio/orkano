@@ -53,6 +53,23 @@ jobs:
           go-version-file: go.mod
       - run: go build ./... && cd api && go build ./...
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: dashboard/web/.nvmrc
+          cache: npm
+          cache-dependency-path: dashboard/web/package-lock.json
+      # npm ci + the Vite build (tsc -b enforces TS strict), then compile+vet
+      # the webdist-tagged embed that release binaries use — those files are
+      # invisible to the untagged lint/test jobs (the imagepins caveat).
+      - run: make verify-web
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:

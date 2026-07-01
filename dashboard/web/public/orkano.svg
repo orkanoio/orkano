@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Placeholder mark per the PRD logo direction: a teal hexagon (nod to the
+       Kubernetes helm wheel) carrying an orca dorsal-fin silhouette. -->
+  <polygon points="50,4 90,27 90,73 50,96 10,73 10,27" fill="#0E7C7B"/>
+  <path d="M35 68 C38 48 48 34 66 30 C58 40 56 50 57 58 C50 56 42 60 35 68 Z" fill="#F8FAFC"/>
+</svg>

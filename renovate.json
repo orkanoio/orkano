@@ -11,6 +11,11 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["digest", "patch", "minor"],
       "automerge": true
+    },
+    {
+      "groupName": "dashboard web deps (non-major)",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["patch", "minor"]
     }
   ]
 }

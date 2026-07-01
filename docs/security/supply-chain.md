@@ -47,7 +47,9 @@ Renovate because, for one reviewer: PR grouping and weekly scheduling cap review
 
 ## Required checks for branch protection (apply on GitHub after first push)
 
-`lint (.)` · `lint (api)` · `test` · `build (amd64)` · `build (arm64)` · `vulncheck`
+`lint (.)` · `lint (api)` · `test` · `build (amd64)` · `build (arm64)` · `vulncheck` · `web`
+
+`web` guards the release's UI path: it builds the SPA and runs the webdist-tagged embed test, the check that stops a broken Vite build or misconfigured outDir from shipping a UI-less dashboard binary.
 
 ## Throwaway-release runbook (deferred until the repo is on GitHub)
 

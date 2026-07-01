@@ -65,6 +65,26 @@ vulncheck:
 		echo "vulncheck $$m" && (cd $$m && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...) || exit 1; \
 	done
 
+.PHONY: web verify-web
+
+# Build the dashboard SPA into dashboard/web/dist (gitignored, never
+# committed). Binaries built with -tags webdist embed it (goreleaser passes
+# the tag); a plain go build embeds the committed placeholder page instead,
+# so nothing else in this Makefile needs Node.
+# --ignore-scripts: a compromised npm package must not execute at install time
+# (the release job holds a packages:write token and the cosign identity, AC-03);
+# build-time execution is limited to code the Vite build actually imports.
+web:
+	cd dashboard/web && npm ci --ignore-scripts && npm run build
+
+# web + prove the webdist-tagged embed compiles and vets. The tagged files are
+# invisible to make lint/test (golangci-lint runs untagged — the same caveat
+# as the imagepins tag), so CI runs this target as its own job.
+verify-web: web
+	go build -tags webdist ./dashboard/...
+	go vet -tags webdist ./dashboard/...
+	go test -tags webdist ./dashboard/web/
+
 .PHONY: generate manifests validate-examples sqlc
 
 $(BIN)/sqlc:

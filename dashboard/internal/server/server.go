@@ -214,6 +214,12 @@ func (s *Server) spaHandler() http.HandlerFunc {
 			s.serveIndex(w)
 			return
 		}
+		// Everything under assets/ is content-hashed by the Vite build, so it can
+		// be cached forever — and should be: embedded files carry no modtime, so
+		// without this header every asset would re-download on each page load.
+		if strings.HasPrefix(name, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		// Serve the canonical path so http.FileServerFS does not 301-redirect a
 		// non-canonical request (which would also leak which files exist).
 		r.URL.Path = clean

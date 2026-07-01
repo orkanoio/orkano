@@ -53,24 +53,29 @@ This catalogue is a set of concrete attacker stories checked against the archite
 
 **Attacker & precondition:** Attacker publishes a malicious version of a package in the dashboard frontend's dependency tree, and it gets built into a shipped release.
 
-**Kill chain**
+**Kill chain** — two distinct execution points:
+
+*In the shipped bundle (runtime):*
 
 1. The malicious version is pulled in via a lockfile update and bundled into the dashboard's JavaScript.
 2. The payload runs in the admin's browser with a live session.
 3. It silently drives the dashboard API as the admin — reading app config, writing `App` CRs.
 4. It attempts to escalate to the cluster and stops at the dashboard's own RBAC: no cluster-admin, and secret values can be written but never read back.
 
-**Impact if unmitigated:** Everything the admin can do in the UI, done silently — including deploying attacker-controlled apps.
+*At build time (release CI):* the SPA is built by `npm ci && vite build` inside the release job — the job that holds a `packages:write`/`contents:write` `GITHUB_TOKEN` and the cosign OIDC identity. Code that executes there runs *before* signing, so a payload could tamper with any artifact and the signatures would attest to the compromised build.
+
+**Impact if unmitigated:** Everything the admin can do in the UI, done silently — including deploying attacker-controlled apps. Via the build-time path: tampered, validly-signed release artifacts (a supply-chain compromise of every downstream install).
 
 **Mitigations**
 
 - INV-01: the dashboard holds no cluster-admin and only value-blind RBAC on secrets (ADR-0013), so even total frontend compromise cannot read secret values or touch workloads directly.
-- Lockfiles plus Renovate keep the dependency tree pinned, scanned, and current.
+- Lockfiles plus Renovate keep the dependency tree pinned (npm integrity hashes) and current; npm updates are grouped for review, never automerged.
+- npm lifecycle scripts are disabled at install (`npm ci --ignore-scripts` in `make web`), so a compromised package cannot execute arbitrary code at install time — build-time execution is limited to code the Vite build actually imports (and to Vite/Rolldown themselves).
 - A Content-Security-Policy to constrain exfiltration is planned for Phase 2.
 
-**Verdict:** Partially mitigated — the server-side blast radius is bounded by INV-01, but until CSP ships, a malicious bundle can act freely within the admin's session.
+**Verdict:** Partially mitigated — the server-side blast radius is bounded by INV-01, but until CSP ships, a malicious bundle can act freely within the admin's session; and code imported by the build (not just installed) still executes in the release job.
 
-**Detection:** CI dependency scanning (Renovate, Trivy) flags known-bad versions before release; audit-log entries for CRD writes the admin did not make are the runtime signal.
+**Detection:** Renovate's vulnerability alerts flag known-bad versions in the lockfile; Trivy gates the published images (it cannot see the JS bundled inside the Go binary — the lockfile is the npm scan surface). Audit-log entries for CRD writes the admin did not make are the runtime signal.
 
 ## AC-04 — Dashboard exposed to the internet by the user
 
