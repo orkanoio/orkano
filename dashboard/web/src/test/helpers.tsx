@@ -3,6 +3,8 @@ import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { vi } from "vitest";
 
+import { SessionContext, type Session } from "@/shell/session";
+
 // renderWithClient mounts ui under a fresh QueryClient with retries off so a
 // mocked 4xx/5xx surfaces immediately instead of after the production retry.
 export function renderWithClient(ui: ReactElement) {
@@ -10,6 +12,17 @@ export function renderWithClient(ui: ReactElement) {
     defaultOptions: { queries: { retry: false } },
   });
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+// renderWithSession additionally provides the signed-in session the App and
+// catalog screens read (StepUpForm's oidc branch).
+export function renderWithSession(
+  ui: ReactElement,
+  session: Session = { username: "admin", oidc: false },
+) {
+  return renderWithClient(
+    <SessionContext.Provider value={session}>{ui}</SessionContext.Provider>,
+  );
 }
 
 // stubFetch replaces global fetch for one test (unstubbed by the shared
@@ -39,6 +52,33 @@ export function deferred<T>() {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+// stubFetchRoutes installs a URL-dispatching fetch stub for screens that fire
+// several queries on mount (where call-order chains would be racy). Keys are
+// "METHOD /path" with any query string stripped; an unrouted call rejects
+// loudly. Handlers may be called more than once (refetches).
+export function stubFetchRoutes(
+  routes: Record<string, (init?: RequestInit) => Response | Promise<Response>>,
+) {
+  const mock = stubFetch();
+  mock.mockImplementation((input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const path = url.split("?")[0] ?? url;
+    const handler = routes[`${init?.method ?? "GET"} ${path}`];
+    if (!handler) {
+      return Promise.reject(
+        new Error(`no fetch stub for ${init?.method ?? "GET"} ${url}`),
+      );
+    }
+    return Promise.resolve(handler(init));
+  });
+  return mock;
 }
 
 // requestBody decodes the JSON body of the nth fetch call.

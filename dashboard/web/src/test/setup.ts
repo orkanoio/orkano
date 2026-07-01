@@ -11,4 +11,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // The hash router's state lives on window.location — reset it so a test
+  // that navigated doesn't route the next test's shell.
+  window.history.replaceState(null, "", window.location.pathname);
 });

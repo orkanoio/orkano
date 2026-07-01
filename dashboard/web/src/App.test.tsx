@@ -3,7 +3,20 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import App from "@/App";
-import { emptyResponse, jsonResponse, renderWithClient, stubFetch } from "@/test/helpers";
+import {
+  emptyResponse,
+  jsonResponse,
+  renderWithClient,
+  stubFetch,
+  stubFetchRoutes,
+} from "@/test/helpers";
+
+const authenticated = {
+  state: "authenticated",
+  oidcEnabled: false,
+  username: "admin",
+  oidc: false,
+};
 
 describe("App auth gate", () => {
   it("shows the bootstrap screen on needs_bootstrap", async () => {
@@ -29,18 +42,18 @@ describe("App auth gate", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the signed-in shell with session controls", async () => {
-    stubFetch().mockResolvedValueOnce(
-      jsonResponse(200, {
-        state: "authenticated",
-        oidcEnabled: false,
-        username: "admin",
-        oidc: false,
-      }),
-    );
+  it("shows the signed-in shell with navigation and session controls", async () => {
+    stubFetchRoutes({
+      "GET /api/auth/status": () => jsonResponse(200, authenticated),
+      "GET /api/apps": () => jsonResponse(200, { items: [] }),
+    });
     renderWithClient(<App />);
 
     expect(await screen.findByText("admin")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Apps" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Databases" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Re-authenticate" }),
     ).toBeInTheDocument();
@@ -48,23 +61,23 @@ describe("App auth gate", () => {
   });
 
   it("signs out and re-checks the gate", async () => {
-    const mock = stubFetch();
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, {
-        state: "authenticated",
-        oidcEnabled: false,
-        username: "admin",
-        oidc: false,
-      }),
-    );
+    let statusCalls = 0;
+    const mock = stubFetchRoutes({
+      "GET /api/auth/status": () =>
+        jsonResponse(
+          200,
+          statusCalls++ === 0
+            ? authenticated
+            : { state: "needs_login", oidcEnabled: false },
+        ),
+      "GET /api/apps": () => jsonResponse(200, { items: [] }),
+      "POST /api/auth/logout": () => emptyResponse(204),
+    });
     renderWithClient(<App />);
-    const user = userEvent.setup();
 
-    mock.mockResolvedValueOnce(emptyResponse(204)); // POST /logout
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, { state: "needs_login", oidcEnabled: false }),
-    ); // refetched status
-    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
 
     expect(
       await screen.findByRole("heading", { name: "Sign in to Orkano" }),
@@ -76,22 +89,25 @@ describe("App auth gate", () => {
   });
 
   it("re-checks the gate even when logout fails", async () => {
-    const mock = stubFetch();
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, {
-        state: "authenticated",
-        oidcEnabled: false,
-        username: "admin",
-        oidc: false,
-      }),
-    );
+    let statusCalls = 0;
+    stubFetchRoutes({
+      "GET /api/auth/status": () =>
+        jsonResponse(
+          200,
+          statusCalls++ === 0
+            ? authenticated
+            : { state: "needs_login", oidcEnabled: false },
+        ),
+      "GET /api/apps": () => jsonResponse(200, { items: [] }),
+      // Logout on a dead session still re-checks the gate.
+      "POST /api/auth/logout": () =>
+        jsonResponse(401, { error: "unauthorized" }),
+    });
     renderWithClient(<App />);
 
-    mock.mockResolvedValueOnce(jsonResponse(401, { error: "unauthorized" })); // POST /logout on a dead session
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, { state: "needs_login", oidcEnabled: false }),
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
     );
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(
       await screen.findByRole("heading", { name: "Sign in to Orkano" }),
@@ -99,24 +115,28 @@ describe("App auth gate", () => {
   });
 
   it("settles to the signed-in shell immediately after login", async () => {
-    const mock = stubFetch();
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, { state: "needs_login", oidcEnabled: false }),
-    );
+    let statusCalls = 0;
+    stubFetchRoutes({
+      // The invalidation refetch never resolves — the shell can only appear
+      // via the optimistic setQueryData, which is exactly the contract pinned
+      // here.
+      "GET /api/auth/status": () =>
+        statusCalls++ === 0
+          ? jsonResponse(200, { state: "needs_login", oidcEnabled: false })
+          : new Promise<Response>(() => undefined),
+      "POST /api/auth/login": () =>
+        jsonResponse(200, { state: "totp_required" }),
+      "POST /api/auth/login/totp": () =>
+        jsonResponse(200, { state: "authenticated", username: "admin" }),
+      "GET /api/apps": () => jsonResponse(200, { items: [] }),
+    });
     renderWithClient(<App />);
     const user = userEvent.setup();
 
-    mock.mockResolvedValueOnce(jsonResponse(200, { state: "totp_required" }));
     await user.type(await screen.findByLabelText("Username"), "admin");
     await user.type(screen.getByLabelText("Password"), "hunter2hunter2");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    mock.mockResolvedValueOnce(
-      jsonResponse(200, { state: "authenticated", username: "admin" }),
-    );
-    // The invalidation refetch never resolves — the shell can only appear via
-    // the optimistic setQueryData, which is exactly the contract pinned here.
-    mock.mockImplementationOnce(() => new Promise<Response>(() => undefined));
     await user.type(
       await screen.findByLabelText("Authenticator code"),
       "123456",

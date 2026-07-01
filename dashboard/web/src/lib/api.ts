@@ -53,6 +53,12 @@ async function parseError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, code || `http_${res.status.toString()}`);
 }
 
+// errorFromResponse is parseError for callers outside this module that drive
+// fetch themselves (the SSE log stream).
+export function errorFromResponse(res: Response): Promise<ApiError> {
+  return parseError(res);
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" } });
   if (!res.ok) {
@@ -61,11 +67,15 @@ async function getJSON<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// post sends a JSON body (or none) and returns the raw Response so callers of
-// 204-No-Content endpoints skip the body parse.
-async function post(path: string, body?: unknown): Promise<Response> {
+// send issues a mutating request with an optional JSON body and returns the raw
+// Response so callers of 204-No-Content endpoints skip the body parse.
+async function send(
+  method: "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<Response> {
   const res = await fetch(path, {
-    method: "POST",
+    method,
     headers:
       body === undefined
         ? { Accept: "application/json" }
@@ -78,8 +88,16 @@ async function post(path: string, body?: unknown): Promise<Response> {
   return res;
 }
 
+async function post(path: string, body?: unknown): Promise<Response> {
+  return send("POST", path, body);
+}
+
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   return (await (await post(path, body)).json()) as T;
+}
+
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  return (await (await send("PUT", path, body)).json()) as T;
 }
 
 export function fetchAuthStatus(): Promise<AuthStatus> {
@@ -140,3 +158,223 @@ export async function stepUp(password: string, code: string): Promise<void> {
 // them with real anchors.
 export const oidcLoginPath = "/api/auth/oidc/login";
 export const oidcStepUpPath = "/api/auth/oidc/login?stepup=1";
+
+// ---------------------------------------------------------------------------
+// App/catalog API (M2.4 server surface). The spec/status types mirror
+// api/v1alpha1's json tags verbatim — the server DTOs pass the CRD spec and
+// status through unchanged, so these are the frozen public shapes.
+
+export interface SecretKeyRef {
+  name: string;
+  key: string;
+}
+
+// EnvVar carries exactly one of value or secretRef (CEL-enforced XOR).
+export interface EnvVar {
+  name: string;
+  value?: string;
+  secretRef?: SecretKeyRef;
+}
+
+export interface AppSource {
+  github: { repo: string; ref?: string };
+  subPath?: string;
+}
+
+export interface BuildStrategy {
+  strategy: "Dockerfile" | "Static";
+  dockerfile?: { path?: string };
+  static?: { dir: string };
+}
+
+export interface AppSpec {
+  source: AppSource;
+  build: BuildStrategy;
+  type?: "Web" | "Worker";
+  command?: string[];
+  port?: number;
+  replicas?: number;
+  env?: EnvVar[];
+  // Quantities (500m, 256Mi) serialize as JSON strings.
+  resources?: { cpu?: string; memory?: string };
+  healthCheck?: { path: string };
+}
+
+export interface Condition {
+  type: string;
+  status: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+  observedGeneration?: number;
+}
+
+export interface AppStatus {
+  observedGeneration?: number;
+  conditions?: Condition[];
+  image?: string;
+  url?: string;
+  availableReplicas?: number;
+  latestBuild?: string;
+}
+
+export interface AppResponse {
+  name: string;
+  namespace: string;
+  creationTimestamp: string | null;
+  spec: AppSpec;
+  status: AppStatus;
+}
+
+export interface DomainSpec {
+  host: string;
+  appRef: { name: string };
+}
+
+export interface DomainStatus {
+  observedGeneration?: number;
+  conditions?: Condition[];
+}
+
+export interface DomainResponse {
+  name: string;
+  namespace: string;
+  creationTimestamp: string | null;
+  spec: DomainSpec;
+  status: DomainStatus;
+}
+
+export interface PostgresSpec {
+  version?: string;
+  storageSize?: string;
+}
+
+export interface PostgresStatus {
+  observedGeneration?: number;
+  conditions?: Condition[];
+  secretName?: string;
+}
+
+export interface PostgresResponse {
+  name: string;
+  namespace: string;
+  creationTimestamp: string | null;
+  spec: PostgresSpec;
+  status: PostgresStatus;
+}
+
+export interface DeployRow {
+  occurredAt: string;
+  buildName?: string;
+  image?: string;
+  status: string;
+}
+
+// Query keys, hierarchical so invalidating ["apps"] also drops every detail.
+export const appsKey = ["apps"] as const;
+export const appKey = (name: string) => ["apps", name] as const;
+export const appDeploysKey = (name: string) =>
+  ["apps", name, "deploys"] as const;
+export const domainsKey = ["domains"] as const;
+export const postgresListKey = ["postgres"] as const;
+export const postgresKey = (name: string) => ["postgres", name] as const;
+
+async function listItems<T>(path: string): Promise<T[]> {
+  return (await getJSON<{ items: T[] }>(path)).items;
+}
+
+export function listApps(): Promise<AppResponse[]> {
+  return listItems("/api/apps");
+}
+
+export function getApp(name: string): Promise<AppResponse> {
+  return getJSON(`/api/apps/${encodeURIComponent(name)}`);
+}
+
+export function createApp(name: string, spec: AppSpec): Promise<AppResponse> {
+  return postJSON("/api/apps", { name, spec });
+}
+
+export function updateApp(name: string, spec: AppSpec): Promise<AppResponse> {
+  return putJSON(`/api/apps/${encodeURIComponent(name)}`, { spec });
+}
+
+export async function deleteApp(name: string): Promise<void> {
+  await send("DELETE", `/api/apps/${encodeURIComponent(name)}`);
+}
+
+// setAppEnv replaces the app's COMPLETE secret-backed env set (the server
+// writes the <app>-env Secret blind and reconciles spec.env). Values are
+// write-only: the dashboard can never read them back (ADR-0013).
+export function setAppEnv(
+  name: string,
+  secrets: Record<string, string>,
+): Promise<AppResponse> {
+  return putJSON(`/api/apps/${encodeURIComponent(name)}/env`, { secrets });
+}
+
+export function listAppDeploys(name: string): Promise<DeployRow[]> {
+  return listItems(`/api/apps/${encodeURIComponent(name)}/deploys`);
+}
+
+// appLogsPath builds the SSE stream URL for lib/sse.ts (not a JSON endpoint).
+export function appLogsPath(
+  name: string,
+  opts?: { pod?: string; follow?: boolean; tail?: number },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.pod) {
+    params.set("pod", opts.pod);
+  }
+  if (opts?.follow !== undefined) {
+    params.set("follow", String(opts.follow));
+  }
+  if (opts?.tail !== undefined) {
+    params.set("tail", opts.tail.toString());
+  }
+  const query = params.toString();
+  return `/api/apps/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
+}
+
+export function listDomains(): Promise<DomainResponse[]> {
+  return listItems("/api/domains");
+}
+
+// Domain spec is immutable — there is no updateDomain; re-pointing is
+// delete-and-recreate (ADR-0006).
+export function createDomain(
+  name: string,
+  spec: DomainSpec,
+): Promise<DomainResponse> {
+  return postJSON("/api/domains", { name, spec });
+}
+
+export async function deleteDomain(name: string): Promise<void> {
+  await send("DELETE", `/api/domains/${encodeURIComponent(name)}`);
+}
+
+export function listPostgres(): Promise<PostgresResponse[]> {
+  return listItems("/api/postgres");
+}
+
+export function getPostgres(name: string): Promise<PostgresResponse> {
+  return getJSON(`/api/postgres/${encodeURIComponent(name)}`);
+}
+
+export function createPostgres(
+  name: string,
+  spec: PostgresSpec,
+): Promise<PostgresResponse> {
+  return postJSON("/api/postgres", { name, spec });
+}
+
+export function updatePostgres(
+  name: string,
+  spec: PostgresSpec,
+): Promise<PostgresResponse> {
+  return putJSON(`/api/postgres/${encodeURIComponent(name)}`, { spec });
+}
+
+export async function deletePostgres(name: string): Promise<void> {
+  await send("DELETE", `/api/postgres/${encodeURIComponent(name)}`);
+}
