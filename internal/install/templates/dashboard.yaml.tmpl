@@ -60,6 +60,17 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
+{{- if .ReceiverHost }}
+            # The receiver's public webhook endpoint (init's --receiver-host),
+            # baked into the GitHub App manifest the wizard generates; without
+            # it the manifest flow refuses (webhook_url_not_configured).
+            # ORKANO_PUBLIC_URL stays deliberately un-templated: no dashboard
+            # host exists at init time (ClusterIP-only, INV-05) and the
+            # request-derived origin is correct on the private access paths —
+            # set it by hand when fronting the dashboard at a fixed URL.
+            - name: ORKANO_WEBHOOK_URL
+              value: "https://{{ .ReceiverHost }}/webhook"
+{{- end }}
             # OIDC sign-in config (ADR-0016), OPTIONAL per key: every ref is
             # optional:true, so the dashboard starts with OIDC disabled until
             # the onboarding wizard (M2.6) fills the install's empty orkano-oidc

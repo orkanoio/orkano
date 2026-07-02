@@ -123,6 +123,23 @@ func TestRenderComponentsDashboard(t *testing.T) {
 	}
 }
 
+// TestRenderComponentsDashboardWebhookURL: init's --receiver-host threads the
+// receiver's public webhook endpoint into the dashboard env (the GitHub App
+// manifest flow needs it); without the flag the variable is absent and the
+// wizard's GitHub step shows the remediation instead.
+func TestRenderComponentsDashboardWebhookURL(t *testing.T) {
+	without := renderByName(t, Config{Version: "1.0.0"})["dashboard.yaml"]
+	if strings.Contains(without, "ORKANO_WEBHOOK_URL") {
+		t.Error("no webhook URL env should render without --receiver-host")
+	}
+
+	with := renderByName(t, Config{Version: "1.0.0", ReceiverHost: "hooks.example.com"})["dashboard.yaml"]
+	if !strings.Contains(with, "name: ORKANO_WEBHOOK_URL") ||
+		!strings.Contains(with, `value: "https://hooks.example.com/webhook"`) {
+		t.Errorf("dashboard should carry the receiver webhook URL, got:\n%s", with)
+	}
+}
+
 func TestRenderComponentsACMEServerAndEmail(t *testing.T) {
 	// Match the server directive line, not the whole manifest (a comment mentions
 	// "staging by default", which would fool a substring check).
