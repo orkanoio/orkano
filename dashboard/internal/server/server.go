@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
+	"github.com/orkanoio/orkano/dashboard/internal/oidc"
 )
 
 // readyTimeout bounds the dependency checks /readyz performs so a wedged backend
@@ -72,6 +73,12 @@ type Config struct {
 	// GitHubBaseURL is the github.com base the App-creation form POSTs to; empty
 	// defaults to https://github.com. Set it for GitHub Enterprise.
 	GitHubBaseURL string
+	// OIDCValidator vets a candidate OIDC configuration for the wizard's connect
+	// step by loading it fail-closed and performing live issuer discovery — a
+	// config the restarted dashboard could not load must never be written.
+	// OPTIONAL: nil defaults to the production oidc.New-backed probe; tests
+	// inject a fake.
+	OIDCValidator func(ctx context.Context, getenv func(string) string) error
 	// WebhookURL is the receiver's public webhook endpoint baked into the generated
 	// GitHub App manifest. The manifest flow refuses (409) without it — GitHub must
 	// be able to deliver signed webhooks somewhere.
@@ -98,6 +105,10 @@ type Server struct {
 	log    *slog.Logger
 	router chi.Router
 	rl     *rateLimiter
+	// started is when this process loaded its configuration — the wizard's
+	// setup status compares the orkano-oidc write marker against it to detect a
+	// credential rotation this process has not picked up yet.
+	started time.Time
 }
 
 // now returns the configured clock (or time.Now).
@@ -144,11 +155,20 @@ func New(cfg Config) (*Server, error) {
 	if cfg.GitHub == nil {
 		cfg.GitHub = NewGitHubExchanger("")
 	}
+	// The OIDC validator likewise defaults to production behavior: full
+	// discovery via oidc.New under the wizard's submitted values.
+	if cfg.OIDCValidator == nil {
+		cfg.OIDCValidator = func(ctx context.Context, getenv func(string) string) error {
+			_, err := oidc.New(ctx, getenv)
+			return err
+		}
+	}
 
 	s := &Server{
-		cfg: cfg,
-		log: log,
-		rl:  newRateLimiter(rateLimitMax, rateLimitWindow, cfg.Now),
+		cfg:     cfg,
+		log:     log,
+		rl:      newRateLimiter(rateLimitMax, rateLimitWindow, cfg.Now),
+		started: cfg.Now(),
 	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

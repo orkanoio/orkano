@@ -261,7 +261,9 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit success with the App slug as the non-secret target (INV-08); the PEM
-	// and webhook secret are never recorded (INV-03).
+	// and webhook secret are never recorded (INV-03). The settings marker feeds
+	// the wizard's "connected" state — best-effort, the connect already succeeded.
+	s.recordGitHubConnected(ctx, creds)
 	s.auditDetail(ctx, actor, "github.app_connect", creds.Slug, "success", r,
 		map[string]any{"app_id": creds.ID})
 	http.Redirect(w, r, "/?github=connected", http.StatusFound)

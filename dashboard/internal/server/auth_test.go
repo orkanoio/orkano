@@ -34,9 +34,13 @@ type fakeStore struct {
 	recovery   map[int64]map[string]bool // userID -> codeHash -> used
 	audit      []db.AppendAuditEntryParams
 	deploys    []db.DeployHistory
+	settings   map[string]db.Setting
 	deployID   int64
 	nextUserID int64
 	failCreate bool
+	// settingsErr, when set, is returned by every settings method — simulates the
+	// DB being away from the wizard's setup endpoints.
+	settingsErr error
 	// confirmErr, when set, is returned by ConfirmUserTOTP — used to simulate the
 	// single-confirmed-admin unique-violation a concurrent redeem would trigger.
 	confirmErr error
@@ -47,6 +51,7 @@ func newFakeStore() *fakeStore {
 		users:    map[int64]*db.User{},
 		sessions: map[string]*db.Session{},
 		recovery: map[int64]map[string]bool{},
+		settings: map[string]db.Setting{},
 	}
 }
 

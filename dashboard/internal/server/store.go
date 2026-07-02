@@ -44,6 +44,14 @@ type Store interface {
 	ListAppDeploys(ctx context.Context, arg db.ListAppDeploysParams) ([]db.DeployHistory, error)
 	ListAuditEntries(ctx context.Context, arg db.ListAuditEntriesParams) ([]db.AuditLog, error)
 
+	// The onboarding wizard's setup-state rows (M2.6, migration 00007): non-secret
+	// pointers and choices only (INV-03) — the access-mode choice and the GitHub/
+	// OIDC connect markers the dashboard cannot derive from the value-blind
+	// Secrets it writes. *db.Queries supplies both (its GetSetting point-read
+	// stays off this interface until a handler needs it — small surface).
+	UpsertSetting(ctx context.Context, arg db.UpsertSettingParams) error
+	ListSettings(ctx context.Context) ([]db.Setting, error)
+
 	// CreateAdmin atomically clears any abandoned enrollment, creates the single
 	// admin (TOTP unconfirmed), and stores its recovery-code hashes — all in one
 	// transaction so a redeem can never leave a half-built account.

@@ -107,6 +107,17 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		gr.Get("/callback", s.handleGitHubCallback)
 	})
 
+	// The onboarding wizard (M2.6): setup status (the wizard face of the shared
+	// check registry) plus its two write steps. Reads and the access-mode choice
+	// need a session; writing the OIDC configuration rewires who can sign in, so
+	// it gates on a fresh second factor like the destructive mutations.
+	r.Route("/api/setup", func(sr chi.Router) {
+		sr.Use(s.RequireSession)
+		sr.Get("/status", s.handleSetupStatus)
+		sr.Post("/access-mode", s.handleSetAccessMode)
+		sr.With(s.RequireStepUp).Post("/oidc", s.handleSetupOIDC)
+	})
+
 	// Any other /api path is a JSON 404, never the SPA shell — an API client must
 	// not receive HTML for an unknown endpoint. This pattern is more specific than
 	// the root "/*" SPA catch-all, so chi matches it for unmatched /api paths only.
