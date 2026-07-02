@@ -94,6 +94,14 @@ type setupStatusResponse struct {
 	// from the request Host — correct for the access path in use, but worth a
 	// warning in the UI before it lands persistently in the Secret.
 	PublicURLConfigured bool `json:"publicUrlConfigured"`
+	// OIDCRedirectURL is the exact callback URL the connect step will register
+	// when ORKANO_PUBLIC_URL is set (empty otherwise — the client derives it
+	// from its own origin then). Exposed so the wizard shows the admin the
+	// server-authoritative value BEFORE they register it at the IdP: an admin
+	// on a port-forward would otherwise register their localhost origin while
+	// the server writes the pinned one, breaking every sign-in with a
+	// redirect_uri_mismatch discovered only later.
+	OIDCRedirectURL string `json:"oidcRedirectUrl"`
 	OIDCEnabled         bool `json:"oidcEnabled"`
 	// OIDCPendingRestart: orkano-oidc was written but this process has not
 	// loaded it — either OIDC is off entirely (initial connect) or the write
@@ -143,6 +151,7 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		AccessMode:           settings[settingAccessMode],
 		WebhookURLConfigured: s.cfg.WebhookURL != "",
 		PublicURLConfigured:  s.cfg.PublicURL != "",
+		OIDCRedirectURL:      s.pinnedOIDCRedirectURL(),
 		OIDCEnabled:          s.cfg.OIDC != nil,
 		OIDCPendingRestart:   oidcPending,
 		GitHub: setupGitHubState{
@@ -178,6 +187,15 @@ func (s *Server) loadSettings(ctx context.Context) (map[string]string, error) {
 		m[row.Key] = row.Value
 	}
 	return m, nil
+}
+
+// pinnedOIDCRedirectURL is the callback URL a connect will register when the
+// public URL is pinned; empty when it would be request-derived.
+func (s *Server) pinnedOIDCRedirectURL() string {
+	if s.cfg.PublicURL == "" {
+		return ""
+	}
+	return s.cfg.PublicURL + oidcCallbackPath
 }
 
 // oidcRestartPending reports whether the orkano-oidc Secret holds newer

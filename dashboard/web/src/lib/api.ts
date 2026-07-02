@@ -340,6 +340,101 @@ export function listDomains(): Promise<DomainResponse[]> {
   return listItems("/api/domains");
 }
 
+// ---------------------------------------------------------------------------
+// Onboarding wizard (M2.6 setup API). The status endpoint is the wizard face
+// of the shared check registry: checks arrive in dependency order, which IS
+// the wizard's walk order.
+
+export const setupStatusKey = ["setup", "status"] as const;
+
+export interface SetupCheck {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  summary?: string;
+  outcome: "pass" | "fail" | "skip" | "error" | "blocked";
+  message?: string;
+  blockers?: string[];
+  remediation?: string;
+}
+
+export interface SetupGitHubState {
+  connected: boolean;
+  appSlug?: string;
+  appId?: string;
+  connectedAt?: string;
+}
+
+export interface SetupStatus {
+  checks: SetupCheck[];
+  accessMode: string;
+  webhookUrlConfigured: boolean;
+  // false = the OIDC redirect URL will derive from the request Host (correct
+  // for the access path in use, but worth a warning before it persists).
+  publicUrlConfigured: boolean;
+  // The server-authoritative callback URL when ORKANO_PUBLIC_URL pins it
+  // (empty = request-derived; the client shows its own origin then).
+  oidcRedirectUrl: string;
+  oidcEnabled: boolean;
+  // true = orkano-oidc holds newer configuration than the running process
+  // loaded (initial connect, or a rotation) — prompt the rollout restart.
+  oidcPendingRestart: boolean;
+  github: SetupGitHubState;
+}
+
+export function fetchSetupStatus(): Promise<SetupStatus> {
+  return getJSON("/api/setup/status");
+}
+
+export type AccessMode = "proxy" | "tailscale" | "iap" | "public";
+
+export async function setAccessMode(mode: AccessMode): Promise<void> {
+  await post("/api/setup/access-mode", { mode });
+}
+
+// The redirect URL is deliberately absent: the server derives the only correct
+// value itself and returns it, so the admin registers exactly that at the IdP.
+export interface SetupOIDCRequest {
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  allowedEmails?: string;
+  allowedGroups?: string;
+}
+
+export interface SetupOIDCResponse {
+  redirectUrl: string;
+  restartRequired: boolean;
+}
+
+export function configureOIDC(
+  req: SetupOIDCRequest,
+): Promise<SetupOIDCResponse> {
+  return postJSON("/api/setup/oidc", req);
+}
+
+// startGitHubManifest fetches the App manifest + the GitHub form URL; the
+// wizard then form-POSTs the manifest to GitHub (a real navigation — GitHub
+// renders its App-creation screen and redirects back to the callback).
+export interface GitHubManifestStart {
+  postUrl: string;
+  manifest: string;
+}
+
+export function startGitHubManifest(opts?: {
+  org?: string;
+  name?: string;
+}): Promise<GitHubManifestStart> {
+  const params = new URLSearchParams();
+  if (opts?.org) {
+    params.set("org", opts.org);
+  }
+  if (opts?.name) {
+    params.set("name", opts.name);
+  }
+  const query = params.toString();
+  return getJSON(`/api/github/app/manifest${query ? `?${query}` : ""}`);
+}
+
 // Domain spec is immutable — there is no updateDomain; re-pointing is
 // delete-and-recreate (ADR-0006).
 export function createDomain(

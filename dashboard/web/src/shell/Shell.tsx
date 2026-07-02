@@ -14,6 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { authStatusKey, logout, type AuthStatus } from "@/lib/api";
 import { Link, routeSegments, useRoute } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { SetupWizard } from "@/setup/SetupWizard";
 
 import { SessionContext } from "./session";
 
@@ -49,6 +50,9 @@ export function Shell({
               </NavLink>
               <NavLink to="/databases" active={isSection(route, "databases")}>
                 Databases
+              </NavLink>
+              <NavLink to="/setup" active={isSection(route, "setup")}>
+                Setup
               </NavLink>
             </nav>
             <SessionControls username={status.username} oidc={status.oidc} />
@@ -119,6 +123,9 @@ function routeContent(segments: string[]): ReactNode {
       return <PostgresDetail key={second} name={second} />;
     }
     return <PostgresList />;
+  }
+  if (head === "setup") {
+    return <SetupWizard />;
   }
   return (
     <p className="text-muted-foreground text-sm">

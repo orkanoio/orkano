@@ -185,4 +185,51 @@ describe("App auth gate", () => {
       screen.queryByText("That identity is not allowed to access this dashboard."),
     ).not.toBeInTheDocument();
   });
+
+  it("surfaces a github=connected redirect and lands on the setup wizard", async () => {
+    window.history.replaceState(null, "", "/?github=connected");
+    stubFetchRoutes({
+      "GET /api/auth/status": () => jsonResponse(200, authenticated),
+      "GET /api/setup/status": () =>
+        jsonResponse(200, {
+          checks: [],
+          accessMode: "",
+          webhookUrlConfigured: true,
+          publicUrlConfigured: false,
+          oidcRedirectUrl: "",
+          oidcEnabled: false,
+          oidcPendingRestart: false,
+          github: { connected: true, appSlug: "orkano-acme" },
+        }),
+    });
+    renderWithClient(<App />);
+
+    expect(
+      await screen.findByText("GitHub App connected"),
+    ).toBeInTheDocument();
+    // The param is scrubbed, the router landed on the wizard, and the wizard
+    // actually rendered (not just the hash).
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("#/setup");
+    expect(
+      await screen.findByRole("heading", { name: "1. Access mode" }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a github_error redirect as a destructive banner", async () => {
+    window.history.replaceState(null, "", "/?github_error=exchange_failed");
+    stubFetchRoutes({
+      "GET /api/auth/status": () =>
+        jsonResponse(200, { state: "needs_login", oidcEnabled: false }),
+    });
+    renderWithClient(<App />);
+
+    expect(
+      await screen.findByText("GitHub connection failed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/did not complete the App creation/),
+    ).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+  });
 });

@@ -188,6 +188,26 @@ func TestSetupStatusFresh(t *testing.T) {
 		resp.OIDCPendingRestart || resp.GitHub.Connected {
 		t.Errorf("fresh install state drifted: %+v", resp)
 	}
+	if resp.PublicURLConfigured || resp.OIDCRedirectURL != "" {
+		t.Errorf("no PublicURL: redirect URL must be request-derived, got %+v", resp)
+	}
+}
+
+// TestSetupStatusPinnedRedirectURL: with ORKANO_PUBLIC_URL set, the status
+// carries the exact callback URL a connect will register, so the wizard shows
+// the authoritative value before the admin registers it at the IdP.
+func TestSetupStatusPinnedRedirectURL(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	s, _ := setupServer(t, store, func(cfg *Config) {
+		cfg.PublicURL = "https://dash.example.com"
+	})
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	if !resp.PublicURLConfigured || resp.OIDCRedirectURL != "https://dash.example.com"+oidcCallbackPath {
+		t.Fatalf("pinned redirect URL drifted: %+v", resp)
+	}
 }
 
 // TestSetupStatusConfigured: with the webhook URL set, GitHub connected (the

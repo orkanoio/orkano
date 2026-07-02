@@ -18,33 +18,71 @@ import {
   fetchAuthStatus,
   type AuthStatus,
 } from "@/lib/api";
+import { navigate } from "@/lib/router";
+import { readGitHubResult, stripGitHubParams } from "@/setup/github";
 import { Shell } from "@/shell/Shell";
 
 export default function App() {
-  // A pure read in the initializer (StrictMode-safe); the URL is scrubbed in
-  // the effect so a reload doesn't re-surface a stale SSO failure.
+  // Pure reads in the initializers (StrictMode-safe); the URL is scrubbed in
+  // the effect so a reload doesn't re-surface a stale result.
   const [ssoError, setSsoError] = useState(readSSOError);
+  // The GitHub manifest callback redirects to "/?github=connected" or
+  // "/?github_error=<code>"; surface it and land back on the setup wizard.
+  const [githubResult, setGithubResult] = useState(readGitHubResult);
   useEffect(() => {
     stripSSOErrorParam();
+    if (readGitHubResult() !== null) {
+      stripGitHubParams();
+      navigate("/setup");
+    }
   }, []);
 
-  const banner = ssoError ? (
-    <Alert variant="destructive" className="w-full">
-      <AlertTitle>Single sign-on error</AlertTitle>
-      <AlertDescription>
-        {ssoError}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setSsoError(null);
-          }}
-        >
-          Dismiss
-        </Button>
-      </AlertDescription>
-    </Alert>
-  ) : null;
+  const banner =
+    ssoError || githubResult ? (
+      <div className="flex w-full flex-col gap-2">
+        {ssoError && (
+          <Alert variant="destructive" className="w-full">
+            <AlertTitle>Single sign-on error</AlertTitle>
+            <AlertDescription>
+              {ssoError}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSsoError(null);
+                }}
+              >
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+        {githubResult && (
+          <Alert
+            variant={githubResult.ok ? "default" : "destructive"}
+            className="w-full"
+          >
+            <AlertTitle>
+              {githubResult.ok ? "GitHub App connected" : "GitHub connection failed"}
+            </AlertTitle>
+            <AlertDescription>
+              {githubResult.ok
+                ? "Push webhooks now reach this install once the App is installed on your repositories."
+                : githubResult.message}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setGithubResult(null);
+                }}
+              >
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+    ) : null;
 
   return <AuthGate banner={banner} />;
 }
