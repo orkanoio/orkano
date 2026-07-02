@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -571,6 +572,25 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 		t.Fatalf("dashboard DELETE users should succeed: %v", err)
 	}
 
+	// settings (migration 00007): read + upsert, never DELETE/TRUNCATE — setup
+	// state is re-chosen, not erased.
+	if err := dq.UpsertSetting(ctx, db.UpsertSettingParams{Key: "access_mode", Value: "proxy"}); err != nil {
+		t.Fatalf("dashboard UpsertSetting should succeed: %v", err)
+	}
+	if err := dq.UpsertSetting(ctx, db.UpsertSettingParams{Key: "access_mode", Value: "tailscale"}); err != nil {
+		t.Fatalf("dashboard UpsertSetting overwrite (UPDATE arm) should succeed: %v", err)
+	}
+	if s, err := dq.GetSetting(ctx, "access_mode"); err != nil || s.Value != "tailscale" {
+		t.Fatalf("dashboard GetSetting should succeed: got %+v, %v", s, err)
+	}
+	if all, err := dq.ListSettings(ctx); err != nil || len(all) != 1 {
+		t.Fatalf("dashboard ListSettings should succeed: got %d, %v", len(all), err)
+	}
+	_, err = dash.Exec(ctx, "DELETE FROM settings")
+	assertDenied(t, "dashboard DELETE settings", err)
+	_, err = dash.Exec(ctx, "TRUNCATE settings")
+	assertDenied(t, "dashboard TRUNCATE settings", err)
+
 	// The dashboard role holds nothing on the webhook queue — it can neither read
 	// nor ring the doorbell (cross-component blast-radius).
 	_, err = dash.Exec(ctx, "SELECT delivery_id FROM webhook_deliveries")
@@ -586,11 +606,15 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 	assertDenied(t, "receiver SELECT users", err)
 	_, err = recv.Exec(ctx, "SELECT id FROM recovery_codes")
 	assertDenied(t, "receiver SELECT recovery_codes", err)
+	_, err = recv.Exec(ctx, "SELECT key FROM settings")
+	assertDenied(t, "receiver SELECT settings", err)
 	disp := connectAs(t, dsn, "orkano_dispatcher", "disp-pw")
 	_, err = disp.Exec(ctx, "SELECT id FROM users")
 	assertDenied(t, "dispatcher SELECT users", err)
 	_, err = disp.Exec(ctx, "SELECT id FROM recovery_codes")
 	assertDenied(t, "dispatcher SELECT recovery_codes", err)
+	_, err = disp.Exec(ctx, "SELECT key FROM settings")
+	assertDenied(t, "dispatcher SELECT settings", err)
 }
 
 // TestDashboardSchemaHasNoSecretValueColumns pins the exact column set of each
@@ -624,6 +648,9 @@ func TestDashboardSchemaHasNoSecretValueColumns(t *testing.T) {
 		{"deploy_history", []string{"id", "occurred_at", "app_namespace", "app_name", "build_name", "image", "status"}},
 		// recovery_codes (00005): hashed (one-way) codes only, never plaintext.
 		{"recovery_codes", []string{"id", "user_id", "code_hash", "used_at", "created_at"}},
+		// settings (00007): wizard setup state — non-secret pointers and choices
+		// only (access mode, GitHub App slug/id, timestamps), never a credential.
+		{"settings", []string{"key", "value", "updated_at"}},
 	}
 	for _, tc := range want {
 		rows, err := pool.Query(ctx,
@@ -779,6 +806,73 @@ func TestDashboardOIDCUserRoundTrip(t *testing.T) {
 	if _, err := dq.GetUserByOIDC(ctx, db.GetUserByOIDCParams{Issuer: pgText(issuer), Subject: pgText("ghi-789")}); err != nil {
 		t.Fatalf("GetUserByOIDC under dashboard role: %v", err)
 	}
+}
+
+// TestDashboardSettingsRoundTrip exercises the setup-state queries (migration
+// 00007): upsert-then-read, the overwrite arm, ListSettings ordering, the
+// missing-key contract, and the CHECK bounds on both columns.
+func TestDashboardSettingsRoundTrip(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	q := db.New(pool)
+
+	if _, err := q.GetSetting(ctx, "access_mode"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetSetting on a never-written key: want pgx.ErrNoRows, got %v", err)
+	}
+	// The empty-table contract: no rows, no error (the wizard status endpoint
+	// runs this on a fresh install before anything was written).
+	if all, err := q.ListSettings(ctx); err != nil || len(all) != 0 {
+		t.Fatalf("ListSettings on empty table: got %d rows, %v", len(all), err)
+	}
+
+	if err := q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "github_app_slug", Value: "orkano"}); err != nil {
+		t.Fatalf("UpsertSetting insert: %v", err)
+	}
+	if err := q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "access_mode", Value: "proxy"}); err != nil {
+		t.Fatalf("UpsertSetting insert: %v", err)
+	}
+	first, err := q.GetSetting(ctx, "access_mode")
+	if err != nil || first.Value != "proxy" || !first.UpdatedAt.Valid {
+		t.Fatalf("GetSetting after insert: got %+v, %v", first, err)
+	}
+
+	if err := q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "access_mode", Value: "public"}); err != nil {
+		t.Fatalf("UpsertSetting overwrite: %v", err)
+	}
+	second, err := q.GetSetting(ctx, "access_mode")
+	if err != nil || second.Value != "public" {
+		t.Fatalf("GetSetting after overwrite: got %+v, %v", second, err)
+	}
+	if second.UpdatedAt.Time.Before(first.UpdatedAt.Time) {
+		t.Fatalf("overwrite regressed updated_at: %v -> %v", first.UpdatedAt.Time, second.UpdatedAt.Time)
+	}
+
+	all, err := q.ListSettings(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("ListSettings: got %d rows, %v", len(all), err)
+	}
+	if all[0].Key != "access_mode" || all[1].Key != "github_app_slug" {
+		t.Fatalf("ListSettings order drifted: %q, %q", all[0].Key, all[1].Key)
+	}
+
+	// The CHECK constraints (23514 check_violation) — defense-in-depth under
+	// whatever the server layer lets through. The key ENUM is the INV-03
+	// backstop: a key outside the migration's fixed set refuses, so a credential
+	// cannot be smuggled in under a novel key without a visible migration.
+	err = q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "", Value: "x"})
+	assertPgCode(t, "empty key", err, "23514")
+	err = q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "oidc_client_secret", Value: "s3cret"})
+	assertPgCode(t, "unknown key (INV-03 enum)", err, "23514")
+	err = q.UpsertSetting(ctx, db.UpsertSettingParams{Key: "access_mode", Value: strings.Repeat("v", 513)})
+	assertPgCode(t, "oversized value", err, "23514")
 }
 
 // pgText wraps a non-NULL text value for a pgtype.Text query parameter.
