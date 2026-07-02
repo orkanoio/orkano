@@ -34,6 +34,11 @@ const (
 	// is update-only, so the placeholder must already exist for the update to land).
 	// Generate-once like the rest, so a re-install never wipes a connected App.
 	secretGitHubApp = "orkano-github-app" //nolint:gosec // G101: Secret name, not a credential.
+	// secretOIDC is the same shape for the wizard's OIDC connect step: created
+	// EMPTY (the Deployment's per-key optional secretKeyRefs resolve nothing
+	// from it), filled by a value-blind UPDATE, preserved on re-install so a
+	// connected IdP survives.
+	secretOIDC = "orkano-oidc" //nolint:gosec // G101: Secret name, not a credential.
 )
 
 // secretValues are the credentials generated once per install. They are written
@@ -137,9 +142,11 @@ func ensureSecrets(ctx context.Context, n *node, v secretValues) (bootstrapToken
 		{secretDashboardEncKey, map[string]string{"key": v.dashboardEncKey}},
 		{secretWebhook, map[string]string{"secret": v.webhookSecret}},
 		{secretBootstrap, map[string]string{"token-sha256": hex.EncodeToString(tokenHash[:])}},
-		// Empty placeholder for the M2.6 GitHub App manifest flow to fill (see the
-		// secretGitHubApp const). No generated value — its credentials come from GitHub.
+		// Empty placeholders for the M2.6 onboarding flows to fill (see the
+		// secretGitHubApp/secretOIDC consts). No generated values — the GitHub
+		// credentials come from GitHub, the OIDC configuration from the wizard.
 		{secretGitHubApp, map[string]string{}},
+		{secretOIDC, map[string]string{}},
 	}
 
 	for _, s := range specs {

@@ -60,20 +60,71 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
-          # OIDC sign-in config (ADR-0016), OPTIONAL. The Secret's keys ARE the env
-          # var names: ORKANO_OIDC_ISSUER, _CLIENT_ID, _CLIENT_SECRET,
-          # _REDIRECT_URL, _ALLOWED_EMAILS, _ALLOWED_GROUPS, and the optional
-          # _SCOPES, _GROUPS_CLAIM. optional:true means the dashboard starts with
-          # OIDC disabled until the onboarding wizard (M2.6) creates this Secret
-          # and rolls the pod — no init flags, fail-closed by absence. The client
-          # secret stays in this K8s Secret, never in Postgres. The Secret lives in
-          # orkano-system (this pod's namespace) and is admin/wizard-controlled —
-          # the dashboard SA can write Secrets only in orkano-apps, so it cannot
-          # inject env into its own pod. Explicit env above wins any name clash.
-          envFrom:
-            - secretRef:
-                name: orkano-oidc
-                optional: true
+            # OIDC sign-in config (ADR-0016), OPTIONAL per key: every ref is
+            # optional:true, so the dashboard starts with OIDC disabled until
+            # the onboarding wizard (M2.6) fills the install's empty orkano-oidc
+            # placeholder via a value-blind UPDATE and the admin rolls the pod —
+            # no init flags, fail-closed by absence. The client secret stays in
+            # this K8s Secret, never in Postgres.
+            #
+            # Explicit per-key refs, deliberately NOT envFrom — the wizard grant
+            # (orkano-dashboard-credentials, update-only, step-up-gated) makes
+            # this Secret dashboard-SA-writable, and envFrom would let a hostile
+            # write inject ARBITRARY env into this very pod on its next restart
+            # — ORKANO_GITHUB_API_BASE_URL would redirect the next manifest
+            # exchange's single-use code to a hostile host (trading credential
+            # ROTATION, which the grant allows, for THEFT of the next App key,
+            # which value-blindness forbids), and KUBERNETES_SERVICE_HOST or
+            # HTTPS_PROXY reach even deeper. Naming the keys pins the injectable
+            # surface to exactly the OIDC configuration itself.
+            - name: ORKANO_OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ISSUER
+                  optional: true
+            - name: ORKANO_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_CLIENT_ID
+                  optional: true
+            - name: ORKANO_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_CLIENT_SECRET
+                  optional: true
+            - name: ORKANO_OIDC_REDIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_REDIRECT_URL
+                  optional: true
+            - name: ORKANO_OIDC_ALLOWED_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ALLOWED_EMAILS
+                  optional: true
+            - name: ORKANO_OIDC_ALLOWED_GROUPS
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ALLOWED_GROUPS
+                  optional: true
+            - name: ORKANO_OIDC_SCOPES
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_SCOPES
+                  optional: true
+            - name: ORKANO_OIDC_GROUPS_CLAIM
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_GROUPS_CLAIM
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

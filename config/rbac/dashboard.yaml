@@ -39,17 +39,22 @@ subjects:
     name: orkano-dashboard
     namespace: orkano-system
 ---
-# The GitHub App manifest flow (M2.6) writes the App credential and the webhook
-# secret into orkano-system, where the operator and receiver read them. This is
-# the dashboard's only reach into orkano-system, and it is the narrowest possible:
-# UPDATE only (no get/create/delete), pinned by resourceNames to exactly the two
-# platform Secrets. update (not create) because create cannot be resourceNames-
-# pinned in Kubernetes RBAC — so the install pre-creates an empty orkano-github-app
-# placeholder (orkano-webhook-secret already exists), and the flow blind-overwrites
-# them. A fully compromised dashboard can thus rotate these two credentials
-# (visible, recoverable) but cannot read them (value-blind, ADR-0013/INV-07) and
-# cannot touch any other orkano-system Secret (the superuser password, the enc-key,
-# the bootstrap token).
+# The onboarding wizard's credential writes into orkano-system: the GitHub App
+# manifest flow (M2.6) writes the App credential and the webhook secret, and the
+# wizard's OIDC connect step writes the IdP client configuration. This is the
+# dashboard's only reach into orkano-system, and it is the narrowest possible:
+# UPDATE only (no get/create/delete), pinned by resourceNames to exactly the
+# three platform Secrets. update (not create) because create cannot be
+# resourceNames-pinned in Kubernetes RBAC — so the install pre-creates empty
+# orkano-github-app and orkano-oidc placeholders (orkano-webhook-secret already
+# exists), and the flows blind-overwrite them. A fully compromised dashboard can
+# thus rotate these credentials (visible, recoverable) but cannot read them
+# (value-blind, ADR-0013/INV-07) and cannot touch any other orkano-system Secret
+# (the superuser password, the enc-key, the bootstrap token). NB orkano-oidc
+# feeds the dashboard's OWN pod env — the write is gated on step-up re-auth,
+# and the Deployment mounts it via explicit per-key secretKeyRefs (never
+# envFrom), so a hostile write can only ever influence the named ORKANO_OIDC_*
+# variables: the blast radius stays the OIDC sign-in configuration itself.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -59,7 +64,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["update"]
-    resourceNames: ["orkano-github-app", "orkano-webhook-secret"]
+    resourceNames: ["orkano-github-app", "orkano-webhook-secret", "orkano-oidc"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

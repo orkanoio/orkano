@@ -59,11 +59,11 @@ var accessModes = map[string]bool{
 	"public":    true,
 }
 
-// oidcSecretName is the optional Secret dashboard.yaml.tmpl mounts via envFrom;
+// oidcSecretName is the Secret dashboard.yaml.tmpl mounts via per-key refs;
 // the install pre-creates an empty placeholder so the wizard's value-blind
 // UPDATE (no create — it cannot be resourceNames-pinned) has an object to
 // replace. MUST stay byte-identical to internal/install (secretOIDC) and the
-// template's envFrom secretRef.
+// template's secretKeyRef names.
 const oidcSecretName = "orkano-oidc" //nolint:gosec // G101: a Secret object name, not a credential.
 
 // oidcDiscoveryTimeout bounds the live issuer-discovery probe the OIDC connect

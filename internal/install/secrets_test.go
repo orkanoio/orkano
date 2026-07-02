@@ -61,7 +61,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp, secretOIDC} {
 		if _, ok := n.secrets[name]; !ok {
 			t.Errorf("expected secret %s to be created", name)
 		}
@@ -80,10 +80,13 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Error("bootstrap-token Secret must not store the plaintext token")
 	}
 
-	// The GitHub App Secret is an empty placeholder — no credential value, just a
-	// target for the M2.6 wizard's value-blind update.
-	if got := n.secrets[secretGitHubApp]; !strings.Contains(got, "data: {}") {
-		t.Errorf("github-app placeholder should carry empty data, got: %s", got)
+	// The GitHub App and OIDC Secrets are empty placeholders — no credential
+	// value, just targets for the M2.6 wizard's value-blind updates. An empty
+	// orkano-oidc resolves nothing through the Deployment's per-key refs.
+	for _, name := range []string{secretGitHubApp, secretOIDC} {
+		if got := n.secrets[name]; !strings.Contains(got, "data: {}") {
+			t.Errorf("%s placeholder should carry empty data, got: %s", name, got)
+		}
 	}
 	if strings.Contains(n.secrets[secretGitHubApp], "private-key.pem") {
 		t.Error("github-app placeholder must not carry a private key at install time")
@@ -104,7 +107,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
 	// Pre-existing secrets (a prior install): mark all present.
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp} {
+	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp, secretOIDC} {
 		n.secrets[name] = "preexisting"
 	}
 

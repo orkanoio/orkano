@@ -91,11 +91,27 @@ func TestRenderComponentsDashboard(t *testing.T) {
 			t.Errorf("dashboard manifest missing %q", want)
 		}
 	}
-	// OIDC config (ADR-0016) is injected from an OPTIONAL Secret, so a fresh
-	// install runs with OIDC disabled until the wizard creates orkano-oidc.
+	// OIDC config (ADR-0016) is injected via EXPLICIT per-key optional
+	// secretKeyRefs — deliberately NOT envFrom: the orkano-oidc Secret is
+	// dashboard-SA-writable (the wizard grant), and envFrom would let a
+	// hostile write inject arbitrary env into the pod (e.g. redirect the
+	// GitHub manifest exchange). Naming the keys pins the injectable surface
+	// to exactly the OIDC configuration.
+	if strings.Contains(d, "envFrom:") {
+		t.Error("dashboard must not envFrom the dashboard-writable orkano-oidc Secret")
+	}
+	for _, key := range []string{
+		"ORKANO_OIDC_ISSUER", "ORKANO_OIDC_CLIENT_ID", "ORKANO_OIDC_CLIENT_SECRET",
+		"ORKANO_OIDC_REDIRECT_URL", "ORKANO_OIDC_ALLOWED_EMAILS",
+		"ORKANO_OIDC_ALLOWED_GROUPS", "ORKANO_OIDC_SCOPES", "ORKANO_OIDC_GROUPS_CLAIM",
+	} {
+		if !strings.Contains(d, "key: "+key) {
+			t.Errorf("dashboard manifest missing OIDC key ref %q", key)
+		}
+	}
 	for _, want := range []string{"name: orkano-oidc", "optional: true"} {
 		if !strings.Contains(d, want) {
-			t.Errorf("dashboard manifest missing OIDC envFrom %q", want)
+			t.Errorf("dashboard manifest missing OIDC secretKeyRef %q", want)
 		}
 	}
 	// INV-05: ClusterIP only, never an Ingress; never a public Service type.
