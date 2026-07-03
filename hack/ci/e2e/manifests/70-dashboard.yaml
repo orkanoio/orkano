@@ -1,0 +1,116 @@
+# Dashboard Deployment + ClusterIP Service, mirroring internal/install/templates/
+# dashboard.yaml.tmpl (M2.2/M2.6). This is the "live dashboard smoke" (M2.6
+# sub-commit 7): the engine E2E stays engine-only, so the dashboard rides in as a
+# self-contained deploy + rollout/readyz probe at the end of run.sh, reusing the
+# platform Postgres + migrations + RBAC the engine E2E already stands up.
+#
+# Differences for the hermetic E2E, same as 30-operator.yaml:
+#   * the locally-built image (kind-loaded, IfNotPresent) — never a registry pull;
+#   * the OPTIONAL ORKANO_OIDC_* keys are omitted (no orkano-oidc Secret here, so
+#     OIDC stays disabled; the template mounts them optional:true and OIDC is
+#     unit-tested in dashboard/internal/{oidc,server}). The three env below are
+#     the ones the dashboard fails fast without.
+#   * ORKANO_WEBHOOK_URL is omitted (no receiver host; the GitHub App manifest
+#     flow is exercised by dashboard/internal/server unit tests, not this smoke).
+#
+# INV-05: ClusterIP only, no Ingress — the dashboard is never internet-reachable
+# by default; run.sh reaches it through a kubectl port-forward.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-dashboard
+    spec:
+      serviceAccountName: orkano-dashboard
+      # Unlike the receiver, the dashboard mounts its SA token: it talks to the
+      # Kubernetes API (writes Orkano CRs, impersonated reads) — INV-01 bounds it
+      # to the orkano-dashboard Role, never cluster-admin.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: orkano-dashboard:e2e
+          imagePullPolicy: IfNotPresent
+          env:
+            # The dashboard's own store (users/sessions/audit/history) as the
+            # least-privilege orkano_dashboard role (INV-03: only the DSN).
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-db
+                  key: dsn
+            # The app-layer key that seals the TOTP seed at rest.
+            - name: ORKANO_DASHBOARD_ENC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-enc-key
+                  key: key
+            # The install-token hash redemption is checked against (ADR-0003).
+            - name: ORKANO_BOOTSTRAP_TOKEN_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-bootstrap-token
+                  key: token-sha256
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

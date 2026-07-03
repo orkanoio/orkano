@@ -39,6 +39,7 @@ GITFIXTURE_REPO="/srv/git/${REPO}.git"
 
 OPERATOR_IMG="orkano-operator:e2e"
 RECEIVER_IMG="orkano-receiver:e2e"
+DASHBOARD_IMG="orkano-dashboard:e2e"
 HELPER_IMG="orkano-e2e-helper:e2e"
 
 # The registry host every image ref carries (portless = 443); the node-wiring
@@ -67,6 +68,8 @@ dump_state() {
   kubectl logs deploy/orkano-operator -n orkano-system --tail=40 2>/dev/null
   echo '--- dump: receiver log'
   kubectl logs deploy/orkano-receiver -n orkano-system --tail=20 2>/dev/null
+  echo '--- dump: dashboard log'
+  kubectl logs deploy/orkano-dashboard -n orkano-system --tail=30 2>/dev/null
   echo '--- dump: gitfixture / github-stub logs'
   kubectl logs deploy/gitfixture -n orkano-e2e --tail=15 2>/dev/null
   kubectl logs deploy/github-stub -n orkano-e2e --tail=15 2>/dev/null
@@ -332,9 +335,14 @@ if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   fi
 fi
 
-log "build + load operator, receiver, and the combined e2e helper images"
+log "build + load operator, receiver, dashboard, and the combined e2e helper images"
 build_load ./operator orkano-operator "$OPERATOR_IMG"
 build_load ./receiver orkano-receiver "$RECEIVER_IMG"
+# The dashboard builds Node-free here: a plain `go build` embeds the committed
+# placeholder page (web_placeholder.go), so the smoke needs no JS toolchain. The
+# real Vite SPA is a release-only `-tags webdist` build, exercised by `make
+# verify-web`; this smoke proves the binary boots + serves, not the UI.
+build_load ./dashboard orkano-dashboard "$DASHBOARD_IMG"
 # The helper image bakes the git fixture repo (seed.sh) and ships the
 # github-stub + git-fixture subcommands; its own context is assembled here.
 hctx="$(mktemp -d)"
@@ -618,7 +626,41 @@ echo "OK: build pod has no token; reaches its allowlist; denied elsewhere"
 kubectl delete pod receiver-canary -n orkano-system >/dev/null 2>&1 || true
 kubectl delete pod build-canary -n orkano-builds >/dev/null 2>&1 || true
 
-log "PASS — engine E2E + invariant probes"
+# Dashboard smoke (M2.6 sub-commit 7) -----------------------------------------
+# The engine E2E above stays engine-only; the dashboard rides in here as a
+# self-contained deploy + rollout/readyz probe over the platform the engine has
+# already stood up (Postgres + migrations + the orkano-dashboard RBAC/SA). It is
+# the M2.2 deferral: prove the orkano-dashboard binary boots against the real
+# orkano_dashboard role + schema, not just that the Go units pass. It never
+# redeems the install token, so the cluster stays at needs_bootstrap.
+log "deploy the dashboard and smoke its rollout + API (M2.6)"
+kubectl apply -f "$DIR/manifests/70-dashboard.yaml" >/dev/null
+kubectl rollout status deploy/orkano-dashboard -n orkano-system --timeout=180s \
+  || fatal "dashboard Deployment never rolled out (readyz pings Postgres as orkano_dashboard)"
+
+kubectl port-forward svc/orkano-dashboard -n orkano-system 18091:80 >/dev/null 2>&1 &
+PF_PID=$!
+# /readyz pings Postgres as the orkano_dashboard role — a successful answer proves
+# the DSN Secret, the migration-set role password, and network reach all line up
+# (it also gates that the port-forward is serving before we probe the app routes).
+# /healthz is not probed separately: the livenessProbe already gates the rollout
+# above, so a completed rollout means it answers.
+wait_http "http://127.0.0.1:18091/readyz" 60 || fatal "dashboard /readyz never answered"
+# The embedded SPA (the placeholder page in this Node-free build) serves at root.
+curl -fsS -o /dev/null "http://127.0.0.1:18091/" || fatal "dashboard did not serve the SPA at /"
+# Functional proof: /api/auth/status queries the real dashboard schema as the
+# orkano_dashboard role. A fresh hermetic cluster has no admin (the token is never
+# redeemed), so CountConfirmedAdmins == 0 -> needs_bootstrap. This exercises the
+# /api router + the dashboard migrations (00003-00007) + the role's SELECT grant
+# end to end — a strictly stronger check than /readyz's bare DB ping. No -f here:
+# a non-2xx must be captured into status_body so the fatal message is actionable.
+status_body="$(curl -sS "http://127.0.0.1:18091/api/auth/status" 2>/dev/null || true)"
+kill "$PF_PID" 2>/dev/null; PF_PID=""
+echo "$status_body" | grep -q '"needs_bootstrap"' \
+  || fatal "dashboard /api/auth/status did not report needs_bootstrap (got: '$status_body')"
+echo "OK: dashboard rolled out; /readyz + SPA answer; auth-status = needs_bootstrap"
+
+log "PASS — engine E2E + invariant probes + dashboard smoke"
 echo "cluster:        $CLUSTER ($(kind version))"
 echo "fixture commit: $FIXTURE_SHA (repo $REPO, app $APP_NAME)"
 echo "build image:    $BUILD_IMG"
