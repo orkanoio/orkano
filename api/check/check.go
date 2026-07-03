@@ -46,10 +46,13 @@ type Check struct {
 	Requires []string
 
 	// Probe returning an error means the check could not run, which is
-	// distinct from StatusFail: unknown must never count as hardened.
+	// distinct from StatusFail: unknown must never count as hardened. A Probe
+	// may run more than once per command — doctor --fix re-probes a check after
+	// remediating it — so it must be safe to run again.
 	Probe func(ctx context.Context) (Result, error)
 
 	// Fix is nil when no safe automatic remediation exists; doctor --fix
-	// runs it only after Probe reports StatusFail.
+	// runs it only after Probe reports StatusFail. Fix must be idempotent: it
+	// may be called again on a later --fix if the check is still failing.
 	Fix func(ctx context.Context) error
 }

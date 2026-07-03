@@ -29,10 +29,14 @@ type CheckResult struct {
 	Severity    check.Severity
 	Summary     string
 	Remediation string
-	Outcome     Outcome
-	Message     string
-	Err         error    // set when Outcome == OutcomeError
-	Blockers    []string // requirement IDs that blocked it, when Outcome == OutcomeBlocked
+	// Fixable reports that the check has a Fix func. RunAndFix attempts the
+	// remediation only when Outcome is OutcomeFail, but the flag is set from the
+	// Fix's presence regardless of outcome.
+	Fixable  bool
+	Outcome  Outcome
+	Message  string
+	Err      error    // set when Outcome == OutcomeError
+	Blockers []string // requirement IDs that blocked it, when Outcome == OutcomeBlocked
 }
 
 // Run is the result of executing a registry, in dependency order.
@@ -66,6 +70,7 @@ func (r *Registry) Run(ctx context.Context) (*Run, error) {
 			Severity:    c.Severity,
 			Summary:     c.Summary,
 			Remediation: c.Remediation,
+			Fixable:     c.Fix != nil,
 		}
 
 		var hardBlockers, skipped []string
@@ -100,7 +105,9 @@ func (r *Registry) Run(ctx context.Context) (*Run, error) {
 
 // probe runs a single check's Probe and records the outcome on res. It treats
 // every way a probe can fail to produce a Result — a returned error, a panic,
-// a cancelled context, or an unrecognised status — as OutcomeError.
+// a cancelled context, or an unrecognised status — as OutcomeError. The
+// ctx-guard + panic-recovery idiom is mirrored by runFix in fix.go; keep the
+// two in sync.
 func probe(ctx context.Context, c check.Check, res *CheckResult) {
 	if err := ctx.Err(); err != nil {
 		res.Outcome = OutcomeError
