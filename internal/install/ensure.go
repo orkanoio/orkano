@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	// maxInlineBase64 bounds a single-command base64 write. sshd runs the remote
-	// command as `sh -c '<string>'`, and Linux execve caps one argument string at
-	// MAX_ARG_STRLEN (128 KiB), so a larger payload would fail with E2BIG. Files
+	// maxInlineBase64 bounds a single-command base64 write. Linux execve caps one
+	// argument string at MAX_ARG_STRLEN (128 KiB), so a larger payload would fail
+	// with E2BIG. The cap is a kernel limit, not an sshd artifact — it applies
+	// identically on both transports: sshd runs the remote command as
+	// `sh -c '<string>'`, and localexec passes it as one argv to a local sh. Files
 	// above it (the ~1 MB vendored cert-manager manifest) are written in chunks to
 	// a temp file, then atomically renamed. Both bounds are multiples of 4 so each
 	// base64 chunk decodes to whole bytes independently.
