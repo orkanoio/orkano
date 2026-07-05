@@ -102,7 +102,7 @@ type setupStatusResponse struct {
 	// the server writes the pinned one, breaking every sign-in with a
 	// redirect_uri_mismatch discovered only later.
 	OIDCRedirectURL string `json:"oidcRedirectUrl"`
-	OIDCEnabled         bool `json:"oidcEnabled"`
+	OIDCEnabled     bool   `json:"oidcEnabled"`
 	// OIDCPendingRestart: orkano-oidc was written but this process has not
 	// loaded it — either OIDC is off entirely (initial connect) or the write
 	// postdates process start (credential rotation). The UI shows the rollout
