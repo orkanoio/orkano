@@ -1,8 +1,9 @@
-# Phase-1 hermetic engine E2E (M1.6). Stands up a full Orkano control plane on
-# kind from CI-built operator/receiver/helper images + the real config/ manifests
-# + an in-cluster GitHub stub and git fixture, then drives a signed push all the
-# way to a digest-pinned, HTTP-answering deployment and runs the invariant probes
-# (hack/ci/e2e/run.sh). Separate workflow on purpose, like the substrate smoke:
+# Hermetic engine E2E (M1.6) + dashboard smoke (M2.6). Stands up a full Orkano
+# control plane on kind from CI-built operator/receiver/dashboard/helper images + the real config/
+# manifests + an in-cluster GitHub stub and git fixture, then drives a signed push
+# all the way to a digest-pinned, HTTP-answering deployment, runs the invariant
+# probes, and smokes the dashboard (deploy + rollout/readyz + auth-status API,
+# M2.6) (hack/ci/e2e/run.sh). Separate workflow on purpose, like the substrate smoke:
 # it proves the END-TO-END engine on a live cluster, not the Go units, so PRs
 # only trigger it when an input that can change the runtime behaviour changes;
 # every push to main re-proves it unconditionally.
@@ -26,6 +27,14 @@ on:
       - hack/ci/substrate-smoke/kind-config.yaml
       - operator/**
       - receiver/**
+      # Only the inputs to the Node-free `go build ./dashboard` the E2E runs
+      # (placeholder embed, no -tags webdist): the SPA source under
+      # dashboard/web/src, npm manifests, and Vite config change the release
+      # binary, not this one, and are already gated by ci.yml's `web` job.
+      - dashboard/*.go
+      - dashboard/internal/**
+      - dashboard/web/*.go
+      - dashboard/web/placeholder/**
       - internal/install/**
       - internal/db/**
       - api/v1alpha1/**

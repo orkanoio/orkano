@@ -11,6 +11,7 @@ import (
 	"github.com/orkanoio/orkano/internal/checks"
 	"github.com/orkanoio/orkano/internal/install"
 	"github.com/orkanoio/orkano/internal/k3s"
+	"github.com/orkanoio/orkano/internal/localexec"
 	"github.com/orkanoio/orkano/internal/nodeprep"
 	"github.com/orkanoio/orkano/internal/preflight"
 	"github.com/orkanoio/orkano/internal/ssh"
@@ -19,6 +20,7 @@ import (
 
 type initOptions struct {
 	version       string
+	local         bool
 	nodes         []string
 	sshUser       string
 	sshPort       int
@@ -39,20 +41,23 @@ func newInitCommand(version string) *cobra.Command {
 	opt := &initOptions{version: version}
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Bootstrap a hardened k3s cluster on one or three nodes over SSH",
+		Short: "Bootstrap a hardened k3s cluster over SSH, or on this machine with --local",
 		Long: "Install a hardened, CIS-aligned k3s cluster on Linux nodes over SSH: run " +
 			"the install preflight, write the hardening configuration (embedded etcd, " +
 			"secrets encryption, audit logging, scheduled etcd snapshots), install k3s, " +
 			"and retrieve a kubeconfig. Pass --node once for a single node or three " +
 			"times for an HA cluster — the first node initialises the embedded-etcd " +
-			"cluster and the rest join it. Safe to re-run — it converges every node.",
+			"cluster and the rest join it. Use --local to install on the machine you " +
+			"are running on instead (single node, no SSH) — the get.orkano.io one-liner. " +
+			"Safe to re-run — it converges every node.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runInit(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opt)
 		},
 	}
 
 	f := cmd.Flags()
-	f.StringArrayVar(&opt.nodes, "node", nil, "node hostname or IPv4 address; repeat for an HA cluster, first is the cluster-init server (required)")
+	f.BoolVar(&opt.local, "local", false, "install on THIS machine directly (single-node, no SSH); must run as root")
+	f.StringArrayVar(&opt.nodes, "node", nil, "node hostname or IPv4 address; repeat for an HA cluster, first is the cluster-init server (required unless --local)")
 	f.StringVar(&opt.sshUser, "ssh-user", "root", "SSH user (non-root users need passwordless sudo)")
 	f.IntVar(&opt.sshPort, "ssh-port", 22, "SSH port")
 	f.StringVar(&opt.sshKeyPath, "ssh-key", "", "path to the SSH private key for authentication (required)")
@@ -71,6 +76,9 @@ func newInitCommand(version string) *cobra.Command {
 }
 
 func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
+	if opt.local {
+		return runInitLocal(ctx, out, errw, opt)
+	}
 	if len(opt.nodes) == 0 {
 		return fmt.Errorf("--node is required (repeat it for an HA cluster)")
 	}
@@ -157,6 +165,165 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 
 	printSummary(out, opt, first, anyFresh, anyChanged, bootstrapToken)
 	return nil
+}
+
+// localRunner is the transport `orkano init --local` runs the bootstrap engine
+// over: the same Run(ctx, cmd) (ssh.Result, error) contract as *ssh.Client,
+// satisfied by *localexec.Runner. Threading it through k3s.Bootstrap /
+// install.Apply / nodeprep unchanged is the whole point of ADR-0017 — one
+// engine, a swapped transport.
+type localRunner interface {
+	Run(ctx context.Context, cmd string) (ssh.Result, error)
+}
+
+// Package-var seams so the CLI-orchestration tests can inject a fake node and
+// stub the component deploy / registry wiring (both engine-tested in
+// internal/install), mirroring the SSH path's bootstrapOne/deployComponents/
+// wireRegistry. The k3s bootstrap + AppArmor prep run inline against the
+// injected runner, so the happy-path test exercises the real transport threading
+// (as the SSH happy path does over sshtest).
+var (
+	geteuid           = os.Geteuid
+	localAddress      = detectPrimaryIP
+	newLocalRunner    = func() localRunner { return localexec.New() }
+	deployLocal       = deployComponentsLocal
+	wireRegistryLocal = wireRegistryLocalNode
+)
+
+// runInitLocal installs a hardened single-node cluster on the machine running
+// the command, over a local-exec runner instead of SSH (ADR-0017). It reuses the
+// entire bootstrap engine (preflight, k3s, AppArmor, component deploy, registry
+// wiring) unchanged — only the transport differs. Single-node only: HA needs the
+// other servers reached over SSH, which stays the --node path.
+func runInitLocal(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
+	if len(opt.nodes) > 1 {
+		return fmt.Errorf("--local installs a single node on this machine; got %d --node values (use SSH --node for HA)", len(opt.nodes))
+	}
+	// ADR-0017: --local takes NO --ssh-* flags. --ssh-user/--ssh-port always carry
+	// their flag defaults ("root"/22), so only a non-default value marks explicit
+	// use — a silently ignored flag would let the user believe it took effect.
+	if opt.sshKeyPath != "" || len(opt.hostKeyPaths) > 0 || opt.acceptNewKey ||
+		(opt.sshUser != "" && opt.sshUser != "root") || (opt.sshPort != 0 && opt.sshPort != 22) {
+		return fmt.Errorf("--local runs on this machine and takes no SSH flags (--ssh-key/--ssh-host-key/--accept-new-host-key/--ssh-user/--ssh-port)")
+	}
+	// k3s install and the AppArmor profile load both need root; refuse cleanly
+	// rather than failing mid-install. The install.sh wrapper runs the binary
+	// under sudo, so a piped one-liner still works.
+	if geteuid() != 0 {
+		return fmt.Errorf("orkano init --local must run as root on this machine (re-run with sudo)")
+	}
+
+	addr := ""
+	if len(opt.nodes) == 1 {
+		addr = opt.nodes[0]
+	} else {
+		a, err := localAddress()
+		if err != nil {
+			return fmt.Errorf("could not determine this machine's address; pass --node <address>: %w", err)
+		}
+		addr = a
+	}
+
+	runner := newLocalRunner()
+	logf := func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) }
+
+	if !opt.skipPreflight {
+		if err := runPreflight(ctx, out, runner, "this machine ("+addr+")"); err != nil {
+			return err
+		}
+	}
+
+	writef(errw, "Bootstrapping k3s on this machine (%s)...\n", addr)
+	// Sudo stays false: --local requires root, so commands run directly.
+	res, err := k3s.Bootstrap(ctx, runner, k3s.Config{
+		NodeAddress:   addr,
+		MinReadyNodes: 1,
+		K3sVersion:    opt.k3sVersion,
+		ReadyTimeout:  opt.readyTimeout,
+		Logf:          logf,
+	})
+	if err != nil {
+		return fmt.Errorf("bootstrap this machine: %w", err)
+	}
+
+	writef(errw, "Loading build confinement profile...\n")
+	npRes, err := nodeprep.EnsureAppArmorProfile(ctx, nodeprep.Options{Runner: runner, Logf: logf})
+	if err != nil {
+		return fmt.Errorf("load AppArmor profile: %w", err)
+	}
+
+	if err := os.WriteFile(opt.kubeconfig, res.Kubeconfig, 0o600); err != nil {
+		return fmt.Errorf("write kubeconfig: %w", err)
+	}
+
+	writef(errw, "Deploying Orkano components...\n")
+	bootstrapToken, err := deployLocal(ctx, errw, opt, runner)
+	if err != nil {
+		return fmt.Errorf("deploy components: %w", err)
+	}
+
+	writef(errw, "Wiring the in-cluster registry...\n")
+	if err := wireRegistryLocal(ctx, errw, opt, runner, addr); err != nil {
+		return fmt.Errorf("wire registry: %w", err)
+	}
+
+	printLocalSummary(out, opt, res, !res.AlreadyInstalled, res.Changed || npRes.Changed, bootstrapToken, addr)
+	return nil
+}
+
+// deployComponentsLocal runs the component deploy over the local runner. It is
+// wrapped by the deployLocal package var so tests stub it like deployComponents.
+func deployComponentsLocal(ctx context.Context, errw io.Writer, opt *initOptions, runner localRunner) (string, error) {
+	res, err := install.Apply(ctx, runner, install.Config{
+		Version:          opt.version,
+		ACMEEmail:        opt.acmeEmail,
+		ACMEProd:         opt.acmeProd,
+		RepoAllowlist:    opt.allowRepos,
+		ReceiverHost:     opt.receiverHost,
+		ReadinessTargets: install.DefaultReadinessTargets(),
+		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.BootstrapToken, nil
+}
+
+// wireRegistryLocalNode wires the in-cluster registry on this single node over
+// the local runner. It is wrapped by the wireRegistryLocal package var for tests.
+func wireRegistryLocalNode(ctx context.Context, errw io.Writer, opt *initOptions, runner localRunner, addr string) error {
+	cfg := install.Config{
+		RestartReadyTimeout: opt.readyTimeout,
+		Logf:                func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
+	}
+	info, err := install.WireRegistry(ctx, runner, cfg)
+	if err != nil {
+		return fmt.Errorf("%s: %w", addr, err)
+	}
+	if _, err := install.WriteNodeRegistry(ctx, runner, info, cfg); err != nil {
+		return fmt.Errorf("%s: %w", addr, err)
+	}
+	return nil
+}
+
+// detectPrimaryIP returns the IP of the interface carrying the default route, by
+// opening (not sending on) a UDP socket to a documentation address and reading
+// the source the kernel selects. It errors when there is no route — an isolated
+// host must pass --node <address> to advertise.
+func detectPrimaryIP() (string, error) {
+	// 192.0.2.1 is TEST-NET-1 (RFC 5737); a UDP "dial" only consults the routing
+	// table to pick a source address — no packet is sent to it, so a background
+	// context is right (the call does not block on the network).
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "udp", "192.0.2.1:9")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = conn.Close() }()
+	host, _, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		return "", err
+	}
+	return host, nil
 }
 
 // deployComponents is the component-deploy step, indirected through a package
@@ -439,4 +606,58 @@ func presentLabel(present bool) string {
 		return "enabled"
 	}
 	return "not found"
+}
+
+// printLocalSummary reports an on-box (--local) install: the same hardening state
+// as printSummary, plus the private way in — the dashboard is ClusterIP-only and
+// never exposed to the internet (INV-05), so the reach step is an SSH tunnel that
+// port-forwards it to localhost, not a public URL (ADR-0017). It also states the
+// single-node HA tradeoff honestly.
+func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, changed bool, bootstrapToken, addr string) {
+	writef(out, "\n")
+	switch {
+	case fresh:
+		writef(out, "Installed k3s %s on this machine (%s).\n", res.Version, addr)
+	case changed:
+		writef(out, "Converged k3s %s on this machine (%s).\n", res.Version, addr)
+	default:
+		writef(out, "k3s %s on this machine (%s) is already up to date.\n", res.Version, addr)
+	}
+	writef(out, "  secrets encryption: %s\n", res.SecretsEncryption)
+	writef(out, "  audit logging:      %s\n", presentLabel(res.AuditLogPresent))
+	writef(out, "  build confinement:  AppArmor %s (enforce)\n", nodeprep.ProfileName)
+	writef(out, "  nodes:              1 (single node — not highly available)\n")
+	writef(out, "  components:         deployed\n")
+	writef(out, "  registry:           wired\n")
+	if opt.receiverHost != "" {
+		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
+	} else {
+		writef(out, "  receiver:           cluster-internal (set --receiver-host to expose it)\n")
+	}
+	writef(out, "  kubeconfig:         %s\n", opt.kubeconfig)
+
+	// ADR-0003: the install token is printed exactly once. On a re-run it has
+	// already been generated (only its hash is stored), so there is nothing to show.
+	if bootstrapToken != "" {
+		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+			"Redeem it at first dashboard login to create the admin account.\n", bootstrapToken)
+	} else {
+		writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n")
+	}
+
+	// The dashboard is ClusterIP-only and never exposed to the internet (INV-05).
+	// Reach it privately over an SSH tunnel that port-forwards the Service; a
+	// one-command `orkano proxy` will replace this (ADR-0004).
+	// The k3s path is absolute for the same reason internal/k3s uses it: RHEL-family
+	// sudo secure_path (and a non-interactive sshd PATH) may exclude /usr/local/bin.
+	writef(out, "\nReach the dashboard — it is private, never exposed to the internet.\n"+
+		"From your laptop, open one SSH tunnel that also port-forwards it:\n\n"+
+		"  ssh -L 9090:127.0.0.1:9090 root@%s \\\n"+
+		"    '/usr/local/bin/k3s kubectl -n orkano-system port-forward --address 127.0.0.1 svc/orkano-dashboard 9090:80'\n\n"+
+		"then open http://localhost:9090 and redeem the bootstrap token above.\n"+
+		"(Connecting as a non-root user? Prefix the remote command with sudo.)\n", addr)
+
+	writef(out, "\nThis is a single node — if it fails, the cluster is down. For high\n"+
+		"availability, install three servers over SSH instead:\n"+
+		"  orkano init --node A --node B --node C --ssh-key <key>\n")
 }
