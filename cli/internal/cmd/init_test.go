@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/orkanoio/orkano/internal/k3s"
+	"github.com/orkanoio/orkano/internal/ssh"
 	"github.com/orkanoio/orkano/internal/ssh/sshtest"
 )
 
@@ -512,5 +514,320 @@ func TestResolveHostKeyRefusesUntrusted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accept-new-host-key") {
 		t.Errorf("refusal should name the opt-in flag: %v", err)
+	}
+}
+
+// --- orkano init --local (ADR-0017) ------------------------------------------
+
+// fakeLocalRunner adapts a command-dispatching ExecHandler (healthyNode) to the
+// localRunner interface, so the --local happy path exercises the real k3s +
+// AppArmor engine against a fake node — the local analog of sshtest for the SSH
+// path (the real localexec.Runner is unit-tested in internal/localexec, and the
+// on-box acceptance rides CI, mirroring the SSH sshtest-vs-E2E split).
+type fakeLocalRunner struct{ h sshtest.ExecHandler }
+
+func (f fakeLocalRunner) Run(_ context.Context, cmd string) (ssh.Result, error) {
+	so, se, code := f.h(cmd)
+	return ssh.Result{Stdout: so, Stderr: se, ExitStatus: code}, nil
+}
+
+// stubLocalNode makes geteuid report root and newLocalRunner return a fake node.
+func stubLocalNode(t *testing.T, node sshtest.ExecHandler) {
+	t.Helper()
+	origEuid, origRunner := geteuid, newLocalRunner
+	t.Cleanup(func() { geteuid, newLocalRunner = origEuid, origRunner })
+	geteuid = func() int { return 0 }
+	newLocalRunner = func() localRunner { return fakeLocalRunner{node} }
+}
+
+// stubLocalDeploy replaces the local component-deploy step (engine-tested in
+// internal/install) with a stub returning token, so the --local orchestration
+// test asserts around it — the local analog of stubDeploy.
+func stubLocalDeploy(t *testing.T, token string) *deployCall {
+	t.Helper()
+	orig := deployLocal
+	t.Cleanup(func() { deployLocal = orig })
+	c := &deployCall{}
+	deployLocal = func(_ context.Context, _ io.Writer, opt *initOptions, _ localRunner) (string, error) {
+		c.called, c.opt = true, opt
+		return token, nil
+	}
+	return c
+}
+
+// stubLocalWire replaces the local registry-wiring step (engine-tested in
+// internal/install) with a stub, returning a pointer to a called flag.
+func stubLocalWire(t *testing.T) *bool {
+	t.Helper()
+	orig := wireRegistryLocal
+	t.Cleanup(func() { wireRegistryLocal = orig })
+	called := false
+	wireRegistryLocal = func(_ context.Context, _ io.Writer, _ *initOptions, _ localRunner, _ string) error {
+		called = true
+		return nil
+	}
+	return &called
+}
+
+func TestInitLocalHappyPath(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	deploy := stubLocalDeploy(t, "local-token-abc")
+	wireCalled := stubLocalWire(t)
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{
+		local:        true,
+		nodes:        []string{"10.0.0.9"},
+		k3sVersion:   "v1.35.5+k3s1",
+		kubeconfig:   kc,
+		readyTimeout: 30 * time.Second,
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local: %v\nstderr:\n%s", err, errw.String())
+	}
+
+	s := out.String()
+	for _, want := range []string{
+		"Installed k3s",
+		"single node — not highly available",
+		"build confinement:  AppArmor orkano-buildkit (enforce)",
+		"components:         deployed",
+		"registry:           wired",
+		"local-token-abc",
+		"Reach the dashboard",
+		"ssh -L 9090:127.0.0.1:9090 root@10.0.0.9",
+		"port-forward --address 127.0.0.1 svc/orkano-dashboard 9090:80",
+		"http://localhost:9090",
+		"orkano init --node A --node B --node C",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary missing %q:\n%s", want, s)
+		}
+	}
+	// The dashboard link must be localhost, never a public URL (INV-05).
+	if strings.Contains(s, "https://10.0.0.9") {
+		t.Errorf("summary exposed a public dashboard URL (must stay private):\n%s", s)
+	}
+	if !deploy.called {
+		t.Error("component deploy not invoked")
+	}
+	if !*wireCalled {
+		t.Error("registry wiring not invoked")
+	}
+
+	kcData, err := os.ReadFile(kc)
+	if err != nil {
+		t.Fatalf("kubeconfig not written: %v", err)
+	}
+	// Proves NodeAddress threaded through k3s.Bootstrap over the local transport.
+	if !strings.Contains(string(kcData), "https://10.0.0.9:6443") {
+		t.Errorf("kubeconfig not rewritten to the node address:\n%s", kcData)
+	}
+}
+
+func TestInitLocalRequiresRoot(t *testing.T) {
+	origEuid := geteuid
+	t.Cleanup(func() { geteuid = origEuid })
+	geteuid = func() int { return 1000 }
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, nodes: []string{"10.0.0.9"}, kubeconfig: kc}
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "must run as root") {
+		t.Fatalf("want root refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(kc); statErr == nil {
+		t.Error("kubeconfig written despite the root refusal")
+	}
+}
+
+func TestInitLocalRejectsSSHFlags(t *testing.T) {
+	origEuid := geteuid
+	t.Cleanup(func() { geteuid = origEuid })
+	geteuid = func() int { return 0 }
+
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw,
+		&initOptions{local: true, nodes: []string{"n"}, sshKeyPath: "x"})
+	if err == nil || !strings.Contains(err.Error(), "no SSH flags") {
+		t.Errorf("want SSH-flag rejection, got %v", err)
+	}
+
+	// --ssh-user/--ssh-port are rejected only on NON-default values (the flags
+	// always carry "root"/22, so defaults can't be told apart from unset).
+	err = runInit(context.Background(), &out, &errw,
+		&initOptions{local: true, nodes: []string{"n"}, sshUser: "ubuntu"})
+	if err == nil || !strings.Contains(err.Error(), "no SSH flags") {
+		t.Errorf("want --ssh-user rejection, got %v", err)
+	}
+
+	err = runInit(context.Background(), &out, &errw,
+		&initOptions{local: true, nodes: []string{"n"}, sshPort: 2222})
+	if err == nil || !strings.Contains(err.Error(), "no SSH flags") {
+		t.Errorf("want --ssh-port rejection, got %v", err)
+	}
+
+	err = runInit(context.Background(), &out, &errw,
+		&initOptions{local: true, nodes: []string{"a", "b"}})
+	if err == nil || !strings.Contains(err.Error(), "single node") {
+		t.Errorf("want single-node rejection, got %v", err)
+	}
+}
+
+func TestInitLocalPreflightRefuses(t *testing.T) {
+	// A listener on the API server port makes ports.free fail (critical), so the
+	// on-box preflight refuses before touching the machine.
+	stubLocalNode(t, healthyNode("LISTEN 0 128 0.0.0.0:6443 0.0.0.0:*\n"))
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, nodes: []string{"10.0.0.9"}, k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second}
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "preflight failed") {
+		t.Fatalf("want preflight refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(kc); statErr == nil {
+		t.Error("kubeconfig written despite preflight refusal")
+	}
+}
+
+func TestInitLocalSkipPreflight(t *testing.T) {
+	// Same occupied port as the refusal test, but --skip-preflight bypasses the
+	// gate. The flag-default --ssh-user/--ssh-port values must not trip the
+	// SSH-flag rejection.
+	stubLocalNode(t, healthyNode("LISTEN 0 128 0.0.0.0:6443 0.0.0.0:*\n"))
+	stubLocalDeploy(t, "")
+	stubLocalWire(t)
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{
+		local: true, nodes: []string{"10.0.0.9"}, sshUser: "root", sshPort: 22,
+		k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second,
+		skipPreflight: true,
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local --skip-preflight: %v\n%s", err, errw.String())
+	}
+	// deployLocal returned no token (a re-run) — ADR-0003: shown exactly once,
+	// ever, so the summary must say so and not print redemption instructions.
+	if !strings.Contains(out.String(), "already generated on a previous run") {
+		t.Errorf("summary missing the re-run token notice:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Redeem it at first dashboard login") {
+		t.Errorf("re-run summary must not print token redemption instructions:\n%s", out.String())
+	}
+}
+
+func TestInitLocalRefusesOnAppArmorFailure(t *testing.T) {
+	// The machine bootstraps fine but the AppArmor profile fails to load — the
+	// on-box init must refuse (a node without the profile silently breaks every
+	// build) and must not write the kubeconfig.
+	stubLocalNode(t, failingAppArmorNode())
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, nodes: []string{"10.0.0.9"}, k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second}
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "AppArmor profile") {
+		t.Fatalf("want AppArmor load refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(kc); statErr == nil {
+		t.Error("kubeconfig written despite the AppArmor load failure")
+	}
+}
+
+// TestInitLocalRunsComponentDeploy mirrors TestInitRunsComponentDeploy for the
+// --local transport: the version/ACME/allowlist/receiver-host flags must thread
+// into the component deploy, and the fresh token prints once.
+func TestInitLocalRunsComponentDeploy(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	deploy := stubLocalDeploy(t, "the-local-token")
+	stubLocalWire(t)
+
+	opt := &initOptions{
+		version:      "9.9.9",
+		local:        true,
+		nodes:        []string{"10.0.0.9"},
+		k3sVersion:   "v1.35.5+k3s1",
+		kubeconfig:   filepath.Join(t.TempDir(), "kubeconfig"),
+		readyTimeout: 30 * time.Second,
+		acmeEmail:    "ops@example.com",
+		acmeProd:     true,
+		allowRepos:   []string{"orkanoio/orkano"},
+		receiverHost: "hooks.example.com",
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local: %v\n%s", err, errw.String())
+	}
+	if !deploy.called {
+		t.Fatal("component deploy was not invoked")
+	}
+	if deploy.opt.version != "9.9.9" || deploy.opt.acmeEmail != "ops@example.com" || !deploy.opt.acmeProd {
+		t.Errorf("deploy did not receive the version/ACME flags: %+v", deploy.opt)
+	}
+	if deploy.opt.receiverHost != "hooks.example.com" {
+		t.Errorf("deploy did not receive --receiver-host: %q", deploy.opt.receiverHost)
+	}
+	if len(deploy.opt.allowRepos) != 1 || deploy.opt.allowRepos[0] != "orkanoio/orkano" {
+		t.Errorf("deploy did not receive the allowlist: %v", deploy.opt.allowRepos)
+	}
+	if !strings.Contains(out.String(), "receiver:           https://hooks.example.com") {
+		t.Errorf("summary missing the exposed-receiver line:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "the-local-token") {
+		t.Errorf("bootstrap token not printed:\n%s", out.String())
+	}
+}
+
+func TestInitLocalAddressDetectFailure(t *testing.T) {
+	// No --node and no detectable primary IP: refuse with the pass-me-an-address
+	// message before the runner is even created.
+	origEuid := geteuid
+	t.Cleanup(func() { geteuid = origEuid })
+	geteuid = func() int { return 0 }
+	origAddr := localAddress
+	t.Cleanup(func() { localAddress = origAddr })
+	localAddress = func() (string, error) { return "", errors.New("no route") }
+
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, &initOptions{local: true})
+	if err == nil || !strings.Contains(err.Error(), "could not determine") {
+		t.Fatalf("want address-detection refusal pointing at --node, got %v", err)
+	}
+}
+
+func TestInitLocalAutoDetectsAddress(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	stubLocalDeploy(t, "")
+	stubLocalWire(t)
+	origAddr := localAddress
+	t.Cleanup(func() { localAddress = origAddr })
+	localAddress = func() (string, error) { return "10.9.9.9", nil }
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local auto-detect: %v\n%s", err, errw.String())
+	}
+	if !strings.Contains(out.String(), "10.9.9.9") {
+		t.Errorf("summary missing the auto-detected address:\n%s", out.String())
+	}
+	if kcData, _ := os.ReadFile(kc); !strings.Contains(string(kcData), "https://10.9.9.9:6443") {
+		t.Errorf("kubeconfig not rewritten to the auto-detected address:\n%s", kcData)
+	}
+}
+
+func TestDetectPrimaryIP(t *testing.T) {
+	ip, err := detectPrimaryIP()
+	if err != nil {
+		t.Skipf("no route on this host: %v", err)
+	}
+	if net.ParseIP(ip) == nil {
+		t.Errorf("detectPrimaryIP returned %q, not an IP", ip)
 	}
 }
