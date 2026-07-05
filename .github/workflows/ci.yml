@@ -25,6 +25,15 @@ jobs:
       # mutable golangci-lint-action tag in the supply chain.
       - run: make lint
 
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # shellcheck ships on the ubuntu-latest runner. The on-box installer is
+      # served to users and piped into a shell, so it is linted like product code
+      # (ADR-0017). Extend the list as more first-party scripts are hardened.
+      - run: shellcheck hack/install/install.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

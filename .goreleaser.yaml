@@ -49,6 +49,14 @@ archives:
   - id: cli
     ids: [orkano]
     formats: [tar.gz]
+  # Bare per-platform CLI binary (orkano_linux_amd64 …) — what the on-box
+  # installer (hack/install/install.sh) downloads and checksum-verifies
+  # (ADR-0017). The name carries no version so the script resolves it under
+  # both releases/latest/download and a pinned tag.
+  - id: cli-binary
+    ids: [orkano]
+    formats: [binary]
+    name_template: "orkano_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt
@@ -155,3 +163,8 @@ release:
   github:
     owner: orkanoio
     name: orkano
+  # The on-box installer rides every release, so the one-liner works from
+  # releases/latest/download/install.sh before (and independently of) the
+  # get.orkano.io hosting (ADR-0017).
+  extra_files:
+    - glob: hack/install/install.sh
