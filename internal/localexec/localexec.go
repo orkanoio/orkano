@@ -11,7 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"syscall"
 
 	"github.com/orkanoio/orkano/internal/ssh"
 )
@@ -46,6 +48,19 @@ func (r *Runner) Run(ctx context.Context, cmd string) (ssh.Result, error) {
 	// runs remotely for the SSH transport; there is no user-supplied command here.
 	//nolint:gosec // G204: running the engine's composed commands is the point.
 	c := exec.CommandContext(ctx, r.shell, "-c", cmd)
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.Cancel = func() error {
+		if c.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &stdout
 	c.Stderr = &stderr
