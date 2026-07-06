@@ -11,9 +11,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
@@ -153,7 +157,8 @@ func TestSetupStatusFresh(t *testing.T) {
 	// Dependency (registration) order is the wizard's walk order.
 	wantOrder := []string{
 		checkAccessModeChosen, checkAdminBootstrapped, checkOIDCConfigured,
-		checkWebhookURLConfigured, checkGitHubAppConnected, checkDomainTLSReady,
+		checkWebhookURLConfigured, checkGitHubAppConnected, checkVaultConnected,
+		checkDomainTLSReady,
 	}
 	if len(resp.Checks) != len(wantOrder) {
 		t.Fatalf("got %d checks, want %d", len(resp.Checks), len(wantOrder))
@@ -171,6 +176,10 @@ func TestSetupStatusFresh(t *testing.T) {
 		checkWebhookURLConfigured: "fail",
 		checkGitHubAppConnected:   "blocked",
 		checkDomainTLSReady:       "skip",
+		// The fake client's scheme knows the ESO kinds, so the list answers
+		// empty rather than NoMatch: "installed, nothing connected" = fail.
+		// The dedicated vault-check test covers the real NoMatch skip.
+		checkVaultConnected: "fail",
 	} {
 		if got := checkByID(t, resp, id).Outcome; got != outcome {
 			t.Errorf("%s outcome: got %q, want %q", id, got, outcome)
@@ -234,10 +243,18 @@ func TestSetupStatusConfigured(t *testing.T) {
 			}},
 		},
 	}
+	vaultStore := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "external-secrets.io/v1",
+		"kind":       "SecretStore",
+		"metadata":   map[string]any{"name": "team-vault", "namespace": appsNamespace},
+		"status": map[string]any{
+			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
+		},
+	}}
 	s, _ := setupServer(t, store, func(cfg *Config) {
 		cfg.WebhookURL = "https://hooks.example.com/webhook"
 		cfg.OIDC = &fakeOIDC{}
-	}, domain)
+	}, domain, vaultStore)
 
 	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 	if rec.Code != http.StatusOK {
@@ -653,4 +670,52 @@ func lastAudit(t *testing.T, store *fakeStore, action string) db.AppendAuditEntr
 	}
 	t.Fatalf("no audit entry for action %q (have %+v)", action, store.audit)
 	return db.AppendAuditEntryParams{}
+}
+
+// TestSetupStatusVaultCheck pins the secrets.vault-connected branches the
+// shared status tests cannot reach: ESO absent (NoMatch → skip, the optional
+// path) and a connected store that is not Ready (fail with guidance).
+func TestSetupStatusVaultCheck(t *testing.T) {
+	t.Run("eso absent skips", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		noMatch := interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if u, ok := list.(*unstructured.UnstructuredList); ok && u.GetKind() == "SecretStoreList" {
+					return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "external-secrets.io", Kind: "SecretStore"}}
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}
+		k8s := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(noMatch).Build()
+		s := serverWith(t, store, k8s)
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "skip" || !strings.Contains(c.Message, "--secrets-vault") {
+			t.Fatalf("got %q (%s), want skip pointing at --secrets-vault", c.Outcome, c.Message)
+		}
+	})
+
+	t.Run("store not ready fails", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		broken := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1",
+			"kind":       "SecretStore",
+			"metadata":   map[string]any{"name": "team-vault", "namespace": appsNamespace},
+			"status": map[string]any{
+				"conditions": []any{map[string]any{"type": "Ready", "status": "False"}},
+			},
+		}}
+		s, _ := setupServer(t, store, nil, broken)
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "fail" || !strings.Contains(c.Message, "none Ready") {
+			t.Fatalf("got %q (%s), want fail naming the unready store", c.Outcome, c.Message)
+		}
+	})
 }
