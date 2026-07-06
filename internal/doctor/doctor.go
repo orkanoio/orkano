@@ -69,6 +69,7 @@ func Checks(opt Options) []check.Check {
 		certificateExpiryCheck(opt),
 		etcdSnapshotAgeCheck(opt),
 		networkPolicyEnforcedCheck(opt),
+		secretsStoreHealthCheck(opt),
 	}
 }
 
