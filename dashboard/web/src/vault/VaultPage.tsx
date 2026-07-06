@@ -88,9 +88,15 @@ export function VaultPage() {
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">Synced secrets</h2>
-          <Button asChild disabled={!stores.data || stores.data.length === 0}>
-            <Link to="/vault/sync">New sync</Link>
-          </Button>
+          {stores.data && stores.data.length > 0 ? (
+            <Button asChild>
+              <Link to="/vault/sync">New sync</Link>
+            </Button>
+          ) : (
+            // A real disabled <button>, not asChild: disabled never reaches
+            // (or styles) an <a>, so the Link form would stay clickable.
+            <Button disabled>New sync</Button>
+          )}
         </div>
         <p className="text-muted-foreground text-sm">
           Each sync materializes one Kubernetes Secret from vault keys.

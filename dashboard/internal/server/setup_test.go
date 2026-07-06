@@ -714,8 +714,33 @@ func TestSetupStatusVaultCheck(t *testing.T) {
 		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 		resp := decodeSetupStatus(t, rec.Body.Bytes())
 		c := checkByID(t, resp, checkVaultConnected)
-		if c.Outcome != "fail" || !strings.Contains(c.Message, "none Ready") {
-			t.Fatalf("got %q (%s), want fail naming the unready store", c.Outcome, c.Message)
+		if c.Outcome != "fail" || !strings.Contains(c.Message, "0 of 1 store(s) Ready") {
+			t.Fatalf("got %q (%s), want fail counting the unready store", c.Outcome, c.Message)
+		}
+	})
+
+	// Every connected store must be Ready — one healthy store must not hide a
+	// second one's expired credential behind a Done badge (review-caught).
+	t.Run("partial ready fails", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		mk := func(name, ready string) *unstructured.Unstructured {
+			return &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "external-secrets.io/v1",
+				"kind":       "SecretStore",
+				"metadata":   map[string]any{"name": name, "namespace": appsNamespace},
+				"status": map[string]any{
+					"conditions": []any{map[string]any{"type": "Ready", "status": ready}},
+				},
+			}}
+		}
+		s, _ := setupServer(t, store, nil, mk("vault-a", "True"), mk("vault-b", "False"))
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "fail" || !strings.Contains(c.Message, "1 of 2") {
+			t.Fatalf("got %q (%s), want fail with the 1-of-2 count", c.Outcome, c.Message)
 		}
 	})
 }

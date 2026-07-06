@@ -70,6 +70,7 @@ type secretStoreResponse struct {
 	Provider          string      `json:"provider"`
 	Server            string      `json:"server,omitempty"`
 	Path              string      `json:"path,omitempty"`
+	Version           string      `json:"version,omitempty"`
 	Ready             string      `json:"ready"`
 	Reason            string      `json:"reason,omitempty"`
 	Message           string      `json:"message,omitempty"`
@@ -289,6 +290,9 @@ func secretStoreToResponse(u *unstructured.Unstructured) secretStoreResponse {
 	}
 	res.Server, _, _ = unstructured.NestedString(u.Object, "spec", "provider", "vault", "server")
 	res.Path, _, _ = unstructured.NestedString(u.Object, "spec", "provider", "vault", "path")
+	// The rotate form re-submits the whole spec (the server replaces, never
+	// merges), so every dial it edits must be readable back.
+	res.Version, _, _ = unstructured.NestedString(u.Object, "spec", "provider", "vault", "version")
 	res.Ready, res.Reason, res.Message = readyCondition(u)
 	return res
 }

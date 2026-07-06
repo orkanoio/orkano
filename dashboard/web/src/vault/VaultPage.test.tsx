@@ -74,6 +74,22 @@ describe("VaultPage", () => {
     expect(screen.getByText(/No synced secrets yet/)).toBeInTheDocument();
   });
 
+  it("renders New sync as a real disabled button with no stores", async () => {
+    stubFetchRoutes({
+      "GET /api/secretstores": () => jsonResponse(200, { items: [] }),
+      "GET /api/externalsecrets": () => jsonResponse(200, { items: [] }),
+    });
+    renderWithSession(<VaultPage />);
+
+    // asChild+disabled on a Link is inert (disabled never reaches an <a>),
+    // so the no-stores state must render an actual <button disabled>.
+    const btn = await screen.findByRole("button", { name: "New sync" });
+    expect(btn).toBeDisabled();
+    expect(
+      screen.queryByRole("link", { name: "New sync" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("disconnects a store behind a two-step confirm", async () => {
     let deleted = false;
     stubFetchRoutes({

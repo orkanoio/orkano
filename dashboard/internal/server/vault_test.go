@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -475,5 +478,72 @@ func TestVaultReadsUseViewerClient(t *testing.T) {
 	rec := apiReq(t, s, http.MethodGet, "/api/secretstores", nil, ck)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "viewer-only") {
 		t.Fatalf("viewer-seeded store not listed: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSecretStoreAuditNeverCarriesToken (INV-03): the vault write paths audit
+// object names only — no entry may ever carry a submitted credential. The
+// INV-03 whole-codebase audit proposed this as the vault analog of the env
+// editor's assertEnvAudited guard.
+func TestSecretStoreAuditNeverCarriesToken(t *testing.T) {
+	store := newFakeStore()
+	s := apiServer(t, store)
+	ck := steppedUpSession(t, store)
+
+	if rec := apiReq(t, s, http.MethodPost, "/api/secretstores", storeRequest("team-vault"), ck); rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
+	}
+	rotate := storeRequest("team-vault")
+	rotate["token"] = "s.rotated-token"
+	if rec := apiReq(t, s, http.MethodPut, "/api/secretstores/team-vault", rotate, ck); rec.Code != http.StatusOK {
+		t.Fatalf("rotate = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.audit) < 2 {
+		t.Fatalf("expected audit entries for create+rotate, got %d", len(store.audit))
+	}
+	for _, e := range store.audit {
+		blob := fmt.Sprintf("%+v", e)
+		for _, secret := range []string{"s.scoped-vault-token", "s.rotated-token"} {
+			if strings.Contains(blob, secret) {
+				t.Errorf("audit entry %s carries a credential", e.Action)
+			}
+		}
+	}
+}
+
+// TestSecretStoreCreateRollbackDoubleFailure exercises the worst connect path:
+// the credentials write fails AND the compensating store delete fails. The
+// original write error must surface (never masked by the rollback), and no
+// audit entry may carry the token.
+func TestSecretStoreCreateRollbackDoubleFailure(t *testing.T) {
+	store := newFakeStore()
+	failing := interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*corev1.Secret); ok {
+				return apierrors.NewInternalError(errors.New("secret write boom"))
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+			return apierrors.NewInternalError(errors.New("rollback boom"))
+		},
+	}
+	k8s := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(failing).Build()
+	s := serverWith(t, store, k8s)
+	ck := steppedUpSession(t, store)
+
+	rec := apiReq(t, s, http.MethodPost, "/api/secretstores", storeRequest("team-vault"), ck)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("double failure = %d %s, want the credentials-write 500", rec.Code, rec.Body.String())
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, e := range store.audit {
+		if strings.Contains(fmt.Sprintf("%+v", e), "s.scoped-vault-token") {
+			t.Errorf("audit entry %s carries the credential", e.Action)
+		}
 	}
 }

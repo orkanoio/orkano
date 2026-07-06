@@ -6,6 +6,7 @@ import { Field } from "@/components/Field";
 import { StepUpGate } from "@/components/StepUpGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   createExternalSecret,
@@ -82,14 +83,26 @@ export function SyncForm() {
       }
       seen.add(sk);
     }
-    if (keys.length === 0) {
-      errs.keys = "Add at least one key.";
-    }
     setErrors(errs);
     if (Object.keys(errs).length === 0) {
       create.mutate();
     }
   };
+
+  if (stores.data && stores.data.length === 0) {
+    return (
+      <section className="flex max-w-xl flex-col gap-2">
+        <h1 className="text-xl font-semibold">New synced secret</h1>
+        <p className="text-muted-foreground text-sm">
+          A sync needs a connected store first.{" "}
+          <Link to="/vault/connect" className="text-primary hover:underline">
+            Connect your vault
+          </Link>{" "}
+          and come back.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="flex max-w-xl flex-col gap-4">
@@ -146,7 +159,11 @@ export function SyncForm() {
             required
           />
         </Field>
-        <Field id="sync-key-0" label="Keys" error={errors.keys}>
+        {/* Not a <Field>: its aria wiring clones onto a single input child,
+            which is inert on this multi-input group — the rows carry their
+            own aria-labels and point at the shared error text instead. */}
+        <div className="flex flex-col gap-1.5">
+          <Label>Keys</Label>
           <div className="flex flex-col gap-2">
             {keys.map((k, i) => (
               <div key={i} className="flex gap-2">
@@ -154,6 +171,8 @@ export function SyncForm() {
                   id={`sync-key-${String(i)}`}
                   placeholder="STRIPE_KEY"
                   aria-label={`Variable name ${String(i + 1)}`}
+                  aria-invalid={errors.keys ? true : undefined}
+                  aria-describedby={errors.keys ? "sync-keys-error" : undefined}
                   value={k.secretKey}
                   onChange={(e) => {
                     setKey(i, { secretKey: e.target.value });
@@ -163,6 +182,8 @@ export function SyncForm() {
                 <Input
                   placeholder="apps/api/stripe"
                   aria-label={`Vault path ${String(i + 1)}`}
+                  aria-invalid={errors.keys ? true : undefined}
+                  aria-describedby={errors.keys ? "sync-keys-error" : undefined}
                   value={k.remoteKey}
                   onChange={(e) => {
                     setKey(i, { remoteKey: e.target.value });
@@ -196,7 +217,12 @@ export function SyncForm() {
               Add key
             </Button>
           </div>
-        </Field>
+          {errors.keys && (
+            <p id="sync-keys-error" role="alert" className="text-destructive text-sm">
+              {errors.keys}
+            </p>
+          )}
+        </div>
         <div className="flex gap-3">
           <Button
             type="submit"

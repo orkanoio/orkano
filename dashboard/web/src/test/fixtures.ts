@@ -78,6 +78,7 @@ export function makeSecretStore(
     provider: "vault",
     server: "https://vault.internal.example:8200",
     path: "secret",
+    version: "v2",
     ready: "True",
     ...overrides,
   };
