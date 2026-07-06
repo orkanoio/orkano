@@ -40,6 +40,9 @@ type Options struct {
 	// Client reads the cluster. Doctor runs under the admin kubeconfig that
 	// `orkano init` produced, so no Orkano RBAC grant is involved.
 	Client client.Client
+	// MaxSnapshotAge overrides DefaultMaxSnapshotAge when positive — Go
+	// surface for a customized snapshot cron; no CLI flag exposes it yet.
+	MaxSnapshotAge time.Duration
 	// Now is the doctor's clock for age and expiry math; defaults to time.Now.
 	// Injected in tests, mirroring preflight.Options.
 	Now func() time.Time
@@ -52,11 +55,19 @@ func (o Options) now() time.Time {
 	return time.Now()
 }
 
+func (o Options) maxSnapshotAge() time.Duration {
+	if o.MaxSnapshotAge > 0 {
+		return o.MaxSnapshotAge
+	}
+	return DefaultMaxSnapshotAge
+}
+
 // Checks returns the doctor's cluster checks for the given options.
 func Checks(opt Options) []check.Check {
 	return []check.Check{
 		dashboardNotPublicCheck(opt),
 		certificateExpiryCheck(opt),
+		etcdSnapshotAgeCheck(opt),
 	}
 }
 
