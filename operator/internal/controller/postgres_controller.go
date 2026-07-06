@@ -159,7 +159,7 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		var owned *controllerutil.AlreadyOwnedError
 		if errors.As(err, &owned) {
 			return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonProvisionFailed, fmt.Errorf(
-				"Secret %q already exists and is owned by %s %s — pick a different name", pg.Name, owned.Owner.Kind, owned.Owner.Name))
+				"connection Secret %q already exists and is owned by %s %s — pick a different name", pg.Name, owned.Owner.Kind, owned.Owner.Name))
 		}
 		return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonReconcileError, fmt.Errorf("reconciling connection Secret: %w", err))
 	}
