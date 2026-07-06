@@ -26,6 +26,7 @@ import {
   type SetupCheck,
   type SetupStatus,
 } from "@/lib/api";
+import { Link } from "@/lib/router";
 import { isStepUpRequired } from "@/lib/errors";
 
 import { postManifestToGitHub } from "./github";
@@ -91,6 +92,7 @@ export function SetupWizard() {
       <AccessModeStep status={s} />
       <SignInStep status={s} />
       <GitHubStep status={s} />
+      <VaultStep status={s} />
       <DomainStep status={s} />
       <RegistryStep />
     </section>
@@ -587,13 +589,49 @@ function GitHubConnectForm() {
   );
 }
 
-// --- step 4: domain + TLS ---
+// --- step 4: secrets ---
+
+// VaultStep reports the optional external-vault path (ADR-0018). "Not
+// applicable" means the install never opted into the External Secrets
+// Operator — the card shows the exact re-run one-liner that adds it.
+function VaultStep({ status }: { status: SetupStatus }) {
+  const check = checkById(status, "secrets.vault-connected");
+  return (
+    <StepCard
+      title="4. Secrets"
+      description="Secrets typed into an app's environment live only as Kubernetes Secrets, encrypted at rest. Optionally, sync them from an external vault instead — Orkano then never holds the values at all."
+      badge={<OutcomeBadge check={check} />}
+    >
+      {check?.outcome === "skip" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-muted-foreground text-sm">
+            The External Secrets Operator is not installed. To add it, re-run
+            the installer with the flag — the re-run converges, it does not
+            reinstall:
+          </p>
+          <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs">
+            orkano init --secrets-vault …your original flags…
+          </pre>
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          {check?.message ?? ""}{" "}
+          <Link to="/vault" className="text-primary hover:underline">
+            Manage stores and synced secrets on the Vault page.
+          </Link>
+        </p>
+      )}
+    </StepCard>
+  );
+}
+
+// --- step 5: domain + TLS ---
 
 function DomainStep({ status }: { status: SetupStatus }) {
   const check = checkById(status, "domains.tls-ready");
   return (
     <StepCard
-      title="4. Domains & TLS"
+      title="5. Domains & TLS"
       description="Custom domains live on each app: add one from the app's screen, point its DNS at the cluster, and cert-manager issues the certificate through the orkano-platform issuer."
       badge={<OutcomeBadge check={check} />}
     >
@@ -606,14 +644,14 @@ function DomainStep({ status }: { status: SetupStatus }) {
   );
 }
 
-// --- step 5: registry ---
+// --- step 6: registry ---
 
 function RegistryStep() {
   // No server check backs this step — the badge says "nothing to do here",
   // deliberately not "verified healthy" (that is a doctor check, Phase 3).
   return (
     <StepCard
-      title="5. Registry"
+      title="6. Registry"
       description="Builds push to the in-cluster registry deployed at install — TLS from an internal CA, images digest-pinned into every rollout. Nothing to configure in v1; external registries are on the roadmap."
       badge={<Badge variant="secondary">Built in</Badge>}
     />
