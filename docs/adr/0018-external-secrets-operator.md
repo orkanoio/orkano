@@ -65,13 +65,12 @@ Facts that pin the design (verified against ESO v2.7.0, 2026-07-06):
    namespaced **`SecretStore`** (not ClusterSecretStore) in `orkano-apps`, plus one
    value-blind credentials Secret (`<store>-credentials`, create+update only — the ADR-0013
    pattern) the store's `auth.secretRef` points at. Per-secret sync is an **`ExternalSecret`**
-   per external key, produced by the env editor's new "from your vault" rows; the target
-   Secret it materializes is referenced by the App exactly like a catalog Secret (INV-03:
-   CRs hold names, never values). *As shipped (2026-07-06): syncs are created on the Vault
-   page ("New sync"), not inline in the env editor — an inline picker would have duplicated
-   the sync form's validation and step-up surface inside the editor, so apps wire a synced
-   Secret through the env editor's existing Secret-reference rows instead; the mechanism and
-   shapes are exactly as decided here.* A user can `kubectl get secretstores,externalsecrets -n
+   per external key, produced by the env editor's new "from your vault" rows (as written;
+   as shipped 2026-07-06 the sync form lives on the Vault page — an inline picker would
+   have duplicated its validation and step-up surface inside the env editor, which wires
+   the produced Secret through its existing Secret-reference rows instead; mechanism and
+   shapes unchanged); the target Secret it materializes is referenced by the App exactly
+   like a catalog Secret (INV-03: CRs hold names, never values). A user can `kubectl get secretstores,externalsecrets -n
    orkano-apps` and see precisely what the UI shows — no wrapper CR to outgrow.
    Single-tenant v1 has one app namespace, so the namespaced store loses nothing a
    ClusterSecretStore would give, and drops its blast radius.
@@ -169,7 +168,7 @@ spec:
   data:
     - secretKey: STRIPE_KEY     # key inside the produced Secret
       remoteRef:
-        key: apps/api/stripe    # path in the user's vault
+        key: orkano/api/stripe    # path in the user's vault
 ```
 
 ## Consequences
@@ -187,7 +186,7 @@ spec:
   value out of that App's logs. Connecting a store therefore extends the existing
   App/Secret co-tenancy exposure (threat-model accepted risk #3) to whatever slice of the
   vault the store credential can see — the documented mitigations are a least-privilege,
-  Orkano-scoped vault credential (the Vault recipe shows a scoped policy) and the step-up
+  Orkano-scoped vault credential (`docs/vault.md` documents the scoped policy) and the step-up
   gate on every ESO write. This is an amplification of an accepted risk, not a new isolation
   boundary this ADR claims to close. A compromised ESO controller can read/write Secrets in
   `orkano-apps` only — bad, bounded; the threat-model row lands with the deploy commit

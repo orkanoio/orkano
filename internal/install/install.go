@@ -79,9 +79,11 @@ type Config struct {
 	// SecretsVault adds the vendored External Secrets Operator to the write
 	// set (`orkano init --secrets-vault`, ADR-0018). Opt-in and one-way from
 	// the installer's side: a later re-run without the flag leaves the file in
-	// place — removing an auto-deploy manifest makes k3s DELETE everything in
-	// it (the ESO CRDs and every synced Secret with them), so disabling is a
-	// deliberate manual step, never a forgotten flag.
+	// place — k3s re-applies auto-deploy manifests on restart but never
+	// deletes resources when a file disappears, so disabling is a deliberate
+	// two-step manual operation (remove the file, then delete the resources —
+	// which cascades to every synced Secret), never a forgotten flag.
+	// docs/vault.md documents the procedure.
 	SecretsVault bool
 	// ReadinessTargets are the workloads Apply waits to become Ready before
 	// returning. Empty skips the wait.
