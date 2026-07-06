@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
@@ -184,9 +183,12 @@ func secretStoreObject(req *secretStoreWriteRequest) *unstructured.Unstructured 
 
 // writeCredentialsSecret blind-writes the store's credentials Secret, owned by
 // the store so deletion cascades (the dashboard holds no secrets delete). The
-// create-then-update fallback mirrors writeEnvSecret: no resourceVersion, the
-// only way to replace a Secret the dashboard is forbidden to read.
-func (s *Server) writeCredentialsSecret(ctx context.Context, store *unstructured.Unstructured, token string) error {
+// update fallback mirrors writeEnvSecret (no resourceVersion — the only way to
+// replace a Secret the dashboard is forbidden to read) but is allowed ONLY on
+// rotation: on connect an existing Secret at this name belongs to something
+// else, and blindly replacing it would destroy that object's data (the
+// review-found Postgres-connection-Secret clobber), so create is strict there.
+func (s *Server) writeCredentialsSecret(ctx context.Context, store *unstructured.Unstructured, token string, allowExisting bool) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      credentialsName(store.GetName()),
@@ -202,12 +204,63 @@ func (s *Server) writeCredentialsSecret(ctx context.Context, store *unstructured
 		Data: map[string][]byte{credentialsTokenKey: []byte(token)},
 	}
 	if err := s.cfg.K8s.Create(ctx, secret); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
+		if !allowExisting || !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 		return s.cfg.K8s.Update(ctx, secret)
 	}
 	return nil
+}
+
+// credentialsNameTaken reports whether the store's credentials Secret name is
+// already claimed by a catalog Postgres — whose connection Secret is named
+// after the object (ADR-0014) — the one same-name collision the value-blind
+// dashboard can detect without a secrets read. Anything else squatting on the
+// name surfaces as AlreadyExists from the strict create.
+func (s *Server) credentialsNameTaken(ctx context.Context, storeName string) (bool, error) {
+	var pg orkanov1alpha1.Postgres
+	err := s.cfg.K8s.Get(ctx, client.ObjectKey{Namespace: appsNamespace, Name: credentialsName(storeName)}, &pg)
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// esoClaimsSecretName reports whether an ESO object already claims name as a
+// Secret: a dashboard-authored ExternalSecret (target.name == metadata.name)
+// or, for a name ending in -credentials, the SecretStore it belongs to. The
+// Postgres create handler mirrors the vault API's collision refusals through
+// this. NoMatch — ESO not installed — claims nothing.
+func (s *Server) esoClaimsSecretName(ctx context.Context, name string) (bool, error) {
+	es := &unstructured.Unstructured{}
+	es.SetGroupVersionKind(externalSecretGVK)
+	err := s.cfg.K8s.Get(ctx, client.ObjectKey{Namespace: appsNamespace, Name: name}, es)
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err), meta.IsNoMatchError(err):
+	default:
+		return false, err
+	}
+	base, ok := strings.CutSuffix(name, credentialsSuffix)
+	if !ok || base == "" {
+		return false, nil
+	}
+	store := &unstructured.Unstructured{}
+	store.SetGroupVersionKind(secretStoreGVK)
+	err = s.cfg.K8s.Get(ctx, client.ObjectKey{Namespace: appsNamespace, Name: base}, store)
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err), meta.IsNoMatchError(err):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func (s *Server) handleListSecretStores(w http.ResponseWriter, r *http.Request) {
@@ -255,6 +308,14 @@ func (s *Server) handleCreateSecretStore(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if taken, err := s.credentialsNameTaken(r.Context(), req.Name); err != nil {
+		s.writeK8sError(w, "secretstore.create", err)
+		return
+	} else if taken {
+		writeJSONError(w, http.StatusConflict, "credentials_name_taken")
+		return
+	}
+
 	store := secretStoreObject(&req)
 	err := s.cfg.K8s.Create(r.Context(), store)
 	s.auditResult(r, user, "secretstore.create", req.Name, err)
@@ -265,9 +326,16 @@ func (s *Server) handleCreateSecretStore(w http.ResponseWriter, r *http.Request)
 	// The credentials Secret comes second so it can carry the store's UID as
 	// owner (cascade delete). If its write fails, roll the store back rather
 	// than leave a connect that can never become Ready.
-	if err := s.writeCredentialsSecret(r.Context(), store, req.Token); err != nil {
-		_ = s.cfg.K8s.Delete(r.Context(), store)
+	if err := s.writeCredentialsSecret(r.Context(), store, req.Token, false); err != nil {
+		if delErr := s.cfg.K8s.Delete(r.Context(), store); delErr != nil {
+			s.log.Warn("SecretStore rollback after failed credentials write also failed",
+				"store", req.Name, "err", delErr)
+		}
 		s.auditResult(r, user, "secretstore.credentials", req.Name, err)
+		if apierrors.IsAlreadyExists(err) {
+			writeJSONError(w, http.StatusConflict, "credentials_name_taken")
+			return
+		}
 		s.writeVaultK8sError(w, "secretstore.credentials", err)
 		return
 	}
@@ -285,6 +353,18 @@ func (s *Server) handleUpdateSecretStore(w http.ResponseWriter, r *http.Request)
 	if code := validateStoreRequest(&req); code != "" {
 		writeJSONError(w, http.StatusBadRequest, code)
 		return
+	}
+	// Rotation blind-writes <name>-credentials, so the same collision guard
+	// as connect applies (a kubectl-authored store could sit at a name whose
+	// credentials Secret is a Postgres connection Secret).
+	if req.Token != "" {
+		if taken, err := s.credentialsNameTaken(r.Context(), name); err != nil {
+			s.writeK8sError(w, "secretstore.update", err)
+			return
+		} else if taken {
+			writeJSONError(w, http.StatusConflict, "credentials_name_taken")
+			return
+		}
 	}
 
 	// Read-modify-write on the SA client (the write path): replace the spec
@@ -306,7 +386,7 @@ func (s *Server) handleUpdateSecretStore(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.Token != "" {
-		if err := s.writeCredentialsSecret(r.Context(), existing, req.Token); err != nil {
+		if err := s.writeCredentialsSecret(r.Context(), existing, req.Token, true); err != nil {
 			s.auditResult(r, user, "secretstore.credentials", name, err)
 			s.writeVaultK8sError(w, "secretstore.credentials", err)
 			return
@@ -413,7 +493,10 @@ func (s *Server) handleCreateExternalSecret(w http.ResponseWriter, r *http.Reque
 	}
 	seen := make(map[string]bool, len(req.Keys))
 	for _, k := range req.Keys {
-		if len(validation.IsEnvVarName(k.SecretKey)) != 0 || seen[k.SecretKey] {
+		// envNameRe (secrets.go) — the same EnvVar.Name pattern the CEL schema
+		// enforces; the looser apimachinery IsEnvVarName admits keys ("my.key")
+		// that could never be wired into spec.env later.
+		if !envNameRe.MatchString(k.SecretKey) || seen[k.SecretKey] {
 			writeJSONError(w, http.StatusBadRequest, "invalid_keys")
 			return
 		}
@@ -426,6 +509,9 @@ func (s *Server) handleCreateExternalSecret(w http.ResponseWriter, r *http.Reque
 
 	// The catalog names its connection Secret after the Postgres object, so an
 	// existing database with this name means the target Secret is claimed.
+	// NoMatch is tolerated here, unlike writeK8sError's 503 mapping: this Get
+	// is only a collision probe, and a cluster still converging its Postgres
+	// CRD has no Postgres to collide with.
 	var pg orkanov1alpha1.Postgres
 	pgKey := client.ObjectKey{Namespace: appsNamespace, Name: req.Name}
 	if err := s.cfg.K8s.Get(r.Context(), pgKey, &pg); err == nil {
