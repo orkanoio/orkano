@@ -67,7 +67,11 @@ Facts that pin the design (verified against ESO v2.7.0, 2026-07-06):
    pattern) the store's `auth.secretRef` points at. Per-secret sync is an **`ExternalSecret`**
    per external key, produced by the env editor's new "from your vault" rows; the target
    Secret it materializes is referenced by the App exactly like a catalog Secret (INV-03:
-   CRs hold names, never values). A user can `kubectl get secretstores,externalsecrets -n
+   CRs hold names, never values). *As shipped (2026-07-06): syncs are created on the Vault
+   page ("New sync"), not inline in the env editor — an inline picker would have duplicated
+   the sync form's validation and step-up surface inside the editor, so apps wire a synced
+   Secret through the env editor's existing Secret-reference rows instead; the mechanism and
+   shapes are exactly as decided here.* A user can `kubectl get secretstores,externalsecrets -n
    orkano-apps` and see precisely what the UI shows — no wrapper CR to outgrow.
    Single-tenant v1 has one app namespace, so the namespaced store loses nothing a
    ClusterSecretStore would give, and drops its blast radius.

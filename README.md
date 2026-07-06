@@ -19,7 +19,7 @@ Deliberately out of scope for v1 (feature requests for these will be closed with
 | `/cli` | The `orkano` binary: `init`, `proxy`, `doctor`. |
 | `/receiver` | Internet-facing webhook receiver. Stateless, no cluster access, no secrets beyond the HMAC key. |
 | `/dashboard` | React UI + Go API. Writes Orkano CRDs only; never holds cluster-admin. Arrives in Phase 2. |
-| `/docs` | ADRs (`docs/adr`), security docs (`docs/security`), examples (`docs/examples`), the [doctor guide](docs/doctor.md). |
+| `/docs` | ADRs (`docs/adr`), security docs (`docs/security`), examples (`docs/examples`), the [doctor guide](docs/doctor.md), the [vault guide](docs/vault.md). |
 | `/hack` | Dev scripts and throwaway spike code. Not part of the product. |
 
 ## Developing
