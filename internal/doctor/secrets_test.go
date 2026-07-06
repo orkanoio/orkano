@@ -161,6 +161,83 @@ func TestSecretsStoreHealth(t *testing.T) {
 		}
 	})
 
+	t.Run("sync-once refreshInterval 0s passes without freshness", func(t *testing.T) {
+		once := esoObject("ExternalSecret", "once", "True", func(o map[string]interface{}) {
+			o["spec"] = map[string]interface{}{"refreshInterval": "0s"}
+			// refreshTime frozen at the single sync, long ago — healthy.
+			o["status"].(map[string]interface{})["refreshTime"] = now.Add(-72 * time.Hour).Format(time.RFC3339)
+		})
+		res, err := probeStoreHealth(t, fakeClient(t, once, targetSecret("once")), now)
+		if err != nil || res.Status != check.StatusPass {
+			t.Fatalf("got %+v, %v — refreshInterval 0s is sync-once, not stale", res, err)
+		}
+	})
+
+	t.Run("CreatedOnce and OnChange policies pass with frozen refreshTime", func(t *testing.T) {
+		for _, policy := range []string{"CreatedOnce", "OnChange"} {
+			frozen := esoObject("ExternalSecret", "frozen", "True", func(o map[string]interface{}) {
+				o["spec"] = map[string]interface{}{
+					"refreshInterval": "1h0m0s",
+					"refreshPolicy":   policy,
+				}
+				o["status"].(map[string]interface{})["refreshTime"] = now.Add(-72 * time.Hour).Format(time.RFC3339)
+			})
+			res, err := probeStoreHealth(t, fakeClient(t, frozen, targetSecret("frozen")), now)
+			if err != nil || res.Status != check.StatusPass {
+				t.Fatalf("policy %s: got %+v, %v — a frozen refreshTime is by design", policy, res, err)
+			}
+		}
+	})
+
+	t.Run("negative refreshInterval is a probe error", func(t *testing.T) {
+		neg := esoObject("ExternalSecret", "neg", "True", func(o map[string]interface{}) {
+			o["spec"] = map[string]interface{}{"refreshInterval": "-1h"}
+		})
+		if _, err := probeStoreHealth(t, fakeClient(t, neg), now); err == nil ||
+			strings.Contains(err.Error(), "%!w") {
+			t.Fatalf("want a clean probe error for a negative interval, got %v", err)
+		}
+	})
+
+	t.Run("absent refreshInterval uses the 1h default", func(t *testing.T) {
+		stale := esoObject("ExternalSecret", "defaulted", "True", func(o map[string]interface{}) {
+			o["status"].(map[string]interface{})["refreshTime"] = now.Add(-3 * time.Hour).Format(time.RFC3339)
+		})
+		res, err := probeStoreHealth(t, fakeClient(t, stale, targetSecret("defaulted")), now)
+		if err != nil || res.Status != check.StatusFail {
+			t.Fatalf("got %+v, %v — 3h old under the 1h default must be stale", res, err)
+		}
+	})
+
+	t.Run("custom target name is the secret checked", func(t *testing.T) {
+		c := fakeClient(t, freshSync("api-stripe", now, "custom-target"))
+		res, err := probeStoreHealth(t, c, now)
+		if err != nil || res.Status != check.StatusFail || !strings.Contains(res.Message, "custom-target") {
+			t.Fatalf("got %+v, %v — want missing custom-target fail", res, err)
+		}
+		c = fakeClient(t, freshSync("api-stripe", now, "custom-target"), targetSecret("custom-target"))
+		if res, err := probeStoreHealth(t, c, now); err != nil || res.Status != check.StatusPass {
+			t.Fatalf("got %+v, %v — want pass with the custom target present", res, err)
+		}
+	})
+
+	t.Run("multiple failures aggregate into one message", func(t *testing.T) {
+		c := fakeClient(t,
+			esoObject("SecretStore", "vault-a", "False", nil),
+			esoObject("SecretStore", "vault-b", "True", nil),
+			esoObject("ExternalSecret", "broken-sync", "False", nil),
+		)
+		res, err := probeStoreHealth(t, c, now)
+		if err != nil || res.Status != check.StatusFail {
+			t.Fatalf("got %+v, %v — want fail", res, err)
+		}
+		for _, want := range []string{"vault-a", "broken-sync"} {
+			if !strings.Contains(res.Message, want) {
+				t.Errorf("aggregated message missing %s: %s", want, res.Message)
+			}
+		}
+	})
+
 	t.Run("ready without refreshTime is a probe error", func(t *testing.T) {
 		c := fakeClient(t, esoObject("ExternalSecret", "api-stripe", "True", nil))
 		if _, err := probeStoreHealth(t, c, now); err == nil {
@@ -178,17 +255,19 @@ func TestSecretsStoreHealth(t *testing.T) {
 	})
 
 	t.Run("list error is a probe error", func(t *testing.T) {
-		c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-			WithInterceptorFuncs(interceptor.Funcs{
-				List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
-					if _, ok := list.(*unstructured.UnstructuredList); ok {
-						return apierrors.NewServiceUnavailable("apiserver wobble")
-					}
-					return nil
-				},
-			}).Build()
-		if _, err := probeStoreHealth(t, c, now); err == nil {
-			t.Fatal("want probe error on a refused list")
+		for _, failKind := range []string{"SecretStoreList", "ExternalSecretList"} {
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if u, ok := list.(*unstructured.UnstructuredList); ok && u.GetKind() == failKind {
+							return apierrors.NewServiceUnavailable("apiserver wobble")
+						}
+						return cl.List(ctx, list, opts...)
+					},
+				}).Build()
+			if _, err := probeStoreHealth(t, c, now); err == nil {
+				t.Fatalf("want probe error when the %s list is refused", failKind)
+			}
 		}
 	})
 }
