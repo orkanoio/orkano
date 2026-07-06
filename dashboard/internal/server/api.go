@@ -96,6 +96,30 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		pr.With(s.RequireStepUp).Delete("/{name}", s.handleDeletePostgres)
 	})
 
+	// External-vault sync (ADR-0018): ESO's own kinds written directly, no
+	// wrapper CR. Unlike the catalog routes, EVERY write here gates on step-up
+	// (ADR-0018 decision 4 tightens the creates-need-only-a-session rule):
+	// each one rewires what lands in app env, and they are rare operations.
+	r.Route("/api/secretstores", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListSecretStores)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateSecretStore)
+			wr.Put("/{name}", s.handleUpdateSecretStore)
+			wr.Delete("/{name}", s.handleDeleteSecretStore)
+		})
+	})
+	r.Route("/api/externalsecrets", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListExternalSecrets)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateExternalSecret)
+			wr.Delete("/{name}", s.handleDeleteExternalSecret)
+		})
+	})
+
 	// The append-only audit log (INV-08), readable by any authenticated session.
 	r.With(s.RequireSession).Get("/api/audit", s.handleListAudit)
 

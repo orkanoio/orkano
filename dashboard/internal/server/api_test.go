@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -35,6 +36,13 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	if err := orkanov1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add orkano scheme: %v", err)
 	}
+	// The ESO kinds the vault handlers touch as unstructured (ADR-0018). Only
+	// the FAKE client needs scheme entries — the real client routes
+	// unstructured through the RESTMapper without them.
+	scheme.AddKnownTypeWithName(secretStoreGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(secretStoreListGVK, &unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(externalSecretGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(externalSecretListGVK, &unstructured.UnstructuredList{})
 	return scheme
 }
 
