@@ -275,6 +275,7 @@ func TestChecksContract(t *testing.T) {
 		{"exposure.dashboard-not-public", check.SeverityCritical},
 		{"tls.certificate-expiry", check.SeverityWarning},
 		{"backup.etcd-snapshot-age", check.SeverityWarning},
+		{"net.networkpolicy-enforced", check.SeverityCritical},
 	}
 	cs := doctor.Checks(doctor.Options{})
 	if len(cs) != len(want) {
@@ -292,7 +293,7 @@ func TestChecksContract(t *testing.T) {
 			t.Errorf("%s: unexpected Requires %v", c.ID, c.Requires)
 		}
 		if c.Fix != nil {
-			t.Errorf("%s: no safe automatic fix exists for a read-only cluster check; Fix must be nil", c.ID)
+			t.Errorf("%s: none of the doctor cluster checks ships a safe automatic fix; Fix must be nil", c.ID)
 		}
 		if c.Probe == nil || c.Summary == "" || c.Remediation == "" {
 			t.Errorf("%s: Probe, Summary and Remediation must all be set", c.ID)

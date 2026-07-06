@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orkanoio/orkano/internal/doctor"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
 	"github.com/orkanoio/orkano/operator/internal/controller"
 	"github.com/orkanoio/orkano/operator/internal/imagepins"
@@ -29,7 +30,7 @@ func TestProductImagePinsAreMultiArch(t *testing.T) {
 	if err := exec.Command("docker", "buildx", "version").Run(); err != nil {
 		t.Skipf("docker buildx not available, skipping live image-pin check: %v", err)
 	}
-	refs := append([]string{buildjob.DefaultImage, buildjob.StaticServerImage}, controller.PinnedPostgresImages()...)
+	refs := append([]string{buildjob.DefaultImage, buildjob.StaticServerImage, doctor.CanaryImage}, controller.PinnedPostgresImages()...)
 	for _, ref := range refs {
 		t.Run(ref, func(t *testing.T) {
 			raw, err := inspectRaw(t, ref)

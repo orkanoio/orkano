@@ -48,13 +48,44 @@ func doctorScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, extra ...ctrlclient.Object) ctrlclient.Client {
+// doctorFakeCluster builds the command tests' cluster: the dashboard Service,
+// the registry Service the netpol canaries target, and a Create interceptor
+// playing the kubelet — the control canary always connects, the deny canary
+// is blocked when netpolEnforced (the healthy case) and connects when not.
+func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, netpolEnforced bool, extra ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
-	objs := append([]ctrlclient.Object{&corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: "orkano-dashboard"},
-		Spec:       corev1.ServiceSpec{Type: svcType},
-	}}, extra...)
-	return fake.NewClientBuilder().WithScheme(doctorScheme(t)).WithObjects(objs...).Build()
+	objs := append([]ctrlclient.Object{
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: "orkano-dashboard"},
+			Spec:       corev1.ServiceSpec{Type: svcType},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: "orkano-registry"},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, ClusterIP: "10.43.0.7"},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "kubernetes"},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, ClusterIP: "10.43.0.1"},
+		},
+	}, extra...)
+	denyPhase := corev1.PodFailed
+	if !netpolEnforced {
+		denyPhase = corev1.PodSucceeded
+	}
+	return fake.NewClientBuilder().WithScheme(doctorScheme(t)).WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl ctrlclient.WithWatch, obj ctrlclient.Object, opts ...ctrlclient.CreateOption) error {
+				if pod, ok := obj.(*corev1.Pod); ok {
+					switch {
+					case strings.Contains(pod.Name, "-control-"):
+						pod.Status.Phase = corev1.PodSucceeded
+					case strings.Contains(pod.Name, "-deny-"):
+						pod.Status.Phase = denyPhase
+					}
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).Build()
 }
 
 // healthyClusterCert keeps the healthy-cluster fixtures passing the
@@ -74,7 +105,7 @@ func healthyClusterCert() ctrlclient.Object {
 }
 
 func TestDoctorHealthyCluster(t *testing.T) {
-	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
+	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
 
 	var out bytes.Buffer
 	err := runDoctor(context.Background(), &out, &doctorOptions{kubeconfig: "custom.kubeconfig"})
@@ -92,7 +123,7 @@ func TestDoctorHealthyCluster(t *testing.T) {
 }
 
 func TestDoctorCriticalFailureExitsOne(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeNodePort), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeNodePort, false), nil)
 
 	var out bytes.Buffer
 	err := runDoctor(context.Background(), &out, &doctorOptions{})
@@ -108,7 +139,7 @@ func TestDoctorCriticalFailureExitsOne(t *testing.T) {
 }
 
 func TestDoctorJSONOutput(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeNodePort), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeNodePort, false), nil)
 
 	var out bytes.Buffer
 	err := runDoctor(context.Background(), &out, &doctorOptions{jsonOut: true})
@@ -128,7 +159,7 @@ func TestDoctorJSONOutput(t *testing.T) {
 }
 
 func TestDoctorLocalRunsNodeChecks(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
 	stubLocalNode(t, func(cmd string) (string, string, int) {
 		if cmd == "cat /sys/kernel/security/apparmor/profiles" {
 			return "orkano-buildkit (enforce)\n", "", 0
@@ -177,7 +208,7 @@ func TestDoctorIndeterminateExitsTwo(t *testing.T) {
 // the attempts reach the report: a fixable failing check registered through the
 // seam resolves and the resolved line renders.
 func TestDoctorFixFlow(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
 	orig := registerDoctorChecks
 	t.Cleanup(func() { registerDoctorChecks = orig })
 	registerDoctorChecks = func(reg *checks.Registry, opt doctor.Options) error {
@@ -212,7 +243,7 @@ func TestDoctorFixFlow(t *testing.T) {
 }
 
 func TestDoctorLocalRefusesNonRoot(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
 	orig := geteuid
 	t.Cleanup(func() { geteuid = orig })
 	geteuid = func() int { return 501 }

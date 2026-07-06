@@ -32,7 +32,9 @@ func newDoctorCommand() *cobra.Command {
 		Short: "Check a running Orkano install's health and hardening",
 		Long: "Run the doctor checks against a live cluster and report each one with a " +
 			"hardening score: a severity-weighted percentage of the applicable checks " +
-			"that passed. Reads the cluster through the kubeconfig `orkano init` wrote. " +
+			"that passed. Reads the cluster through the kubeconfig `orkano init` wrote; " +
+			"the NetworkPolicy check additionally creates three short-lived canary pods " +
+			"in orkano-builds to probe enforcement for real, and removes them after. " +
 			"Pass --local when running on the server itself (as root) to also verify " +
 			"on-box node state such as the AppArmor build confinement. Exit codes gate " +
 			"CI: 0 all critical checks passed, 1 a critical check failed, 2 a critical " +
