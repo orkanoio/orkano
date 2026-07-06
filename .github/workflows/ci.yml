@@ -32,7 +32,7 @@ jobs:
       # shellcheck ships on the ubuntu-latest runner. The on-box installer is
       # served to users and piped into a shell, so it is linted like product code
       # (ADR-0017). Extend the list as more first-party scripts are hardened.
-      - run: shellcheck hack/install/install.sh
+      - run: shellcheck hack/install/install.sh hack/vendor-external-secrets.sh
 
   test:
     runs-on: ubuntu-latest
