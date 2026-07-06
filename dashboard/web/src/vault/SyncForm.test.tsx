@@ -53,6 +53,18 @@ describe("SyncForm", () => {
     expect(screen.getByRole("button", { name: "Remove key 1" })).toBeDisabled();
   });
 
+  it("guides to the connect form when no store exists", async () => {
+    stubFetchRoutes({
+      "GET /api/secretstores": () => jsonResponse(200, { items: [] }),
+    });
+    renderWithSession(<SyncForm />);
+
+    expect(
+      await screen.findByRole("link", { name: "Connect your vault" }),
+    ).toHaveAttribute("href", "#/vault/connect");
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+  });
+
   it("rejects invalid variable names client-side", async () => {
     const mock = stubFetchRoutes({
       "GET /api/secretstores": () =>

@@ -77,29 +77,48 @@ describe("StoreForm", () => {
     ).toBeInTheDocument();
   });
 
-  it("rotates without a name field; an empty token keeps the credential", async () => {
+  it("rotation seeds from the LIVE store and preserves its spec", async () => {
+    // A non-default path/version pins the load-bearing behavior: the server
+    // replaces the whole spec, so a rotate must never quietly reset these.
+    const live = makeSecretStore({ path: "kv-prod", version: "v1" });
     const mock = stubFetchRoutes({
-      "PUT /api/secretstores/team-vault": () =>
-        jsonResponse(200, makeSecretStore()),
+      "GET /api/secretstores": () => jsonResponse(200, { items: [live] }),
+      "PUT /api/secretstores/team-vault": () => jsonResponse(200, live),
     });
     renderWithSession(<StoreForm edit="team-vault" />);
     const user = userEvent.setup();
 
-    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
-    await user.type(
-      screen.getByLabelText("Vault server"),
-      "https://vault2.internal.example:8200",
+    // The form waits for the live store, then seeds from it.
+    expect(await screen.findByLabelText("Mount path")).toHaveValue("kv-prod");
+    expect(screen.getByLabelText("KV engine version")).toHaveValue("v1");
+    expect(screen.getByLabelText("Vault server")).toHaveValue(
+      "https://vault.internal.example:8200",
     );
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+
+    // Rotate with a new token, leaving the spec untouched.
+    await user.type(screen.getByLabelText("New token (optional)"), "s.next");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-    expect(await requestBody(mock)).toEqual({
+    // Call 0 is the stores list; the PUT carries the live spec + the token.
+    expect(await requestBody(mock, 1)).toEqual({
       vault: {
-        server: "https://vault2.internal.example:8200",
-        path: "secret",
-        version: "v2",
+        server: "https://vault.internal.example:8200",
+        path: "kv-prod",
+        version: "v1",
       },
-      token: "",
+      token: "s.next",
     });
+  });
+
+  it("rotation of a missing store links back instead of a defaults form", async () => {
+    stubFetchRoutes({
+      "GET /api/secretstores": () => jsonResponse(200, { items: [] }),
+    });
+    renderWithSession(<StoreForm edit="gone-vault" />);
+
+    expect(await screen.findByText(/was not found/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Vault server")).not.toBeInTheDocument();
   });
 
   it("maps the credentials-name collision to actionable copy", async () => {

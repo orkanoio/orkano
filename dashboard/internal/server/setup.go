@@ -326,6 +326,12 @@ func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []che
 				case err != nil:
 					return check.Result{}, fmt.Errorf("listing secret stores: %w", err)
 				}
+				// Installed-but-empty is a FAIL, deliberately diverging from
+				// domains.tls-ready's skip-on-empty: passing --secrets-vault
+				// was an explicit ask, so an unconnected store is unfinished
+				// setup, not inapplicability. (The doctor's sibling
+				// secrets.store-health answers a different question —
+				// "currently healthy" — and skips this state.)
 				if len(stores.Items) == 0 {
 					return check.Result{
 						Status:  check.StatusFail,
@@ -338,15 +344,17 @@ func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []che
 						ready++
 					}
 				}
-				if ready == 0 {
+				// Every connected store must be Ready — a "Done" badge over a
+				// half-broken pair would hide the expired credential.
+				if ready < len(stores.Items) {
 					return check.Result{
 						Status:  check.StatusFail,
-						Message: fmt.Sprintf("%d store(s) connected, none Ready — check the credential and server address", len(stores.Items)),
+						Message: fmt.Sprintf("%d of %d store(s) Ready — check the others' credentials and server addresses", ready, len(stores.Items)),
 					}, nil
 				}
 				return check.Result{
 					Status:  check.StatusPass,
-					Message: fmt.Sprintf("%d of %d store(s) Ready", ready, len(stores.Items)),
+					Message: fmt.Sprintf("%d store(s) connected and Ready", len(stores.Items)),
 				}, nil
 			},
 		},
