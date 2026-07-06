@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -45,16 +48,33 @@ func doctorScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType) ctrlclient.Client {
+func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, extra ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
-	return fake.NewClientBuilder().WithScheme(doctorScheme(t)).WithObjects(&corev1.Service{
+	objs := append([]ctrlclient.Object{&corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: "orkano-dashboard"},
 		Spec:       corev1.ServiceSpec{Type: svcType},
-	}).Build()
+	}}, extra...)
+	return fake.NewClientBuilder().WithScheme(doctorScheme(t)).WithObjects(objs...).Build()
+}
+
+// healthyClusterCert keeps the healthy-cluster fixtures passing the
+// tls.certificate-expiry check (a real install always has the platform PKI).
+func healthyClusterCert() ctrlclient.Object {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
+	u.SetNamespace("orkano-system")
+	u.SetName("orkano-registry-tls")
+	if err := unstructured.SetNestedMap(u.Object, map[string]interface{}{
+		"notAfter":    time.Now().Add(300 * 24 * time.Hour).Format(time.RFC3339),
+		"renewalTime": time.Now().Add(270 * 24 * time.Hour).Format(time.RFC3339),
+	}, "status"); err != nil {
+		panic(err)
+	}
+	return u
 }
 
 func TestDoctorHealthyCluster(t *testing.T) {
-	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP), nil)
+	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
 
 	var out bytes.Buffer
 	err := runDoctor(context.Background(), &out, &doctorOptions{kubeconfig: "custom.kubeconfig"})
@@ -108,7 +128,7 @@ func TestDoctorJSONOutput(t *testing.T) {
 }
 
 func TestDoctorLocalRunsNodeChecks(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
 	stubLocalNode(t, func(cmd string) (string, string, int) {
 		if cmd == "cat /sys/kernel/security/apparmor/profiles" {
 			return "orkano-buildkit (enforce)\n", "", 0
@@ -157,7 +177,7 @@ func TestDoctorIndeterminateExitsTwo(t *testing.T) {
 // the attempts reach the report: a fixable failing check registered through the
 // seam resolves and the resolved line renders.
 func TestDoctorFixFlow(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, healthyClusterCert()), nil)
 	orig := registerDoctorChecks
 	t.Cleanup(func() { registerDoctorChecks = orig })
 	registerDoctorChecks = func(reg *checks.Registry, opt doctor.Options) error {

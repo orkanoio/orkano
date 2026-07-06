@@ -268,24 +268,33 @@ func TestDashboardNotPublic(t *testing.T) {
 // TestChecksContract pins the shipped check metadata: IDs are permanent
 // (--json/CI), severities gate the exit code.
 func TestChecksContract(t *testing.T) {
+	want := []struct {
+		id       string
+		severity check.Severity
+	}{
+		{"exposure.dashboard-not-public", check.SeverityCritical},
+		{"tls.certificate-expiry", check.SeverityWarning},
+	}
 	cs := doctor.Checks(doctor.Options{})
-	if len(cs) != 1 {
-		t.Fatalf("Checks() returned %d checks, want 1", len(cs))
+	if len(cs) != len(want) {
+		t.Fatalf("Checks() returned %d checks, want %d", len(cs), len(want))
 	}
-	c := cs[0]
-	if c.ID != "exposure.dashboard-not-public" {
-		t.Errorf("ID = %q", c.ID)
-	}
-	if c.Severity != check.SeverityCritical {
-		t.Errorf("severity = %q, want critical", c.Severity)
-	}
-	if len(c.Requires) != 0 {
-		t.Errorf("unexpected Requires %v", c.Requires)
-	}
-	if c.Fix != nil {
-		t.Error("no safe automatic fix exists for a public dashboard; Fix must be nil")
-	}
-	if c.Probe == nil || c.Summary == "" || c.Remediation == "" {
-		t.Error("Probe, Summary and Remediation must all be set")
+	for i, w := range want {
+		c := cs[i]
+		if c.ID != w.id {
+			t.Errorf("check %d ID = %q, want %q", i, c.ID, w.id)
+		}
+		if c.Severity != w.severity {
+			t.Errorf("%s severity = %q, want %q", c.ID, c.Severity, w.severity)
+		}
+		if len(c.Requires) != 0 {
+			t.Errorf("%s: unexpected Requires %v", c.ID, c.Requires)
+		}
+		if c.Fix != nil {
+			t.Errorf("%s: no safe automatic fix exists for a read-only cluster check; Fix must be nil", c.ID)
+		}
+		if c.Probe == nil || c.Summary == "" || c.Remediation == "" {
+			t.Errorf("%s: Probe, Summary and Remediation must all be set", c.ID)
+		}
 	}
 }
