@@ -52,20 +52,26 @@ rbac:
     create: false
   # Aggregation only works on ClusterRoles; under scopedRBAC the view/edit
   # objects are namespaced Roles, so the aggregate labels would be inert.
+  # (The chart still stamps an aggregate-to-admin label on them regardless —
+  # equally inert on a namespaced Role, left as upstream shape.)
   aggregateToView: false
   aggregateToEdit: false
 
 # The cluster-scoped kinds and PushSecret are outside the v1 surface
 # (ADR-0018 decisions 3 + 6): don't install CRDs nobody reconciles.
+# ClusterGenerator joins them — it is the one other cluster-scoped kind the
+# chart ships, and nothing Orkano writes references generators.
 processClusterStore: false
 processClusterExternalSecret: false
 processClusterPushSecret: false
 processPushSecret: false
+processClusterGenerator: false
 crds:
   createClusterSecretStore: false
   createClusterExternalSecret: false
   createClusterPushSecret: false
   createPushSecret: false
+  createClusterGenerator: false
 
 # Explicit requests/limits (Orkano convention: memory limit, no CPU limit).
 resources:
@@ -182,7 +188,6 @@ rules:
     verbs:
     - "get"
     - "update"
-    - "patch"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

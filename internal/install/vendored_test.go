@@ -1,6 +1,7 @@
 package install
 
 import (
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -106,6 +107,7 @@ func TestVendoredExternalSecretsStaysScoped(t *testing.T) {
 		"name: clusterexternalsecrets.external-secrets.io",
 		"name: pushsecrets.external-secrets.io",
 		"name: clusterpushsecrets.external-secrets.io",
+		"name: clustergenerators.generators.external-secrets.io",
 	} {
 		if strings.Contains(manifest, banned) {
 			t.Errorf("vendored external-secrets must not ship %q", banned)
@@ -118,6 +120,26 @@ func TestVendoredExternalSecretsStaysScoped(t *testing.T) {
 		if !strings.Contains(manifest, required) {
 			t.Errorf("vendored external-secrets missing CRD %q", required)
 		}
+	}
+}
+
+// TestStaticManifestsExcludeExternalSecrets pins the embed split: the ESO set
+// must never join StaticManifests — internal/install writes ALL of
+// StaticManifests to every cluster, and ESO is opt-in (ADR-0018 decision 2).
+// A refactor merging the two go:embed directives would deploy ESO everywhere;
+// this is the static guard for it.
+func TestStaticManifestsExcludeExternalSecrets(t *testing.T) {
+	err := fs.WalkDir(config.StaticManifests, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.Contains(p, "external-secrets") {
+			t.Errorf("StaticManifests embeds %q — ESO must stay opt-in", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk StaticManifests: %v", err)
 	}
 }
 
