@@ -242,6 +242,109 @@ func TestDoctorFixFlow(t *testing.T) {
 	}
 }
 
+// TestDoctorMinScoreGate drives the gate's reason to exist end to end: a
+// warnings-only degradation (the platform cert is missing, a warning-severity
+// check) leaves the run's own exit code at 0, and only --min-score turns it
+// into a CI failure.
+func TestDoctorMinScoreGate(t *testing.T) {
+	t.Run("below threshold fails", func(t *testing.T) {
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+
+		var out bytes.Buffer
+		err := runDoctor(context.Background(), &out, &doctorOptions{minScore: 100})
+		if err == nil {
+			t.Fatalf("expected the score gate to fail:\n%s", out.String())
+		}
+		if code := ExitCode(err); code != 1 {
+			t.Fatalf("ExitCode = %d, want 1; err = %v", code, err)
+		}
+		if !strings.Contains(err.Error(), "below the required 100%") {
+			t.Errorf("error %q should name the score gate", err)
+		}
+		if !strings.Contains(out.String(), "is below the required 100% (--min-score)") {
+			t.Errorf("report missing the gate verdict:\n%s", out.String())
+		}
+	})
+	t.Run("same cluster passes without the gate", func(t *testing.T) {
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+
+		var out bytes.Buffer
+		if err := runDoctor(context.Background(), &out, &doctorOptions{}); err != nil {
+			t.Fatalf("runDoctor: %v\n%s", err, out.String())
+		}
+	})
+	t.Run("met threshold passes", func(t *testing.T) {
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
+
+		var out bytes.Buffer
+		if err := runDoctor(context.Background(), &out, &doctorOptions{minScore: 100}); err != nil {
+			t.Fatalf("runDoctor: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "meets the required 100% (--min-score)") {
+			t.Errorf("report missing the gate verdict:\n%s", out.String())
+		}
+	})
+	// An indeterminate run (critical probe errors) crossed with an unmet gate:
+	// the gate's definitive failure wins — exit 1 with the score-gate message,
+	// never the "could not be determined" exit 2. Pins the switch-case order in
+	// runDoctor.
+	t.Run("gate beats indeterminate", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(doctorScheme(t)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(context.Context, ctrlclient.WithWatch, ctrlclient.ObjectKey, ctrlclient.Object, ...ctrlclient.GetOption) error {
+					return errors.New("apiserver unreachable")
+				},
+			}).Build()
+		stubDoctorClient(t, c, nil)
+
+		var out bytes.Buffer
+		err := runDoctor(context.Background(), &out, &doctorOptions{minScore: 100})
+		if err == nil {
+			t.Fatalf("expected the score gate to fail:\n%s", out.String())
+		}
+		if code := ExitCode(err); code != 1 {
+			t.Fatalf("ExitCode = %d, want the gate's 1 over indeterminate 2; err = %v", code, err)
+		}
+		if !strings.Contains(err.Error(), "below the required 100%") {
+			t.Errorf("error %q should carry the score-gate message, not the indeterminate one", err)
+		}
+	})
+	t.Run("json exit code reflects the gate", func(t *testing.T) {
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+
+		var out bytes.Buffer
+		err := runDoctor(context.Background(), &out, &doctorOptions{jsonOut: true, minScore: 100})
+		if err == nil {
+			t.Fatal("expected the score gate to fail")
+		}
+		var rep struct {
+			MinScore int `json:"minScore"`
+			ExitCode int `json:"exitCode"`
+		}
+		if jerr := json.Unmarshal(out.Bytes(), &rep); jerr != nil {
+			t.Fatalf("output is not JSON: %v\n%s", jerr, out.String())
+		}
+		if rep.MinScore != 100 || rep.ExitCode != 1 {
+			t.Errorf("report = %+v, want minScore 100 and exitCode 1", rep)
+		}
+	})
+}
+
+// TestDoctorMinScoreValidation pins that an out-of-range threshold is refused
+// before any cluster access (newDoctorClient is deliberately not stubbed).
+func TestDoctorMinScoreValidation(t *testing.T) {
+	for _, bad := range []int{-1, 101} {
+		var out bytes.Buffer
+		err := runDoctor(context.Background(), &out, &doctorOptions{minScore: bad})
+		if err == nil || !strings.Contains(err.Error(), "--min-score") {
+			t.Fatalf("minScore %d: expected the range refusal, got %v", bad, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("minScore %d: no report should be written:\n%s", bad, out.String())
+		}
+	}
+}
+
 func TestDoctorLocalRefusesNonRoot(t *testing.T) {
 	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
 	orig := geteuid
