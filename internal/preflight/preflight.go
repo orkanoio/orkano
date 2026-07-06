@@ -38,6 +38,12 @@ const (
 //	80,443     Traefik HTTP + HTTPS ingress
 var DefaultRequiredPorts = []int{6443, 2379, 2380, 10250, 80, 443}
 
+// ExistingK3sPorts are allowed to be occupied on an idempotent rerun, but only
+// when AllowExistingK3s is set and the k3s API is already answering. The ingress
+// ports stay excluded: an existing listener on 80/443 can still collide with
+// Traefik, so it must be fixed before init proceeds.
+var ExistingK3sPorts = []int{6443, 2379, 2380, 10250}
+
 // DefaultMaxClockSkew is the offset between the node clock and the control host
 // that time.synced tolerates. Generous enough to absorb the SSH round-trip and
 // the one-second granularity of `date +%s`, tight enough to catch the real
@@ -58,6 +64,16 @@ type Options struct {
 	Target string
 	// RequiredPorts overrides DefaultRequiredPorts when non-empty.
 	RequiredPorts []int
+	// AllowExistingK3s permits ExistingK3sPorts to be occupied when a k3s API is
+	// already reachable, making `orkano init` idempotent after k3s has been
+	// installed. Other occupied ports still fail.
+	AllowExistingK3s bool
+	// Sudo prefixes the existing-k3s readyz probe with sudo. The five preflight
+	// probes deliberately run as the plain SSH user, but this one probe reads the
+	// root-only k3s kubeconfig (write-kubeconfig-mode 0600), so a non-root
+	// --ssh-user — which the install itself already requires passwordless sudo
+	// for — would otherwise never clear the rerun allowance.
+	Sudo bool
 	// MaxClockSkew overrides DefaultMaxClockSkew when positive.
 	MaxClockSkew time.Duration
 	// Now is the control-host clock; defaults to time.Now. Injected in tests.

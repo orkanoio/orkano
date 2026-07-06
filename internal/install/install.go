@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
@@ -44,6 +46,11 @@ const (
 
 	// manifestMode keeps the written manifests root-only on the server node.
 	manifestMode = "0600"
+
+	// crdManifestPrefix identifies the flattened config/crd/*.yaml files. CRDs
+	// must be established before any controller-runtime manager starts watching
+	// Orkano types; otherwise the operator can crash on REST mapping discovery.
+	crdManifestPrefix = "crd-"
 )
 
 // Runner runs a command on the server node. *ssh.Client satisfies it; tests
@@ -189,7 +196,35 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	files = append(files, comps...)
 
 	base := path.Join(cfg.autoDeployDir(), manifestSubdir)
-	for _, f := range files {
+	crds, rest, err := splitCRDManifests(base, files)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, c := range crds {
+		changed, err := n.ensureFile(ctx, c.path, c.content, manifestMode)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			res.Changed = true
+			n.logf("wrote %s", c.name)
+		}
+	}
+	// Apply + wait runs on EVERY run, not only when a file changed: the gate is
+	// about cluster state (Established), which a crashed earlier run or a still-
+	// converging server can leave unmet behind unchanged files. Both commands are
+	// idempotent no-ops against an already-Established CRD. The files also stay
+	// in the auto-deploy dir, so k3s's AddOn controller independently applies the
+	// same byte-identical content — a deliberate, harmless second path (wrangler
+	// apply converges onto pre-existing objects rather than conflicting).
+	if len(crds) > 0 {
+		if err := n.applyAndWaitCRDs(ctx, crds, cfg.waitTimeout()); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, f := range rest {
 		changed, err := n.ensureFile(ctx, path.Join(base, f.name), f.content, manifestMode)
 		if err != nil {
 			return nil, err
@@ -217,16 +252,16 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 			return nil, err
 		}
 		token, secChanged, err := ensureSecrets(ctx, n, vals)
-		if err != nil {
-			return nil, err
-		}
-		res.Changed = res.Changed || secChanged
 		res.BootstrapToken = token
+		res.Changed = res.Changed || secChanged
+		if err != nil {
+			return res, err
+		}
 	}
 
 	if len(cfg.ReadinessTargets) > 0 {
 		if err := n.waitReady(ctx, cfg.ReadinessTargets, cfg.waitTimeout()); err != nil {
-			return nil, err
+			return res, err
 		}
 	}
 	return res, nil
@@ -240,6 +275,83 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 type manifestFile struct {
 	name    string
 	content []byte
+}
+
+// crdManifest is a manifestFile plus the applied path and API name. CRDs are
+// treated specially because the operator cannot even create its manager until
+// discovery knows these types.
+type crdManifest struct {
+	manifestFile
+	path    string
+	crdName string
+}
+
+func splitCRDManifests(base string, files []manifestFile) ([]crdManifest, []manifestFile, error) {
+	var crds []crdManifest
+	rest := make([]manifestFile, 0, len(files))
+	for _, f := range files {
+		if !strings.HasPrefix(f.name, crdManifestPrefix) {
+			rest = append(rest, f)
+			continue
+		}
+		name, err := crdName(f.content)
+		if err != nil {
+			return nil, nil, fmt.Errorf("install: parse %s: %w", f.name, err)
+		}
+		crds = append(crds, crdManifest{
+			manifestFile: f,
+			path:         path.Join(base, f.name),
+			crdName:      name,
+		})
+	}
+	return crds, rest, nil
+}
+
+func crdName(content []byte) (string, error) {
+	// yaml.Unmarshal silently reads only the FIRST document of a multi-document
+	// stream, but kubectl apply would apply them all — the Established wait would
+	// then cover only the first CRD, silently reintroducing the operator-starts-
+	// before-CRD race for the rest. Refuse the shape outright; config/crd/ files
+	// are one CRD per file by construction (controller-gen output).
+	if err := ensureSingleDocument(content); err != nil {
+		return "", err
+	}
+	var doc struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return "", err
+	}
+	if doc.Kind != "CustomResourceDefinition" {
+		return "", fmt.Errorf("kind %q is not CustomResourceDefinition", doc.Kind)
+	}
+	if doc.Metadata.Name == "" {
+		return "", errors.New("metadata.name is empty")
+	}
+	return doc.Metadata.Name, nil
+}
+
+// ensureSingleDocument rejects a YAML stream holding more than one document. A
+// leading `---` marker (controller-gen emits one) is fine; a separator after
+// any content means a second document follows.
+func ensureSingleDocument(content []byte) error {
+	seenContent := false
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			if seenContent {
+				return errors.New("multi-document manifest; CRD files must hold exactly one CRD")
+			}
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			seenContent = true
+		}
+	}
+	return nil
 }
 
 // staticManifests walks the embedded config/ tree into a deterministic,
