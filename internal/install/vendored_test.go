@@ -95,9 +95,19 @@ func TestVendoredExternalSecretsStaysScoped(t *testing.T) {
 	if strings.Contains(manifest, "serviceaccounts/token") {
 		t.Error("vendored external-secrets must not grant serviceaccounts/token")
 	}
-	if !strings.Contains(manifest, "name: external-secrets-cert-controller-webhook-secret") ||
-		!strings.Contains(manifest, `- "external-secrets-webhook"`) {
-		t.Error("cert-controller webhook-secret Role (name-pinned) missing")
+	// Asserted inside the Role's own document — a co-occurrence check would
+	// miss the pin migrating to a broader rule elsewhere.
+	pinnedRole := false
+	for _, doc := range strings.Split(manifest, "\n---\n") {
+		if !strings.Contains("\n"+doc+"\n", "\nkind: Role\n") ||
+			!strings.Contains(doc, "name: external-secrets-cert-controller-webhook-secret") {
+			continue
+		}
+		pinnedRole = strings.Contains(doc, `- "external-secrets-webhook"`) &&
+			strings.Contains(doc, `- "get"`) && !strings.Contains(doc, `- "list"`)
+	}
+	if !pinnedRole {
+		t.Error("cert-controller webhook-secret Role missing or not name-pinned to get/update")
 	}
 
 	// The cluster-scoped kinds and PushSecret stay out (ADR-0018 3+6); the
