@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -204,6 +205,13 @@ func (s *Server) writeK8sError(w http.ResponseWriter, action string, err error) 
 		// Transient cluster unavailability — log so intermittent 503s leave a trace.
 		s.log.Warn("kubernetes api call unavailable", "action", action, "err", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
+	case meta.IsNoMatchError(err):
+		// The dashboard binary knows Orkano's Go types, but discovery still needs
+		// the CRDs installed in the cluster. A missing REST mapping means init has
+		// not finished (or an install repaired itself only partially), not a bug in
+		// the user's request.
+		s.log.Warn("orkano CRDs are not established", "action", action, "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "cluster_not_ready")
 	default:
 		s.log.Error("kubernetes api call failed", "action", action, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")

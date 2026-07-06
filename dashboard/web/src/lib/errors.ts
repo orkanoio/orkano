@@ -44,6 +44,12 @@ export function apiErrorMessage(err: unknown): string {
       return "The dashboard is not permitted to do that — check its RBAC.";
     case "unavailable":
       return "The cluster API is unavailable — try again shortly.";
+    case "cluster_not_ready":
+      // The server's lazy RESTMapper re-checks discovery on every call, so once
+      // the installer establishes the CRDs this heals on the next poll — waiting
+      // is the primary remediation, re-running the (idempotent) installer the
+      // escalation.
+      return "Orkano is still finishing its install — the cluster is missing Orkano's CRDs. This usually resolves itself within a minute; if it persists, re-run the installer.";
   }
   if (err.status === 429) {
     return "Too many attempts — wait a minute and try again.";
