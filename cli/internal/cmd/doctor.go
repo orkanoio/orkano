@@ -23,6 +23,7 @@ type doctorOptions struct {
 	jsonOut    bool
 	fix        bool
 	local      bool
+	minScore   int
 }
 
 func newDoctorCommand() *cobra.Command {
@@ -38,7 +39,9 @@ func newDoctorCommand() *cobra.Command {
 			"Pass --local when running on the server itself (as root) to also verify " +
 			"on-box node state such as the AppArmor build confinement. Exit codes gate " +
 			"CI: 0 all critical checks passed, 1 a critical check failed, 2 a critical " +
-			"check could not be determined.",
+			"check could not be determined. --min-score additionally fails the run " +
+			"(exit 1) when the hardening score is below the given percentage, so a " +
+			"warnings-only regression can gate CI too.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runDoctor(cmd.Context(), cmd.OutOrStdout(), opt)
 		},
@@ -49,6 +52,7 @@ func newDoctorCommand() *cobra.Command {
 	f.BoolVar(&opt.jsonOut, "json", false, "emit the report as JSON")
 	f.BoolVar(&opt.fix, "fix", false, "apply each failing check's automatic fix, then re-run every check")
 	f.BoolVar(&opt.local, "local", false, "also run on-box node checks (AppArmor build confinement); must run on the server, as root")
+	f.IntVar(&opt.minScore, "min-score", 0, "fail (exit 1) when the hardening score is below this percentage, 1-100; 0 disables the gate")
 
 	return cmd
 }
@@ -72,6 +76,10 @@ var newDoctorClient = func(kubeconfigPath string) (ctrlclient.Client, error) {
 }
 
 func runDoctor(ctx context.Context, out io.Writer, opt *doctorOptions) error {
+	if opt.minScore < 0 || opt.minScore > 100 {
+		return fmt.Errorf("--min-score must be between 0 and 100, got %d", opt.minScore)
+	}
+
 	// Reading the kernel's profile list under securityfs needs root; refuse
 	// up front like `init --local` does — a non-root run would only produce an
 	// indeterminate probe error whose remediation text ("run orkano init")
@@ -110,19 +118,23 @@ func runDoctor(ctx context.Context, out io.Writer, opt *doctorOptions) error {
 	}
 
 	if opt.jsonOut {
-		err = doctor.WriteJSON(out, run, attempts)
+		err = doctor.WriteJSON(out, run, attempts, opt.minScore)
 	} else {
-		err = doctor.WriteText(out, run, attempts)
+		err = doctor.WriteText(out, run, attempts, opt.minScore)
 	}
 	if err != nil {
 		return err
 	}
 
-	switch code := run.ExitCode(); code {
-	case checks.ExitOK:
+	// GateExitCode folds the --min-score gate into the run's exit code; the
+	// message names whichever condition forced the code, most definitive first.
+	switch code := doctor.GateExitCode(run, opt.minScore); {
+	case code == checks.ExitOK:
 		return nil
-	case checks.ExitCritical:
+	case run.ExitCode() == checks.ExitCritical:
 		return &exitCodeError{code: code, msg: "a critical check failed (see the report above)"}
+	case code == checks.ExitCritical:
+		return &exitCodeError{code: code, msg: fmt.Sprintf("hardening score %d%% is below the required %d%% (see the report above)", run.Score().Value, opt.minScore)}
 	default:
 		return &exitCodeError{code: code, msg: "a critical check could not be determined (see the report above)"}
 	}
