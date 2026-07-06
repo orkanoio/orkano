@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StepUpGate } from "@/components/StepUpGate";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -30,6 +31,16 @@ import { Link } from "@/lib/router";
 function isNotInstalled(err: unknown): boolean {
   return err instanceof ApiError && err.code === "secrets_vault_not_installed";
 }
+
+// The PRD's three alpha-tier providers by their ESO spec.provider keys
+// (ADR-0018 decision 5): alpha and community-maintained upstream — supported,
+// but labeled so nobody hangs production secrets on them unknowingly.
+const alphaProviders = new Set([
+  "keepersecurity",
+  "onepassword",
+  "onepasswordSDK",
+  "doppler",
+]);
 
 // readyConditions adapts the vault DTOs' flat ready/reason/message to the
 // Condition shape StatusBadge already renders for every other kind.
@@ -76,7 +87,9 @@ export function VaultPage() {
         <p className="text-muted-foreground text-sm">
           External vaults your secrets live in. Orkano never stores the values
           — the External Secrets Operator syncs them into ordinary Kubernetes
-          Secrets your apps reference by name.
+          Secrets your apps reference by name. Vault connects from this page;
+          any other ESO provider can be authored with kubectl and appears here
+          too (see docs/vault.md in the Orkano repo).
         </p>
         {stores.isPending && (
           <p className="text-muted-foreground text-sm">Loading…</p>
@@ -167,7 +180,19 @@ function StoresTable({ stores }: { stores: SecretStoreItem[] }) {
           {stores.map((store) => (
             <TableRow key={store.name}>
               <TableCell className="font-medium">{store.name}</TableCell>
-              <TableCell>{store.provider}</TableCell>
+              <TableCell>
+                <span className="flex items-center gap-2">
+                  {store.provider}
+                  {alphaProviders.has(store.provider) && (
+                    <Badge
+                      variant="outline"
+                      title="Alpha and community-maintained in the External Secrets Operator — supported, not covered by Orkano's release tests."
+                    >
+                      alpha
+                    </Badge>
+                  )}
+                </span>
+              </TableCell>
               <TableCell className="max-w-56 truncate" title={store.server}>
                 {store.server ?? "—"}
               </TableCell>

@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -43,6 +43,28 @@ describe("VaultPage", () => {
       "href",
       "#/vault/connect/team-vault",
     );
+  });
+
+  it("labels alpha-tier providers and leaves stable ones unlabeled", async () => {
+    stubFetchRoutes({
+      "GET /api/secretstores": () =>
+        jsonResponse(200, {
+          items: [
+            makeSecretStore(),
+            makeSecretStore({ name: "team-keeper", provider: "keepersecurity" }),
+          ],
+        }),
+      "GET /api/externalsecrets": () => jsonResponse(200, { items: [] }),
+    });
+    renderWithSession(<VaultPage />);
+
+    const keeperRow = (await screen.findByText("team-keeper")).closest("tr");
+    const vaultRow = screen.getByText("team-vault").closest("tr");
+    if (keeperRow === null || vaultRow === null) {
+      throw new Error("store rows not rendered as table rows");
+    }
+    expect(within(keeperRow).getByText("alpha")).toBeInTheDocument();
+    expect(within(vaultRow).queryByText("alpha")).not.toBeInTheDocument();
   });
 
   it("shows the opt-in install hint when ESO is absent", async () => {
