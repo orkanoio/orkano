@@ -486,6 +486,7 @@ export interface SecretStoreItem {
   provider: string;
   server?: string;
   path?: string;
+  version?: string;
   ready: "True" | "False" | "Unknown";
   reason?: string;
   message?: string;
