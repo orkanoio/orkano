@@ -8,6 +8,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -23,6 +24,7 @@ import (
 
 const (
 	systemNamespace = "orkano-system"
+	appsNamespace   = "orkano-apps"
 
 	// dashboardName is the dashboard Service name rendered by internal/install's
 	// dashboard.yaml.tmpl; keep the two in sync.
@@ -38,12 +40,23 @@ type Options struct {
 	// Client reads the cluster. Doctor runs under the admin kubeconfig that
 	// `orkano init` produced, so no Orkano RBAC grant is involved.
 	Client client.Client
+	// Now is the doctor's clock for age and expiry math; defaults to time.Now.
+	// Injected in tests, mirroring preflight.Options.
+	Now func() time.Time
+}
+
+func (o Options) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
 }
 
 // Checks returns the doctor's cluster checks for the given options.
 func Checks(opt Options) []check.Check {
 	return []check.Check{
 		dashboardNotPublicCheck(opt),
+		certificateExpiryCheck(opt),
 	}
 }
 
