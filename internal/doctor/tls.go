@@ -187,8 +187,13 @@ func nestedTime(u *unstructured.Unstructured, fields ...string) (time.Time, bool
 
 // fmtDuration renders an age or a time-to-expiry at human granularity: days
 // when it is at least two days, whole hours down to one, minutes below that
-// (a cert that expired minutes ago must not read "0h ago").
+// (a cert that expired minutes ago must not read "0h ago"). Negative inputs
+// clamp to zero: an age computed across skewed clocks must not render
+// "taken -30m ago".
 func fmtDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
 	switch {
 	case d >= 48*time.Hour:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))

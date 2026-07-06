@@ -274,6 +274,7 @@ func TestChecksContract(t *testing.T) {
 	}{
 		{"exposure.dashboard-not-public", check.SeverityCritical},
 		{"tls.certificate-expiry", check.SeverityWarning},
+		{"backup.etcd-snapshot-age", check.SeverityWarning},
 	}
 	cs := doctor.Checks(doctor.Options{})
 	if len(cs) != len(want) {
