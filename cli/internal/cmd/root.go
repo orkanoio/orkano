@@ -14,5 +14,6 @@ func NewRootCommand(version string) *cobra.Command {
 		SilenceErrors: true, // main prints the error once
 	}
 	root.AddCommand(newInitCommand(version))
+	root.AddCommand(newDoctorCommand())
 	return root
 }

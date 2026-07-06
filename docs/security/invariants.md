@@ -8,7 +8,7 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 | INV-02 | Builds run as hostile code | `build.canary-isolation` |
 | INV-03 | Secret values never persist in the database | `db.secret-sentinel-roundtrip` |
 | INV-04 | The webhook receiver is a doorbell | `webhook.receiver-blast-radius` |
-| INV-05 | Private by default | `exposure.dashboard-reachability` |
+| INV-05 | Private by default | `exposure.dashboard-not-public` |
 | INV-06 | Only signed images run | `admission.unsigned-image-rejected` |
 | INV-07 | No long-lived credentials | `creds.expiry-and-revocation` |
 | INV-08 | Every privileged action is audited | `audit.append-only` |
@@ -61,7 +61,7 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 **Enforced by.** The dashboard Service ships ClusterIP-only with no Ingress; each exposure mode (`orkano proxy`, Tailscale, identity-aware proxy, public — ADR-0004) creates its route deliberately through the wizard; the `--expose public` path is a code-level guard that hard-fails when SSO/MFA is not configured.
 
-**Verified by.** `exposure.dashboard-reachability` (planned) — probes the dashboard from outside the cluster and asserts the connection fails unless an exposure mode was explicitly chosen; when public, sends an unauthenticated request and asserts SSO intercepts it before it reaches the app. Runs continuously as the doctor's exposed-without-SSO runtime check.
+**Verified by.** `exposure.dashboard-not-public` (shipped in `orkano doctor`, M3.2) — asserts the dashboard Service stays ClusterIP with no externalIPs and that no Ingress or Traefik IngressRoute in orkano-system routes to it. Planned strengthening once ADR-0004's exposure modes exist: probe the dashboard from outside the cluster and assert the connection actually fails unless an exposure mode was explicitly chosen; when public, send an unauthenticated request and assert SSO intercepts it before it reaches the app — the doctor's exposed-without-SSO runtime check.
 
 ## INV-06 — Only signed images run
 
