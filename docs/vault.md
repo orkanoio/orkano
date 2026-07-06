@@ -21,15 +21,18 @@ orkano init --secrets-vault ...your original flags...
 
 Until then the dashboard's Vault page, the wizard's secrets step, and
 `orkano doctor` all print exactly that one-liner. Disabling is deliberately
-manual, in two steps: k3s re-applies auto-deploy manifests on every restart
-and upgrade but never removes resources when a file disappears, so first
-remove the manifest on the server node
-(`/var/lib/rancher/k3s/server/manifests/orkano/external-secrets-external-secrets.yaml`),
-then `kubectl delete` the `external-secrets` namespace and the ESO CRDs.
-`kubectl delete` alone silently comes back on the next restart; and deleting
-the CRDs cascades through every store, every sync, and **every synced
-Secret**, so treat the second step as data loss — detach apps from their
-synced Secrets first.
+manual: k3s re-applies auto-deploy manifests on every restart and upgrade
+but never removes resources when a file disappears, so `kubectl delete`
+alone silently comes back on the next restart. The order matters —
+ExternalSecrets carry a finalizer only the live controller can clear, so
+the namespace goes last:
+
+1. Remove the manifest on the first (cluster-init) server node:
+   `/var/lib/rancher/k3s/server/manifests/orkano/external-secrets-external-secrets.yaml`.
+2. `kubectl delete` the ESO CRDs. This cascades through every store, every
+   sync, and **every synced Secret** — treat it as data loss and detach
+   apps from their synced Secrets first.
+3. `kubectl delete` the `external-secrets` namespace.
 
 ## Connecting HashiCorp Vault
 
