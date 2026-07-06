@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -83,71 +84,88 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 				}, nil
 			}
 
+			// Aggregate every unhealthy object into one Fail (the tls.go
+			// convention) — reporting only the first would turn a two-store
+			// outage into whack-a-mole across doctor runs.
+			var problems []string
 			for i := range stores.Items {
 				store := &stores.Items[i]
 				if status, reason, message := esoReadyCondition(store); status != "True" {
-					return check.Result{
-						Status:  check.StatusFail,
-						Message: fmt.Sprintf("SecretStore %s is not Ready (%s): %s", store.GetName(), orUnknown(reason), message),
-					}, nil
+					problems = append(problems,
+						fmt.Sprintf("SecretStore %s is not Ready (%s): %s", store.GetName(), orUnknown(reason), message))
 				}
 			}
 
 			now := opt.now()
 			for i := range syncs.Items {
-				if res, err := checkExternalSecret(ctx, opt, &syncs.Items[i], now); err != nil || res != nil {
-					if err != nil {
-						return check.Result{}, err
-					}
-					return *res, nil
+				problem, err := checkExternalSecret(ctx, opt, &syncs.Items[i], now)
+				if err != nil {
+					return check.Result{}, err
 				}
+				if problem != "" {
+					problems = append(problems, problem)
+				}
+			}
+			if len(problems) > 0 {
+				return check.Result{Status: check.StatusFail, Message: strings.Join(problems, "; ")}, nil
 			}
 
 			return check.Result{
 				Status: check.StatusPass,
-				Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) fresh with their target Secrets present",
+				Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) healthy with their target Secrets present",
 					len(stores.Items), len(syncs.Items)),
 			}, nil
 		},
 	}
 }
 
-// checkExternalSecret returns a non-nil failing Result, a probe error, or
-// (nil, nil) when the sync is healthy.
-func checkExternalSecret(ctx context.Context, opt Options, es *unstructured.Unstructured, now time.Time) (*check.Result, error) {
+// checkExternalSecret returns a problem string ("" = healthy) or a probe
+// error for state it cannot judge.
+func checkExternalSecret(ctx context.Context, opt Options, es *unstructured.Unstructured, now time.Time) (string, error) {
 	name := es.GetName()
 	if status, reason, message := esoReadyCondition(es); status != "True" {
-		return &check.Result{
-			Status:  check.StatusFail,
-			Message: fmt.Sprintf("ExternalSecret %s is not Ready (%s): %s", name, orUnknown(reason), message),
-		}, nil
+		return fmt.Sprintf("ExternalSecret %s is not Ready (%s): %s", name, orUnknown(reason), message), nil
 	}
 
-	// Freshness: ESO stamps status.refreshTime on every successful sync. A
-	// Ready object without one, or with one that does not parse, is an
-	// inconsistent upstream state — unknown, never hardened.
-	refreshRaw, found, err := unstructured.NestedString(es.Object, "status", "refreshTime")
-	if err != nil || !found || refreshRaw == "" {
-		return nil, fmt.Errorf("ExternalSecret %s is Ready but carries no readable status.refreshTime", name)
-	}
-	refreshed, err := time.Parse(time.RFC3339, refreshRaw)
-	if err != nil {
-		return nil, fmt.Errorf("ExternalSecret %s: parse status.refreshTime %q: %w", name, refreshRaw, err)
-	}
+	// Freshness applies only to periodically-refreshed syncs. ESO documents
+	// two legitimate ways to freeze a sync after its first success — both
+	// leave status.refreshTime permanently old on a healthy object (verified
+	// in the v2.7.0 reconciler): spec.refreshPolicy CreatedOnce/OnChange
+	// (never requeued once synced) and the older refreshInterval "0s"
+	// spelling. Neither is stale; flagging them would fail objects doing
+	// exactly what they were configured to do.
+	policy, _, _ := unstructured.NestedString(es.Object, "spec", "refreshPolicy")
+	periodic := policy == "" || policy == "Periodic"
 	interval := esoDefaultRefreshInterval
 	if raw, _, _ := unstructured.NestedString(es.Object, "spec", "refreshInterval"); raw != "" {
 		d, err := time.ParseDuration(raw)
-		if err != nil || d <= 0 {
-			return nil, fmt.Errorf("ExternalSecret %s: parse spec.refreshInterval %q: %w", name, raw, err)
+		if err != nil {
+			return "", fmt.Errorf("ExternalSecret %s: parse spec.refreshInterval %q: %w", name, raw, err)
+		}
+		if d < 0 {
+			return "", fmt.Errorf("ExternalSecret %s: negative spec.refreshInterval %q", name, raw)
+		}
+		if d == 0 {
+			periodic = false
 		}
 		interval = d
 	}
-	if age := now.Sub(refreshed); age > time.Duration(esoRefreshGraceFactor)*interval {
-		return &check.Result{
-			Status: check.StatusFail,
-			Message: fmt.Sprintf("ExternalSecret %s last synced %s ago (interval %s) — ESO cannot refresh it",
-				name, fmtDuration(age), interval),
-		}, nil
+	if periodic {
+		// ESO stamps status.refreshTime on every successful sync. A Ready
+		// periodic object without one, or with one that does not parse, is an
+		// inconsistent upstream state — unknown, never hardened.
+		refreshRaw, found, err := unstructured.NestedString(es.Object, "status", "refreshTime")
+		if err != nil || !found || refreshRaw == "" {
+			return "", fmt.Errorf("ExternalSecret %s is Ready but carries no readable status.refreshTime", name)
+		}
+		refreshed, err := time.Parse(time.RFC3339, refreshRaw)
+		if err != nil {
+			return "", fmt.Errorf("ExternalSecret %s: parse status.refreshTime %q: %w", name, refreshRaw, err)
+		}
+		if age := now.Sub(refreshed); age > time.Duration(esoRefreshGraceFactor)*interval {
+			return fmt.Sprintf("ExternalSecret %s last synced %s ago (interval %s) — ESO cannot refresh it",
+				name, fmtDuration(age), interval), nil
+		}
 	}
 
 	// The produced Secret must actually exist — the App references it by name.
@@ -156,17 +174,14 @@ func checkExternalSecret(ctx context.Context, opt Options, es *unstructured.Unst
 		target = t
 	}
 	var sec corev1.Secret
-	err = opt.Client.Get(ctx, client.ObjectKey{Namespace: appsNamespace, Name: target}, &sec)
+	err := opt.Client.Get(ctx, client.ObjectKey{Namespace: appsNamespace, Name: target}, &sec)
 	switch {
 	case apierrors.IsNotFound(err):
-		return &check.Result{
-			Status:  check.StatusFail,
-			Message: fmt.Sprintf("ExternalSecret %s reports Ready but its target Secret %s is missing", name, target),
-		}, nil
+		return fmt.Sprintf("ExternalSecret %s reports Ready but its target Secret %s is missing", name, target), nil
 	case err != nil:
-		return nil, fmt.Errorf("read target Secret %s/%s: %w", appsNamespace, target, err)
+		return "", fmt.Errorf("read target Secret %s/%s: %w", appsNamespace, target, err)
 	}
-	return nil, nil
+	return "", nil
 }
 
 // esoReadyCondition extracts the Ready condition from an ESO object's status;
