@@ -21,3 +21,12 @@ import "embed"
 //
 //go:embed crd namespaces rbac netpol registry buildkit components cert-manager traefik
 var StaticManifests embed.FS
+
+// ExternalSecretsManifest holds the vendored, namespace-scoped External
+// Secrets Operator render (ADR-0018), produced by
+// hack/vendor-external-secrets.sh. Deliberately a separate FS from
+// StaticManifests: ESO is opt-in (`orkano init --secrets-vault`) and must
+// never join the base write set.
+//
+//go:embed external-secrets
+var ExternalSecretsManifest embed.FS
