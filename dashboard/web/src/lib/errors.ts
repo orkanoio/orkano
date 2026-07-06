@@ -38,12 +38,40 @@ export function apiErrorMessage(err: unknown): string {
       return "The app name is too long to derive its env Secret name.";
     case "storage_shrink_forbidden":
       return "Storage can only grow — enter a size at least as large as the current one.";
+    case "name_conflict":
+      return "That name would collide with an existing Secret (a database's connection Secret or a vault sync) — pick another.";
+    case "secrets_vault_not_installed":
+      return "The External Secrets Operator is not installed — re-run the installer with --secrets-vault to add it.";
+    case "credentials_name_taken":
+      return "Something else already owns the Secret this store's credentials would use — pick a different store name.";
+    case "vault_server_must_be_https":
+      return "The Vault server URL must be https:// — the store credential travels over that connection.";
+    case "invalid_vault_path":
+      return "Enter the Vault secrets-engine mount path (for example: secret).";
+    case "invalid_vault_version":
+      return "The KV engine version must be v1 or v2.";
+    case "missing_token":
+      return "A Vault token is required to connect the store.";
+    case "reserved_name":
+      return "Names ending in -credentials or -env are reserved — pick another.";
+    case "unknown_store":
+      return "That secret store does not exist — connect it first.";
+    case "invalid_refresh_interval":
+      return "Enter a refresh interval like 1h, 30m, or 24h.";
+    case "invalid_keys":
+      return "Each key needs a valid variable name (letters, digits, underscores; unique) and a vault path.";
     case "unauthorized":
       return "The session expired — sign in again.";
     case "forbidden":
       return "The dashboard is not permitted to do that — check its RBAC.";
     case "unavailable":
       return "The cluster API is unavailable — try again shortly.";
+    case "cluster_not_ready":
+      // The server's lazy RESTMapper re-checks discovery on every call, so once
+      // the installer establishes the CRDs this heals on the next poll — waiting
+      // is the primary remediation, re-running the (idempotent) installer the
+      // escalation.
+      return "Orkano is still finishing its install — the cluster is missing Orkano's CRDs. This usually resolves itself within a minute; if it persists, re-run the installer.";
   }
   if (err.status === 429) {
     return "Too many attempts — wait a minute and try again.";

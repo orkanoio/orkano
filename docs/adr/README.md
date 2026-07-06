@@ -24,3 +24,4 @@ Rules:
 | [0015](0015-dashboard-impersonation-fixed-viewer-identity.md) | Dashboard read views impersonate a fixed, fully pinned viewer identity | Accepted |
 | [0016](0016-oidc-integration-model.md) | OIDC sign-in via env-configured, allowlist-gated, just-in-time identities | Accepted |
 | [0017](0017-on-box-local-install.md) | On-box quick install via a local-exec runner and a thin, verifying installer | Accepted |
+| [0018](0018-external-secrets-operator.md) | External secrets via a vendored, opt-in, namespace-scoped External Secrets Operator | Accepted |

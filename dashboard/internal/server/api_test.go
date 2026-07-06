@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -33,6 +36,13 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	if err := orkanov1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add orkano scheme: %v", err)
 	}
+	// The ESO kinds the vault handlers touch as unstructured (ADR-0018). Only
+	// the FAKE client needs scheme entries — the real client routes
+	// unstructured through the RESTMapper without them.
+	scheme.AddKnownTypeWithName(secretStoreGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(secretStoreListGVK, &unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(externalSecretGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(externalSecretListGVK, &unstructured.UnstructuredList{})
 	return scheme
 }
 
@@ -198,6 +208,11 @@ func TestWriteK8sError(t *testing.T) {
 		{"server timeout", apierrors.NewServerTimeout(gr, "get", 1), http.StatusServiceUnavailable, "unavailable"},
 		{"timeout", apierrors.NewTimeoutError("ctx deadline", 1), http.StatusServiceUnavailable, "unavailable"},
 		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), http.StatusServiceUnavailable, "unavailable"},
+		{"no kind match", &meta.NoKindMatchError{GroupKind: gk, SearchedVersions: []string{"v1alpha1"}}, http.StatusServiceUnavailable, "cluster_not_ready"},
+		// The dynamic RESTMapper's first-ever discovery miss surfaces the no-match
+		// WRAPPED (apiutil.ErrResourceDiscoveryFailed unwraps to it); pin that
+		// meta.IsNoMatchError matches through errors.Is, not a bare type assert.
+		{"no kind match wrapped", fmt.Errorf("get apps: %w", &meta.NoKindMatchError{GroupKind: gk, SearchedVersions: []string{"v1alpha1"}}), http.StatusServiceUnavailable, "cluster_not_ready"},
 		{"unknown", errors.New("boom"), http.StatusInternalServerError, "internal_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

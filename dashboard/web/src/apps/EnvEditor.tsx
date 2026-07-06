@@ -123,9 +123,9 @@ function VarsCard({ app }: { app: AppResponse }) {
       <CardHeader>
         <CardTitle>Environment variables</CardTitle>
         <CardDescription>
-          Plain values and references to Kubernetes Secrets (a database's
-          connection Secret, for example). Secret values themselves live in the
-          section below.
+          Plain values and references to Kubernetes Secrets — a database's
+          connection Secret, or a vault sync's Secret by the sync's name.
+          Secret values themselves live in the section below.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

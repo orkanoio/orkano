@@ -72,4 +72,15 @@ describe("AppList", () => {
       await screen.findByText(/cluster API is unavailable/),
     ).toBeInTheDocument();
   });
+
+  it("explains when Orkano CRDs are not ready", async () => {
+    stubFetchRoutes({
+      "GET /api/apps": () => jsonResponse(503, { error: "cluster_not_ready" }),
+    });
+    renderWithSession(<AppList />);
+
+    expect(
+      await screen.findByText(/missing Orkano's CRDs/),
+    ).toBeInTheDocument();
+  });
 });

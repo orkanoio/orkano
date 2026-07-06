@@ -220,6 +220,72 @@ func TestPortsFree(t *testing.T) {
 		res, err := probeByID(t, opt, preflight.IDPortsFree)
 		assertStatus(t, res, err, check.StatusFail)
 	})
+	t.Run("existing k3s core ports are allowed on rerun", func(t *testing.T) {
+		opt := preflight.Options{
+			AllowExistingK3s: true,
+			Executor: &fakeExecutor{responses: map[string]fakeResp{
+				"ss -Hltn": out("LISTEN 0 128 *:6443 *:*\nLISTEN 0 128 *:2379 *:*\nLISTEN 0 128 *:2380 *:*\nLISTEN 0 128 *:10250 *:*\n"),
+				"/usr/local/bin/k3s kubectl get --raw=/readyz": out("ok\n"),
+			}},
+		}
+		res, err := probeByID(t, opt, preflight.IDPortsFree)
+		assertStatus(t, res, err, check.StatusPass)
+		if !contains(res.Message, "idempotent converge") {
+			t.Errorf("message %q should explain the rerun allowance", res.Message)
+		}
+	})
+	t.Run("existing k3s readyz probe runs under sudo for non-root users", func(t *testing.T) {
+		// Only the sudo-prefixed probe answers ok: k3s kubectl reads the root-only
+		// kubeconfig, so a plain-user probe is refused — Options.Sudo must reach
+		// this one command or the rerun allowance silently never applies.
+		opt := preflight.Options{
+			AllowExistingK3s: true,
+			Sudo:             true,
+			Executor: &fakeExecutor{responses: map[string]fakeResp{
+				"ss -Hltn": out("LISTEN 0 128 *:6443 *:*\n"),
+				"sudo /usr/local/bin/k3s kubectl get --raw=/readyz": out("ok\n"),
+				"/usr/local/bin/k3s kubectl get --raw=/readyz":      exit(1, "permission denied"),
+			}},
+		}
+		res, err := probeByID(t, opt, preflight.IDPortsFree)
+		assertStatus(t, res, err, check.StatusPass)
+	})
+	t.Run("existing k3s allowance still fails ingress port conflicts", func(t *testing.T) {
+		opt := preflight.Options{
+			AllowExistingK3s: true,
+			Executor: &fakeExecutor{responses: map[string]fakeResp{
+				"ss -Hltn": out("LISTEN 0 128 *:6443 *:*\nLISTEN 0 128 *:80 *:*\n"),
+				"/usr/local/bin/k3s kubectl get --raw=/readyz": out("ok\n"),
+			}},
+		}
+		res, err := probeByID(t, opt, preflight.IDPortsFree)
+		assertStatus(t, res, err, check.StatusFail)
+		if !contains(res.Message, "80") {
+			t.Errorf("message %q should name occupied ingress port 80", res.Message)
+		}
+	})
+	t.Run("existing k3s allowance requires a ready k3s API", func(t *testing.T) {
+		opt := preflight.Options{
+			AllowExistingK3s: true,
+			Executor: &fakeExecutor{responses: map[string]fakeResp{
+				"ss -Hltn": out("LISTEN 0 128 *:6443 *:*\n"),
+				"/usr/local/bin/k3s kubectl get --raw=/readyz": exit(1, "connection refused"),
+			}},
+		}
+		res, err := probeByID(t, opt, preflight.IDPortsFree)
+		assertStatus(t, res, err, check.StatusFail)
+	})
+	t.Run("existing k3s allowance requires exact readyz ok", func(t *testing.T) {
+		opt := preflight.Options{
+			AllowExistingK3s: true,
+			Executor: &fakeExecutor{responses: map[string]fakeResp{
+				"ss -Hltn": out("LISTEN 0 128 *:6443 *:*\n"),
+				"/usr/local/bin/k3s kubectl get --raw=/readyz": out("not ok\n"),
+			}},
+		}
+		res, err := probeByID(t, opt, preflight.IDPortsFree)
+		assertStatus(t, res, err, check.StatusFail)
+	})
 	t.Run("ss failure errors", func(t *testing.T) {
 		opt := preflight.Options{Executor: &fakeExecutor{responses: map[string]fakeResp{"ss -Hltn": exit(127, "ss: command not found")}}}
 		_, err := probeByID(t, opt, preflight.IDPortsFree)

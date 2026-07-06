@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -151,6 +152,15 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// failures above — a user who reads ProvisionFailed might delete-and-recreate,
 	// destroying the database (mirrors the App controller's reason split).
 	if err := r.ensureSecret(ctx, &pg, ident); err != nil {
+		// A same-named Secret controlled by something else (e.g. an ESO
+		// ExternalSecret target, ADR-0018) is permanent and user-actionable —
+		// retrying forever as ReconcileError would hide the real cause. The
+		// name must change; overwriting is never an option.
+		var owned *controllerutil.AlreadyOwnedError
+		if errors.As(err, &owned) {
+			return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonProvisionFailed, fmt.Errorf(
+				"connection Secret %q already exists and is owned by %s %s — pick a different name", pg.Name, owned.Owner.Kind, owned.Owner.Name))
+		}
 		return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonReconcileError, fmt.Errorf("reconciling connection Secret: %w", err))
 	}
 	pg.Status.SecretName = pg.Name

@@ -75,6 +75,10 @@ func healthyNode(ssOutput string) sshtest.ExecHandler {
 		case strings.Contains(cmd, "get.k3s.io"):
 			installed = true
 			return "installing\n", "", 0
+		case strings.Contains(cmd, "kubectl get --raw=/readyz"):
+			// A fresh node runs no k3s: the rerun-allowance probe is refused. The
+			// rerun test overlays this with an "ok" answer.
+			return "", "connection refused", 1
 		case strings.Contains(cmd, "kubectl get nodes"):
 			return "node1 Ready control-plane,etcd,master 30s v1.35.5+k3s1\n", "", 0
 		case strings.Contains(cmd, "secrets-encrypt status"):
@@ -242,6 +246,93 @@ func TestInitHappyPath(t *testing.T) {
 	}
 }
 
+func TestInitSecretsVaultThreading(t *testing.T) {
+	srv := sshtest.New(healthyNode(""))
+	defer srv.Close()
+	deploy := stubDeploy(t, "")
+	stubWireRegistry(t)
+
+	opt := baseOptions(t, srv)
+	opt.secretsVault = true
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !deploy.called || !deploy.opt.secretsVault {
+		t.Error("component deploy did not receive --secrets-vault")
+	}
+	if !strings.Contains(out.String(), "secrets vault:      External Secrets Operator deployed") {
+		t.Errorf("summary missing the secrets-vault line:\n%s", out.String())
+	}
+
+	// Without the flag the deploy gets false and the summary stays silent —
+	// ESO is strictly opt-in (ADR-0018). Fresh server: the fake node is
+	// stateful across a run.
+	srv2 := sshtest.New(healthyNode(""))
+	defer srv2.Close()
+	opt = baseOptions(t, srv2)
+	out.Reset()
+	errw.Reset()
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit without flag: %v\nstderr:\n%s", err, errw.String())
+	}
+	if deploy.opt.secretsVault {
+		t.Error("component deploy received secretsVault without the flag")
+	}
+	if strings.Contains(out.String(), "secrets vault:") {
+		t.Errorf("summary mentions the secrets vault without the flag:\n%s", out.String())
+	}
+}
+
+func TestInitLocalSecretsVaultThreading(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	deploy := stubLocalDeploy(t, "")
+	stubLocalWire(t)
+
+	opt := &initOptions{
+		local:        true,
+		nodes:        []string{"10.0.0.9"},
+		k3sVersion:   "v1.35.5+k3s1",
+		kubeconfig:   filepath.Join(t.TempDir(), "kubeconfig"),
+		readyTimeout: 30 * time.Second,
+		secretsVault: true,
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !deploy.called || !deploy.opt.secretsVault {
+		t.Error("local component deploy did not receive --secrets-vault")
+	}
+	if !strings.Contains(out.String(), "secrets vault:      External Secrets Operator deployed") {
+		t.Errorf("local summary missing the secrets-vault line:\n%s", out.String())
+	}
+}
+
+func TestInitSecretsVaultFlagDefaultOff(t *testing.T) {
+	cmd := newInitCommand("test")
+	f := cmd.Flags().Lookup("secrets-vault")
+	if f == nil {
+		t.Fatal("--secrets-vault flag not registered")
+	}
+	if f.DefValue != "false" {
+		t.Fatalf("--secrets-vault must default off (ADR-0018 opt-in), got %q", f.DefValue)
+	}
+}
+
+func TestReadinessTargetsSecretsVault(t *testing.T) {
+	base := readinessTargets(&initOptions{})
+	for _, w := range base {
+		if w.Namespace == "external-secrets" {
+			t.Errorf("ESO readiness target %+v present without --secrets-vault", w)
+		}
+	}
+	with := readinessTargets(&initOptions{secretsVault: true})
+	if len(with) != len(base)+3 {
+		t.Errorf("expected the 3 ESO targets appended, got %d -> %d", len(base), len(with))
+	}
+}
+
 func TestInitRefusesOnAppArmorFailure(t *testing.T) {
 	// The node bootstraps fine but the AppArmor profile fails to load — init must
 	// refuse it (a node without the profile silently breaks every build) and not
@@ -288,6 +379,91 @@ func TestInitSkipPreflightProceeds(t *testing.T) {
 	var out, errw bytes.Buffer
 	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
 		t.Fatalf("runInit with --skip-preflight: %v", err)
+	}
+	// The empty deploy token marks a re-run: the summary must print the recovery
+	// recipe built on the WORKSTATION-side kubeconfig — the SSH-path reader is
+	// not on the server, so an on-box k3s kubectl recipe would strand them.
+	s := out.String()
+	if !strings.Contains(s, "plaintext token cannot be recovered") ||
+		!strings.Contains(s, "rollout restart deploy/orkano-dashboard") {
+		t.Errorf("SSH-path summary missing the bootstrap token recovery recipe:\n%s", s)
+	}
+	if !strings.Contains(s, "KUBECONFIG=\""+opt.kubeconfig+"\" kubectl") {
+		t.Errorf("SSH-path recovery recipe must use the local kubeconfig, not an on-box k3s kubectl:\n%s", s)
+	}
+}
+
+func TestInitRerunWithExistingK3sPassesPreflight(t *testing.T) {
+	// The literal live-v0.0.2 rerun scenario: k3s from the first run still holds
+	// its control-plane ports, but its API answers /readyz — preflight must treat
+	// that as an idempotent converge, not an occupied-ports refusal.
+	base := healthyNode("LISTEN 0 128 *:6443 *:*\nLISTEN 0 128 *:2379 *:*\n" +
+		"LISTEN 0 128 *:2380 *:*\nLISTEN 0 128 *:10250 *:*\n")
+	srv := sshtest.New(func(raw string) (string, string, int) {
+		if strings.Contains(strings.ReplaceAll(raw, "sudo ", ""), "kubectl get --raw=/readyz") {
+			return "ok\n", "", 0
+		}
+		return base(raw)
+	})
+	defer srv.Close()
+	stubDeploy(t, "")
+	stubWireRegistry(t)
+
+	opt := baseOptions(t, srv)
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("rerun against a running k3s should pass preflight, got: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !strings.Contains(out.String(), "idempotent converge") {
+		t.Errorf("preflight output should explain the rerun allowance:\n%s", out.String())
+	}
+}
+
+func TestInitPrintsFreshBootstrapTokenWhenDeployFails(t *testing.T) {
+	// SSH-path analog of the --local test: a deploy failure after the token
+	// secret was created must still surface the plaintext.
+	srv := sshtest.New(healthyNode(""))
+	defer srv.Close()
+	orig := deployComponents
+	t.Cleanup(func() { deployComponents = orig })
+	deployComponents = func(_ context.Context, _, _ io.Writer, _ *initOptions, _, _ []byte) (string, error) {
+		return "ssh-fresh-token", errors.New("operator never became ready")
+	}
+
+	opt := baseOptions(t, srv)
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "deploy components") {
+		t.Fatalf("expected deploy failure, got %v", err)
+	}
+	if !strings.Contains(out.String(), "ssh-fresh-token") ||
+		!strings.Contains(out.String(), "will not be shown again") {
+		t.Errorf("fresh token from failed deploy should still be printed:\n%s", out.String())
+	}
+}
+
+func TestInitPrintsFreshBootstrapTokenWhenWireRegistryFails(t *testing.T) {
+	// A registry-wiring failure comes AFTER the deploy created a fresh token and
+	// BEFORE printSummary, its only other outlet — losing it there is the same
+	// lockout as losing it on a deploy failure.
+	srv := sshtest.New(healthyNode(""))
+	defer srv.Close()
+	stubDeploy(t, "wire-fail-token")
+	orig := wireRegistry
+	t.Cleanup(func() { wireRegistry = orig })
+	wireRegistry = func(_ context.Context, _, _ io.Writer, _ *initOptions, _ []byte, _ [][]byte) error {
+		return errors.New("k3s restart never came back")
+	}
+
+	opt := baseOptions(t, srv)
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "wire registry") {
+		t.Fatalf("expected wire-registry failure, got %v", err)
+	}
+	if !strings.Contains(out.String(), "wire-fail-token") ||
+		!strings.Contains(out.String(), "will not be shown again") {
+		t.Errorf("fresh token should be printed before the wire-registry error returns:\n%s", out.String())
 	}
 }
 
@@ -716,8 +892,56 @@ func TestInitLocalSkipPreflight(t *testing.T) {
 	if !strings.Contains(out.String(), "already generated on a previous run") {
 		t.Errorf("summary missing the re-run token notice:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "plaintext token cannot be recovered") ||
+		!strings.Contains(out.String(), "rollout restart deploy/orkano-dashboard") {
+		t.Errorf("summary missing the bootstrap token recovery recipe:\n%s", out.String())
+	}
 	if strings.Contains(out.String(), "Redeem it at first dashboard login") {
 		t.Errorf("re-run summary must not print token redemption instructions:\n%s", out.String())
+	}
+}
+
+func TestInitLocalPrintsFreshBootstrapTokenWhenDeployLaterFails(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	origDeploy := deployLocal
+	t.Cleanup(func() { deployLocal = origDeploy })
+	deployLocal = func(_ context.Context, _ io.Writer, _ *initOptions, _ localRunner) (string, error) {
+		return "created-before-timeout", errors.New("operator never became ready")
+	}
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, nodes: []string{"10.0.0.9"}, k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second}
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "operator never became ready") {
+		t.Fatalf("expected deploy failure, got %v", err)
+	}
+	if !strings.Contains(out.String(), "created-before-timeout") ||
+		!strings.Contains(out.String(), "will not be shown again") {
+		t.Errorf("fresh token from failed deploy should still be printed:\n%s", out.String())
+	}
+}
+
+func TestInitLocalPrintsFreshBootstrapTokenWhenWireRegistryFails(t *testing.T) {
+	// Local analog of the SSH wire-registry token test.
+	stubLocalNode(t, healthyNode(""))
+	stubLocalDeploy(t, "local-wire-fail-token")
+	orig := wireRegistryLocal
+	t.Cleanup(func() { wireRegistryLocal = orig })
+	wireRegistryLocal = func(_ context.Context, _ io.Writer, _ *initOptions, _ localRunner, _ string) error {
+		return errors.New("registries.yaml write failed")
+	}
+
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	opt := &initOptions{local: true, nodes: []string{"10.0.0.9"}, k3sVersion: "v1.35.5+k3s1", kubeconfig: kc, readyTimeout: 30 * time.Second}
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, opt)
+	if err == nil || !strings.Contains(err.Error(), "wire registry") {
+		t.Fatalf("expected wire-registry failure, got %v", err)
+	}
+	if !strings.Contains(out.String(), "local-wire-fail-token") ||
+		!strings.Contains(out.String(), "will not be shown again") {
+		t.Errorf("fresh token should be printed before the wire-registry error returns:\n%s", out.String())
 	}
 }
 

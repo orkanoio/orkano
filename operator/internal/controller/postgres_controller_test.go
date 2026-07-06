@@ -324,6 +324,60 @@ func TestPostgresInvalidNameProvisionFailed(t *testing.T) {
 	}
 }
 
+// TestPostgresForeignOwnedSecretProvisionFailed: a same-named Secret already
+// controlled by something else — e.g. an ESO ExternalSecret target (ADR-0018)
+// — is a permanent, user-actionable conflict: ProvisionFailed naming the
+// owner, never an endlessly-retried ReconcileError, and the foreign Secret's
+// data stays untouched (SetControllerReference refuses before any write).
+func TestPostgresForeignOwnedSecretProvisionFailed(t *testing.T) {
+	ctx := context.Background()
+	owner := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "squatter-owner", Namespace: appsNamespace},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "squatter"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "squatter"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: "app", Image: "registry.example/x@sha256:" + strings.Repeat("a", 64),
+				}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	truth := true
+	foreign := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "squatted-db",
+			Namespace: appsNamespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment",
+				Name: owner.Name, UID: owner.UID,
+				Controller: &truth, BlockOwnerDeletion: &truth,
+			}},
+		},
+		Data: map[string][]byte{"token": []byte("keep-me")},
+	}
+	if err := k8sClient.Create(ctx, foreign); err != nil {
+		t.Fatalf("create foreign secret: %v", err)
+	}
+
+	pg := createPostgres(t, "squatted-db", nil)
+	got := waitForPostgresCondition(t, pg.Name, orkanov1alpha1.ConditionReady, metav1.ConditionFalse, reasonProvisionFailed)
+	cond := meta.FindStatusCondition(got.Status.Conditions, orkanov1alpha1.ConditionReady)
+	if !strings.Contains(cond.Message, "owned by") || !strings.Contains(cond.Message, "Deployment") {
+		t.Errorf("message = %q, want the foreign owner named", cond.Message)
+	}
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: appsNamespace, Name: "squatted-db"}, &sec); err != nil {
+		t.Fatalf("foreign secret gone: %v", err)
+	}
+	if string(sec.Data["token"]) != "keep-me" {
+		t.Error("foreign Secret data was overwritten by the Postgres reconciler")
+	}
+}
+
 func TestPostgresStorageTooSmall(t *testing.T) {
 	small := resource.MustParse("500Mi")
 	pg := createPostgres(t, "tiny-db", func(p *orkanov1alpha1.Postgres) {

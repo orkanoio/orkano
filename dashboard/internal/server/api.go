@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -93,6 +94,30 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		// Deleting a database destroys its data (delete-and-recreate is the only
 		// way to change the immutable version, ADR-0014), so it gates on step-up.
 		pr.With(s.RequireStepUp).Delete("/{name}", s.handleDeletePostgres)
+	})
+
+	// External-vault sync (ADR-0018): ESO's own kinds written directly, no
+	// wrapper CR. Unlike the catalog routes, EVERY write here gates on step-up
+	// (ADR-0018 decision 4 tightens the creates-need-only-a-session rule):
+	// each one rewires what lands in app env, and they are rare operations.
+	r.Route("/api/secretstores", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListSecretStores)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateSecretStore)
+			wr.Put("/{name}", s.handleUpdateSecretStore)
+			wr.Delete("/{name}", s.handleDeleteSecretStore)
+		})
+	})
+	r.Route("/api/externalsecrets", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListExternalSecrets)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateExternalSecret)
+			wr.Delete("/{name}", s.handleDeleteExternalSecret)
+		})
 	})
 
 	// The append-only audit log (INV-08), readable by any authenticated session.
@@ -204,6 +229,13 @@ func (s *Server) writeK8sError(w http.ResponseWriter, action string, err error) 
 		// Transient cluster unavailability — log so intermittent 503s leave a trace.
 		s.log.Warn("kubernetes api call unavailable", "action", action, "err", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
+	case meta.IsNoMatchError(err):
+		// The dashboard binary knows Orkano's Go types, but discovery still needs
+		// the CRDs installed in the cluster. A missing REST mapping means init has
+		// not finished (or an install repaired itself only partially), not a bug in
+		// the user's request.
+		s.log.Warn("orkano CRDs are not established", "action", action, "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "cluster_not_ready")
 	default:
 		s.log.Error("kubernetes api call failed", "action", action, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")

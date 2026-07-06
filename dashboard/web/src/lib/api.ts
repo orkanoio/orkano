@@ -473,3 +473,86 @@ export function updatePostgres(
 export async function deletePostgres(name: string): Promise<void> {
   await send("DELETE", `/api/postgres/${encodeURIComponent(name)}`);
 }
+
+// ---------------------------------------------------------------------------
+// External vault (M3.1, ADR-0018): ESO SecretStore/ExternalSecret management.
+// The server owns the object shapes (auth pinned to <store>-credentials,
+// creationPolicy Owner); this client only ever carries the narrow connect and
+// sync fields. The token is write-only — no response ever echoes it.
+
+export interface SecretStoreItem {
+  name: string;
+  creationTimestamp: string | null;
+  provider: string;
+  server?: string;
+  path?: string;
+  version?: string;
+  ready: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+}
+
+export interface SyncKey {
+  secretKey: string;
+  remoteKey: string;
+}
+
+export interface ExternalSecretItem {
+  name: string;
+  creationTimestamp: string | null;
+  storeName: string;
+  refreshInterval?: string;
+  keys: SyncKey[];
+  ready: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+  refreshTime?: string;
+}
+
+export interface SecretStoreWrite {
+  vault: { server: string; path: string; version?: string };
+  // Empty on an update keeps the current credential (spec-only rewire).
+  token: string;
+}
+
+export const secretStoresKey = ["vault", "stores"] as const;
+export const externalSecretsKey = ["vault", "syncs"] as const;
+
+export function listSecretStores(): Promise<SecretStoreItem[]> {
+  return listItems("/api/secretstores");
+}
+
+export function createSecretStore(
+  name: string,
+  body: SecretStoreWrite,
+): Promise<SecretStoreItem> {
+  return postJSON("/api/secretstores", { name, ...body });
+}
+
+export function updateSecretStore(
+  name: string,
+  body: SecretStoreWrite,
+): Promise<SecretStoreItem> {
+  return putJSON(`/api/secretstores/${encodeURIComponent(name)}`, body);
+}
+
+export async function deleteSecretStore(name: string): Promise<void> {
+  await send("DELETE", `/api/secretstores/${encodeURIComponent(name)}`);
+}
+
+export function listExternalSecrets(): Promise<ExternalSecretItem[]> {
+  return listItems("/api/externalsecrets");
+}
+
+export function createExternalSecret(body: {
+  name: string;
+  storeName: string;
+  refreshInterval?: string;
+  keys: SyncKey[];
+}): Promise<ExternalSecretItem> {
+  return postJSON("/api/externalsecrets", body);
+}
+
+export async function deleteExternalSecret(name: string): Promise<void> {
+  await send("DELETE", `/api/externalsecrets/${encodeURIComponent(name)}`);
+}

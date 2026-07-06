@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/orkanoio/orkano/api/check"
@@ -46,6 +48,7 @@ const (
 	checkGitHubAppConnected   = "github.app-connected"
 	checkDomainTLSReady       = "domains.tls-ready"
 	checkAccessModeChosen     = "setup.access-mode-chosen"
+	checkVaultConnected       = "secrets.vault-connected"
 )
 
 // accessModes is the fixed vocabulary of ADR-0004's exposure paths. The wizard
@@ -300,6 +303,59 @@ func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []che
 					return check.Result{Status: check.StatusPass, Message: msg}, nil
 				}
 				return check.Result{Status: check.StatusFail, Message: "no GitHub App connected yet"}, nil
+			},
+		},
+		{
+			ID:       checkVaultConnected,
+			Severity: check.SeverityInfo,
+			Summary:  "an external secret store is connected and Ready",
+			Remediation: "connect your vault from the dashboard's Vault page; if the External Secrets " +
+				"Operator is not installed, add it any time by re-running `orkano init --secrets-vault`",
+			Probe: func(ctx context.Context) (check.Result, error) {
+				stores := &unstructured.UnstructuredList{}
+				stores.SetGroupVersionKind(secretStoreListGVK)
+				err := s.cfg.ViewerClient.List(ctx, stores, client.InNamespace(appsNamespace))
+				switch {
+				case meta.IsNoMatchError(err):
+					// ESO absent = the install never opted in: external vaults
+					// are optional, so this is inapplicable, not unmet.
+					return check.Result{
+						Status:  check.StatusSkip,
+						Message: "External Secrets Operator not installed — optional; add it with `orkano init --secrets-vault`",
+					}, nil
+				case err != nil:
+					return check.Result{}, fmt.Errorf("listing secret stores: %w", err)
+				}
+				// Installed-but-empty is a FAIL, deliberately diverging from
+				// domains.tls-ready's skip-on-empty: passing --secrets-vault
+				// was an explicit ask, so an unconnected store is unfinished
+				// setup, not inapplicability. (The doctor's sibling
+				// secrets.store-health answers a different question —
+				// "currently healthy" — and skips this state.)
+				if len(stores.Items) == 0 {
+					return check.Result{
+						Status:  check.StatusFail,
+						Message: "the External Secrets Operator is installed but no store is connected yet",
+					}, nil
+				}
+				ready := 0
+				for i := range stores.Items {
+					if status, _, _ := readyCondition(&stores.Items[i]); status == "True" {
+						ready++
+					}
+				}
+				// Every connected store must be Ready — a "Done" badge over a
+				// half-broken pair would hide the expired credential.
+				if ready < len(stores.Items) {
+					return check.Result{
+						Status:  check.StatusFail,
+						Message: fmt.Sprintf("%d of %d store(s) Ready — check the others' credentials and server addresses", ready, len(stores.Items)),
+					}, nil
+				}
+				return check.Result{
+					Status:  check.StatusPass,
+					Message: fmt.Sprintf("%d store(s) connected and Ready", len(stores.Items)),
+				}, nil
 			},
 		},
 		{

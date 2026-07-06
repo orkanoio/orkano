@@ -8,6 +8,9 @@ import { AppList } from "@/apps/AppList";
 import { PostgresDetail } from "@/catalog/PostgresDetail";
 import { PostgresForm } from "@/catalog/PostgresForm";
 import { PostgresList } from "@/catalog/PostgresList";
+import { StoreForm } from "@/vault/StoreForm";
+import { SyncForm } from "@/vault/SyncForm";
+import { VaultPage } from "@/vault/VaultPage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -50,6 +53,9 @@ export function Shell({
               </NavLink>
               <NavLink to="/databases" active={isSection(route, "databases")}>
                 Databases
+              </NavLink>
+              <NavLink to="/vault" active={isSection(route, "vault")}>
+                Vault
               </NavLink>
               <NavLink to="/setup" active={isSection(route, "setup")}>
                 Setup
@@ -123,6 +129,21 @@ function routeContent(segments: string[]): ReactNode {
       return <PostgresDetail key={second} name={second} />;
     }
     return <PostgresList />;
+  }
+  if (head === "vault") {
+    if (second === "connect") {
+      // Rotation is keyed by the store name — same remount rule as the other
+      // edit screens.
+      return third !== undefined ? (
+        <StoreForm key={third} edit={third} />
+      ) : (
+        <StoreForm />
+      );
+    }
+    if (second === "sync") {
+      return <SyncForm />;
+    }
+    return <VaultPage />;
   }
   if (head === "setup") {
     return <SetupWizard />;
