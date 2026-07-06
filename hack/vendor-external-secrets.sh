@@ -27,6 +27,15 @@ for tool in helm curl shasum python3; do
 done
 [ -f go.mod ] || { echo "run from the repo root" >&2; exit 1; }
 
+# Helm majors render different bytes from the same chart (v4 emits extra blank
+# lines at document boundaries), which would bury the real content diff a bump
+# is supposed to surface. The committed file was rendered with v3.21.2.
+helm_version=$(helm version --template '{{.Version}}')
+case "$helm_version" in
+  v3.*) ;;
+  *) echo "helm v3 required (rendered with v3.21.2); found $helm_version" >&2; exit 1 ;;
+esac
+
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
@@ -263,8 +272,12 @@ metadata:
     pod-security.kubernetes.io/audit: restricted
 '''
 
-with open(out_path, "w") as f:
+# Atomic replace: every earlier gate fails before touching the committed
+# file; a mid-write kill must not leave it truncated either.
+tmp_path = out_path + ".tmp"
+with open(tmp_path, "w") as f:
     f.write(header + rendered)
+os.replace(tmp_path, out_path)
 print(f"wrote {out_path}")
 PYEOF
 
