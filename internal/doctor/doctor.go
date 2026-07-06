@@ -68,6 +68,7 @@ func Checks(opt Options) []check.Check {
 		dashboardNotPublicCheck(opt),
 		certificateExpiryCheck(opt),
 		etcdSnapshotAgeCheck(opt),
+		networkPolicyEnforcedCheck(opt),
 	}
 }
 

@@ -5,7 +5,7 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 | ID | Short name | Verified by |
 |----|------------|-------------|
 | INV-01 | The dashboard never holds cluster-admin | `rbac.dashboard-blast-radius` |
-| INV-02 | Builds run as hostile code | `build.canary-isolation` |
+| INV-02 | Builds run as hostile code | `net.networkpolicy-enforced`, `build.apparmor-profile-loaded`, `build.canary-isolation` |
 | INV-03 | Secret values never persist in the database | `db.secret-sentinel-roundtrip` |
 | INV-04 | The webhook receiver is a doorbell | `webhook.receiver-blast-radius` |
 | INV-05 | Private by default | `exposure.dashboard-not-public` |
@@ -31,7 +31,7 @@ An invariant is a "never" statement the architecture must keep true — not a gu
 
 **Enforced by.** `automountServiceAccountToken: false` on every build Job; Pod Security Admission enforcing `baseline` on the build namespace plus the Localhost AppArmor profile (grants `userns` and `mount`, keeps the rest of the default confinement); a default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (`config/netpol/`; enforcement proven live in the M0.5 spike and capability-probed both directions by the substrate smoke on every main push); hard CPU, memory, and wall-clock limits per Job.
 
-**Verified by.** `build.canary-isolation` (planned) — runs a canary build Job that asserts from inside the pod: no token exists under `/var/run/secrets/kubernetes.io/serviceaccount`, a connection to a non-allowlisted host actually fails, and the source host and registry stay reachable. Separately submits a privileged pod spec to the build namespace and asserts admission rejects it. `build.apparmor-profile-loaded` (planned) — probes that the `orkano-buildkit` profile is loaded on every node, because its absence fails silently (ADR-0012).
+**Verified by.** `net.networkpolicy-enforced` (shipped in `orkano doctor`, M3.2) — live capability probe of the NetworkPolicy substrate: creates a build-labeled control pod and two unlabeled deny canaries in the build namespace and asserts the control reaches the in-cluster registry while the unlabeled pods reach neither the registry nor the apiserver ClusterIP — the apiserver leg isolates the default-deny egress (nothing guards the apiserver's ingress), so an ingress-only CNI or a deleted egress policy cannot false-pass behind the registry's own ingress allowlist. `build.apparmor-profile-loaded` (shipped in `internal/nodeprep`, M1.5; wired into `orkano doctor --local`, M3.2) — probes that the `orkano-buildkit` profile is loaded in enforce mode, because its absence fails silently (ADR-0012). `build.canary-isolation` (planned) remains the fuller sandbox proof — runs a canary build Job that asserts from inside the pod: no token exists under `/var/run/secrets/kubernetes.io/serviceaccount`, a connection to a non-allowlisted host actually fails, and the source host and registry stay reachable; separately submits a privileged pod spec to the build namespace and asserts admission rejects it.
 
 ## INV-03 — Secret values never persist in the database
 
