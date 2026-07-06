@@ -21,8 +21,15 @@ orkano init --secrets-vault ...your original flags...
 
 Until then the dashboard's Vault page, the wizard's secrets step, and
 `orkano doctor` all print exactly that one-liner. Disabling is deliberately
-manual: the deployed set includes the synced Secrets' controller, so removing
-it is a decision to make with `kubectl`, not a flag flip.
+manual, in two steps: k3s re-applies auto-deploy manifests on every restart
+and upgrade but never removes resources when a file disappears, so first
+remove the manifest on the server node
+(`/var/lib/rancher/k3s/server/manifests/orkano/external-secrets-external-secrets.yaml`),
+then `kubectl delete` the `external-secrets` namespace and the ESO CRDs.
+`kubectl delete` alone silently comes back on the next restart; and deleting
+the CRDs cascades through every store, every sync, and **every synced
+Secret**, so treat the second step as data loss — detach apps from their
+synced Secrets first.
 
 ## Connecting HashiCorp Vault
 
@@ -38,7 +45,9 @@ Vault is the flagship, UI-connectable provider. On the **Vault** page,
 
 *Rotate* on a connected store updates the endpoint or token (an empty token
 keeps the current credential). *Disconnect* removes the store and its
-credentials Secret together.
+credentials Secret together; syncs that pointed at it stop refreshing and
+report not-Ready, keeping their last-synced Secret until the sync itself is
+removed.
 
 ## A scoped policy for the token
 

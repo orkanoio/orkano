@@ -180,7 +180,7 @@ export function SyncForm() {
                   required
                 />
                 <Input
-                  placeholder="apps/api/stripe"
+                  placeholder="orkano/api/stripe"
                   aria-label={`Vault path ${String(i + 1)}`}
                   aria-invalid={errors.keys ? true : undefined}
                   aria-describedby={errors.keys ? "sync-keys-error" : undefined}
