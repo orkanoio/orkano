@@ -146,6 +146,12 @@ func portsFreeCheck(opt Options) check.Check {
 				}
 			}
 			if len(occupied) > 0 {
+				if opt.AllowExistingK3s && occupiedAllowedForExistingK3s(occupied) && existingK3sReady(ctx, opt) {
+					return check.Result{
+						Status:  check.StatusPass,
+						Message: "k3s is already running on required control-plane ports: " + joinInts(occupied) + "; treating as an idempotent converge",
+					}, nil
+				}
 				return check.Result{
 					Status:  check.StatusFail,
 					Message: "ports already in use: " + joinInts(occupied),
@@ -154,6 +160,33 @@ func portsFreeCheck(opt Options) check.Check {
 			return check.Result{Status: check.StatusPass, Message: "required ports free: " + joinInts(ports)}, nil
 		},
 	}
+}
+
+func occupiedAllowedForExistingK3s(occupied []int) bool {
+	allowed := map[int]struct{}{}
+	for _, p := range ExistingK3sPorts {
+		allowed[p] = struct{}{}
+	}
+	for _, p := range occupied {
+		if _, ok := allowed[p]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// existingK3sReady asks the node's own k3s whether its apiserver answers
+// /readyz. Unlike every other preflight probe this one runs under sudo when
+// Options.Sudo is set: k3s kubectl reads the root-only kubeconfig
+// (write-kubeconfig-mode 0600), so the plain SSH user would always be refused
+// and the rerun allowance would silently never apply for non-root installs.
+func existingK3sReady(ctx context.Context, opt Options) bool {
+	cmd := "/usr/local/bin/k3s kubectl get --raw=/readyz"
+	if opt.Sudo {
+		cmd = "sudo " + cmd
+	}
+	res, err := opt.Executor.Run(ctx, cmd)
+	return err == nil && res.ExitStatus == 0 && strings.TrimSpace(res.Stdout) == "ok"
 }
 
 // timeSyncedCheck measures the node clock against the control host. A skewed

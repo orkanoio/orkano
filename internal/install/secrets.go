@@ -152,7 +152,7 @@ func ensureSecrets(ctx context.Context, n *node, v secretValues) (bootstrapToken
 	for _, s := range specs {
 		created, err := n.createSecretIfAbsent(ctx, s.name, secretManifest(s.name, s.data))
 		if err != nil {
-			return "", changed, err
+			return bootstrapToken, changed, err
 		}
 		if created {
 			changed = true
