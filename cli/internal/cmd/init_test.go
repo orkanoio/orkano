@@ -284,6 +284,42 @@ func TestInitSecretsVaultThreading(t *testing.T) {
 	}
 }
 
+func TestInitLocalSecretsVaultThreading(t *testing.T) {
+	stubLocalNode(t, healthyNode(""))
+	deploy := stubLocalDeploy(t, "")
+	stubLocalWire(t)
+
+	opt := &initOptions{
+		local:        true,
+		nodes:        []string{"10.0.0.9"},
+		k3sVersion:   "v1.35.5+k3s1",
+		kubeconfig:   filepath.Join(t.TempDir(), "kubeconfig"),
+		readyTimeout: 30 * time.Second,
+		secretsVault: true,
+	}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit --local: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !deploy.called || !deploy.opt.secretsVault {
+		t.Error("local component deploy did not receive --secrets-vault")
+	}
+	if !strings.Contains(out.String(), "secrets vault:      External Secrets Operator deployed") {
+		t.Errorf("local summary missing the secrets-vault line:\n%s", out.String())
+	}
+}
+
+func TestInitSecretsVaultFlagDefaultOff(t *testing.T) {
+	cmd := newInitCommand("test")
+	f := cmd.Flags().Lookup("secrets-vault")
+	if f == nil {
+		t.Fatal("--secrets-vault flag not registered")
+	}
+	if f.DefValue != "false" {
+		t.Fatalf("--secrets-vault must default off (ADR-0018 opt-in), got %q", f.DefValue)
+	}
+}
+
 func TestReadinessTargetsSecretsVault(t *testing.T) {
 	base := readinessTargets(&initOptions{})
 	for _, w := range base {
