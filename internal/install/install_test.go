@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
 
@@ -310,6 +311,66 @@ func TestApplyFailsWhenCRDsDoNotEstablish(t *testing.T) {
 	}
 	if _, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "operator-deployment.yaml")]; ok {
 		t.Fatal("operator manifest should not be written before CRDs are established")
+	}
+}
+
+func TestApplySecretsVaultOptIn(t *testing.T) {
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	esoPath := path.Join(base, "external-secrets-external-secrets.yaml")
+
+	// Off by default: the vendored ESO set must never join the base write set
+	// (ADR-0018 decision 2).
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, ok := n.files[esoPath]; ok {
+		t.Fatal("external-secrets manifest written without --secrets-vault")
+	}
+
+	// Opted in: written byte-identically (the ~1MB file rides the chunked
+	// write path).
+	n = newFakeNode()
+	res, err := Apply(context.Background(), n, Config{SecretsVault: true})
+	if err != nil {
+		t.Fatalf("Apply with SecretsVault: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true")
+	}
+	want, err := config.ExternalSecretsManifest.ReadFile("external-secrets/external-secrets.yaml")
+	if err != nil {
+		t.Fatalf("read embedded external-secrets: %v", err)
+	}
+	got, ok := n.files[esoPath]
+	if !ok {
+		t.Fatalf("external-secrets manifest not written to %s", esoPath)
+	}
+	if got != string(want) {
+		t.Fatal("external-secrets manifest written with wrong content")
+	}
+}
+
+func TestSecretsVaultReadinessTargets(t *testing.T) {
+	targets := SecretsVaultReadinessTargets()
+	if err := validateTargets(targets); err != nil {
+		t.Fatalf("SecretsVaultReadinessTargets must validate: %v", err)
+	}
+	want := map[string]bool{
+		"external-secrets":                 false,
+		"external-secrets-webhook":         false,
+		"external-secrets-cert-controller": false,
+	}
+	for _, w := range targets {
+		if w.Namespace != "external-secrets" || w.Kind != "deployment" {
+			t.Errorf("unexpected target %+v", w)
+		}
+		want[w.Name] = true
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("missing readiness target %s", name)
+		}
 	}
 }
 

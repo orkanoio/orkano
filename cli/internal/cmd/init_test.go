@@ -246,6 +246,57 @@ func TestInitHappyPath(t *testing.T) {
 	}
 }
 
+func TestInitSecretsVaultThreading(t *testing.T) {
+	srv := sshtest.New(healthyNode(""))
+	defer srv.Close()
+	deploy := stubDeploy(t, "")
+	stubWireRegistry(t)
+
+	opt := baseOptions(t, srv)
+	opt.secretsVault = true
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit: %v\nstderr:\n%s", err, errw.String())
+	}
+	if !deploy.called || !deploy.opt.secretsVault {
+		t.Error("component deploy did not receive --secrets-vault")
+	}
+	if !strings.Contains(out.String(), "secrets vault:      External Secrets Operator deployed") {
+		t.Errorf("summary missing the secrets-vault line:\n%s", out.String())
+	}
+
+	// Without the flag the deploy gets false and the summary stays silent —
+	// ESO is strictly opt-in (ADR-0018). Fresh server: the fake node is
+	// stateful across a run.
+	srv2 := sshtest.New(healthyNode(""))
+	defer srv2.Close()
+	opt = baseOptions(t, srv2)
+	out.Reset()
+	errw.Reset()
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit without flag: %v\nstderr:\n%s", err, errw.String())
+	}
+	if deploy.opt.secretsVault {
+		t.Error("component deploy received secretsVault without the flag")
+	}
+	if strings.Contains(out.String(), "secrets vault:") {
+		t.Errorf("summary mentions the secrets vault without the flag:\n%s", out.String())
+	}
+}
+
+func TestReadinessTargetsSecretsVault(t *testing.T) {
+	base := readinessTargets(&initOptions{})
+	for _, w := range base {
+		if w.Namespace == "external-secrets" {
+			t.Errorf("ESO readiness target %+v present without --secrets-vault", w)
+		}
+	}
+	with := readinessTargets(&initOptions{secretsVault: true})
+	if len(with) != len(base)+3 {
+		t.Errorf("expected the 3 ESO targets appended, got %d -> %d", len(base), len(with))
+	}
+}
+
 func TestInitRefusesOnAppArmorFailure(t *testing.T) {
 	// The node bootstraps fine but the AppArmor profile fails to load — init must
 	// refuse it (a node without the profile silently breaks every build) and not

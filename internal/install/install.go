@@ -76,6 +76,13 @@ type Config struct {
 	// ReceiverHost is the public hostname for the webhook receiver's Ingress.
 	// Empty renders no Ingress — the receiver stays ClusterIP-only (INV-05).
 	ReceiverHost string
+	// SecretsVault adds the vendored External Secrets Operator to the write
+	// set (`orkano init --secrets-vault`, ADR-0018). Opt-in and one-way from
+	// the installer's side: a later re-run without the flag leaves the file in
+	// place — removing an auto-deploy manifest makes k3s DELETE everything in
+	// it (the ESO CRDs and every synced Secret with them), so disabling is a
+	// deliberate manual step, never a forgotten flag.
+	SecretsVault bool
 	// ReadinessTargets are the workloads Apply waits to become Ready before
 	// returning. Empty skips the wait.
 	ReadinessTargets []Workload
@@ -149,6 +156,18 @@ func DefaultReadinessTargets() []Workload {
 	}
 }
 
+// SecretsVaultReadinessTargets is the additional critical path when the
+// External Secrets Operator is opted in (ADR-0018): its controller, the
+// validating webhook (without which every SecretStore/ExternalSecret write is
+// rejected), and the cert-controller that issues the webhook's serving cert.
+func SecretsVaultReadinessTargets() []Workload {
+	return []Workload{
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets"},
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets-webhook"},
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets-cert-controller"},
+	}
+}
+
 func (c Config) autoDeployDir() string {
 	if c.AutoDeployDir == "" {
 		return DefaultAutoDeployDir
@@ -186,6 +205,18 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	files, err := staticManifests()
 	if err != nil {
 		return nil, err
+	}
+	// The vendored External Secrets Operator joins the write set only on
+	// opt-in (ADR-0018). Its own CRDs are deliberately not routed through the
+	// Established gate below: nothing Orkano runs watches ESO types at startup
+	// (the dashboard's lazy RESTMapper self-heals), matching the cert-manager
+	// precedent.
+	if cfg.SecretsVault {
+		eso, err := externalSecretsManifests()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, eso...)
 	}
 	// Per-install component manifests (version-tagged images, ACME/allowlist
 	// values) join the static set; both are written and reconciled identically.
@@ -357,15 +388,26 @@ func ensureSingleDocument(content []byte) error {
 // staticManifests walks the embedded config/ tree into a deterministic,
 // sorted list so a re-run writes the same files in the same order.
 func staticManifests() ([]manifestFile, error) {
+	return manifestsFromFS(config.StaticManifests)
+}
+
+// externalSecretsManifests returns the vendored External Secrets Operator set
+// (ADR-0018), embedded separately from StaticManifests so it can only ever be
+// written on opt-in.
+func externalSecretsManifests() ([]manifestFile, error) {
+	return manifestsFromFS(config.ExternalSecretsManifest)
+}
+
+func manifestsFromFS(fsys fs.FS) ([]manifestFile, error) {
 	var files []manifestFile
-	err := fs.WalkDir(config.StaticManifests, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || path.Ext(p) != ".yaml" {
 			return nil
 		}
-		content, err := config.StaticManifests.ReadFile(p)
+		content, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", p, err)
 		}

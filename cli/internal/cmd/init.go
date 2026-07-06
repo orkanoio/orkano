@@ -35,6 +35,7 @@ type initOptions struct {
 	acmeProd      bool
 	allowRepos    []string
 	receiverHost  string
+	secretsVault  bool
 }
 
 func newInitCommand(version string) *cobra.Command {
@@ -71,6 +72,7 @@ func newInitCommand(version string) *cobra.Command {
 	f.BoolVar(&opt.acmeProd, "acme-prod", false, "use Let's Encrypt production instead of staging (staging is the safe default)")
 	f.StringArrayVar(&opt.allowRepos, "allow-repo", nil, "owner/repo allowed to trigger builds; repeat to allow several (the webhook receiver's allowlist)")
 	f.StringVar(&opt.receiverHost, "receiver-host", "", "public hostname to expose the webhook receiver on over HTTPS (optional; without it the receiver stays cluster-internal)")
+	f.BoolVar(&opt.secretsVault, "secrets-vault", false, "install the External Secrets Operator for external secret stores (Vault etc.); opt-in — re-run init with this flag to add it later")
 
 	return cmd
 }
@@ -281,6 +283,16 @@ func runInitLocal(ctx context.Context, out, errw io.Writer, opt *initOptions) er
 	return nil
 }
 
+// readinessTargets is the critical path the component deploy waits for,
+// extended with the External Secrets Operator's when it is opted in.
+func readinessTargets(opt *initOptions) []install.Workload {
+	targets := install.DefaultReadinessTargets()
+	if opt.secretsVault {
+		targets = append(targets, install.SecretsVaultReadinessTargets()...)
+	}
+	return targets
+}
+
 // deployComponentsLocal runs the component deploy over the local runner. It is
 // wrapped by the deployLocal package var so tests stub it like deployComponents.
 func deployComponentsLocal(ctx context.Context, errw io.Writer, opt *initOptions, runner localRunner) (string, error) {
@@ -290,7 +302,8 @@ func deployComponentsLocal(ctx context.Context, errw io.Writer, opt *initOptions
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
 		ReceiverHost:     opt.receiverHost,
-		ReadinessTargets: install.DefaultReadinessTargets(),
+		SecretsVault:     opt.secretsVault,
+		ReadinessTargets: readinessTargets(opt),
 		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 	})
 	if err != nil {
@@ -363,7 +376,8 @@ func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, pri
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
 		ReceiverHost:     opt.receiverHost,
-		ReadinessTargets: install.DefaultReadinessTargets(),
+		SecretsVault:     opt.secretsVault,
+		ReadinessTargets: readinessTargets(opt),
 		Sudo:             opt.sshUser != "root",
 		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 	})
@@ -594,6 +608,9 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	}
 	writef(out, "  components:         deployed\n")
 	writef(out, "  registry:           wired on every node\n")
+	if opt.secretsVault {
+		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
+	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
 	} else {
@@ -648,6 +665,9 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	writef(out, "  nodes:              1 (single node — not highly available)\n")
 	writef(out, "  components:         deployed\n")
 	writef(out, "  registry:           wired\n")
+	if opt.secretsVault {
+		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
+	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
 	} else {
