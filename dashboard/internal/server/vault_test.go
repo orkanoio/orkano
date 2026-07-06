@@ -100,6 +100,100 @@ func TestSecretStoreConnectFlow(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d", rec.Code)
 	}
+
+	// Every vault write lands in the audit log (INV-08).
+	assertAudited(t, store, "secretstore.create", "success")
+	assertAudited(t, store, "secretstore.delete", "success")
+}
+
+// TestSecretStoreCreateRefusesTakenCredentialsName pins the review-found
+// clobber: a Postgres named <store>-credentials owns the connection Secret of
+// that name (ADR-0014), and a connect must never blind-overwrite it — the
+// detectable case 409s up front, anything else squatting on the name trips
+// the strict create and rolls the store back.
+func TestSecretStoreCreateRefusesTakenCredentialsName(t *testing.T) {
+	store := newFakeStore()
+	pg := &orkanov1alpha1.Postgres{ObjectMeta: metav1.ObjectMeta{Name: "team-vault-credentials", Namespace: appsNamespace}}
+	s := apiServer(t, store, pg)
+	ck := steppedUpSession(t, store)
+
+	rec := apiReq(t, s, http.MethodPost, "/api/secretstores", storeRequest("team-vault"), ck)
+	if rec.Code != http.StatusConflict || decodeBody(t, rec)["error"] != "credentials_name_taken" {
+		t.Fatalf("connect over a Postgres connection Secret = %d %s, want 409 credentials_name_taken", rec.Code, rec.Body.String())
+	}
+	got := &unstructured.Unstructured{}
+	got.SetGroupVersionKind(secretStoreGVK)
+	if err := s.cfg.K8s.Get(context.Background(), client.ObjectKey{Namespace: appsNamespace, Name: "team-vault"}, got); err == nil {
+		t.Fatal("SecretStore was created despite the taken credentials name")
+	}
+
+	// The same name occupied by an arbitrary foreign Secret (no Postgres to
+	// see): the strict create trips AlreadyExists, the store rolls back, and
+	// the foreign Secret's data is untouched.
+	foreign := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-credentials", Namespace: appsNamespace},
+		Data:       map[string][]byte{"uri": []byte("postgres://keep-me")},
+	}
+	s2 := apiServer(t, store, foreign)
+	rec = apiReq(t, s2, http.MethodPost, "/api/secretstores", storeRequest("acme"), ck)
+	if rec.Code != http.StatusConflict || decodeBody(t, rec)["error"] != "credentials_name_taken" {
+		t.Fatalf("connect over a foreign Secret = %d %s, want 409 credentials_name_taken", rec.Code, rec.Body.String())
+	}
+	got = &unstructured.Unstructured{}
+	got.SetGroupVersionKind(secretStoreGVK)
+	if err := s2.cfg.K8s.Get(context.Background(), client.ObjectKey{Namespace: appsNamespace, Name: "acme"}, got); err == nil {
+		t.Fatal("SecretStore not rolled back after the credentials-write refusal")
+	}
+	var sec corev1.Secret
+	if err := s2.cfg.K8s.Get(context.Background(), client.ObjectKey{Namespace: appsNamespace, Name: "acme-credentials"}, &sec); err != nil {
+		t.Fatalf("foreign secret gone: %v", err)
+	}
+	if string(sec.Data["uri"]) != "postgres://keep-me" {
+		t.Fatal("foreign Secret data was clobbered by the connect")
+	}
+
+	// Rotation against a taken name refuses too (a kubectl-authored store
+	// could sit at a name whose credentials Secret belongs to a Postgres).
+	s3 := apiServer(t, store, pg)
+	seedStore(t, s3.cfg.K8s, "team-vault")
+	req := storeRequest("team-vault")
+	rec = apiReq(t, s3, http.MethodPut, "/api/secretstores/team-vault", req, ck)
+	if rec.Code != http.StatusConflict || decodeBody(t, rec)["error"] != "credentials_name_taken" {
+		t.Fatalf("rotation over a Postgres connection Secret = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCreatePostgresRefusesESOClaimedNames is the mirror guard: the catalog
+// names its connection Secret after the object, so a name an ESO sync target
+// or a store's credentials Secret claims is refused up front (the operator's
+// AlreadyOwnedError → ProvisionFailed is the backstop).
+func TestCreatePostgresRefusesESOClaimedNames(t *testing.T) {
+	store := newFakeStore()
+	s := apiServer(t, store)
+	ck := authedSession(t, store)
+	seedStore(t, s.cfg.K8s, "team-vault")
+	es := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": externalSecretGVK.GroupVersion().String(),
+		"kind":       externalSecretGVK.Kind,
+		"metadata":   map[string]any{"name": "api-stripe", "namespace": appsNamespace},
+	}}
+	if err := s.cfg.K8s.Create(context.Background(), es); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	for _, name := range []string{"api-stripe", "team-vault-credentials"} {
+		body := map[string]any{"name": name, "spec": map[string]any{}}
+		rec := apiReq(t, s, http.MethodPost, "/api/postgres", body, ck)
+		if rec.Code != http.StatusConflict || decodeBody(t, rec)["error"] != "name_conflict" {
+			t.Errorf("create postgres %q = %d %s, want 409 name_conflict", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// An unclaimed name still creates.
+	rec := apiReq(t, s, http.MethodPost, "/api/postgres", map[string]any{"name": "clean-db", "spec": map[string]any{}}, ck)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create postgres clean-db = %d %s, want 201", rec.Code, rec.Body.String())
+	}
 }
 
 func TestSecretStoreWritesRequireStepUp(t *testing.T) {
@@ -156,7 +250,7 @@ func TestSecretStoreUpdateRotation(t *testing.T) {
 	s := apiServer(t, store)
 	ck := steppedUpSession(t, store)
 	seeded := seedStore(t, s.cfg.K8s, "team-vault")
-	if err := s.writeCredentialsSecret(context.Background(), seeded, "old-token"); err != nil {
+	if err := s.writeCredentialsSecret(context.Background(), seeded, "old-token", false); err != nil {
 		t.Fatalf("seed credentials: %v", err)
 	}
 
@@ -198,6 +292,8 @@ func TestSecretStoreUpdateRotation(t *testing.T) {
 	if string(sec.Data["token"]) != "new-token" {
 		t.Fatal("rotation did not replace the credential")
 	}
+
+	assertAudited(t, store, "secretstore.update", "success")
 
 	// Updating a missing store is a 404, not an upsert.
 	rec = apiReq(t, s, http.MethodPut, "/api/secretstores/nope", storeRequest("nope"), ck)
@@ -244,6 +340,8 @@ func TestExternalSecretCreateShape(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d", rec.Code)
 	}
+	assertAudited(t, store, "externalsecret.create", "success")
+	assertAudited(t, store, "externalsecret.delete", "success")
 }
 
 func TestExternalSecretCreateValidation(t *testing.T) {
@@ -276,6 +374,9 @@ func TestExternalSecretCreateValidation(t *testing.T) {
 		{"no keys", func(m map[string]any) { m["keys"] = []map[string]any{} }, 400, "invalid_keys"},
 		{"bad env name", func(m map[string]any) {
 			m["keys"] = []map[string]any{{"secretKey": "not valid", "remoteKey": "x"}}
+		}, 400, "invalid_keys"},
+		{"dotted key rejected by the EnvVar pattern", func(m map[string]any) {
+			m["keys"] = []map[string]any{{"secretKey": "my.key", "remoteKey": "x"}}
 		}, 400, "invalid_keys"},
 		{"duplicate key", func(m map[string]any) {
 			m["keys"] = []map[string]any{
