@@ -39,8 +39,11 @@ func (t accessTuple) String() string {
 // same set), and no transitive-escalation modeling (RBAC escalation
 // prevention means creating Orkano's own Roles requires holding their grants
 // — impersonate included — or the escalate verb; a cluster-admin-ish
-// installer has both). M4.2's chart drift guard should assert this list
-// against the chart's actual contents.
+// installer has both). The live capability probes deliberately do not join
+// this install-only set: their generated scratch namespace has no stable name
+// to model here, and their own actionable probe errors/remediations name the
+// extra temporary-resource access they require. M4.2's chart drift guard
+// should assert this list against the chart's actual contents.
 func installAccessSet() []accessTuple {
 	clusterScoped := []accessTuple{
 		{group: "apiextensions.k8s.io", resource: "customresourcedefinitions"},
