@@ -1,0 +1,5 @@
+# Nothing project-specific yet; the static/ tree must stay packaged (the
+# templates load it via .Files.Get).
+.DS_Store
+*.swp
+*.tmp

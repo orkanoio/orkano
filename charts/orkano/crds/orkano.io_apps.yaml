@@ -1,0 +1,330 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: apps.orkano.io
+spec:
+  group: orkano.io
+  names:
+    categories:
+    - orkano
+    kind: App
+    listKind: AppList
+    plural: apps
+    singular: app
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.availableReplicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              build:
+                properties:
+                  dockerfile:
+                    description: |-
+                      DockerfileBuild is deliberately path-only in v1alpha1: buildArgs and
+                      target were deferred by ADR-0012 after the BuildKit spike — each widens
+                      the hostile-input surface without being needed for the core loop.
+                    properties:
+                      path:
+                        description: |-
+                          Path to the Dockerfile, relative to source.subPath when set; an omitted
+                          path (or omitted dockerfile block) selects the default "Dockerfile". The
+                          pattern and the no-".." rule mirror source.subPath and static.dir: the
+                          value lands in BuildKit's --opt=filename argument, where ".." would point
+                          the build outside the intended subdirectory of the (commit-pinned)
+                          context. Lower-risk than its siblings — single argv, no shell, no context
+                          escape — but closing the validation asymmetry is cheap.
+                        maxLength: 512
+                        pattern: ^[A-Za-z0-9_./-]+$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: path must not contain '..'
+                          rule: '!self.contains(''..'')'
+                    type: object
+                  static:
+                    properties:
+                      dir:
+                        description: |-
+                          Dir is the directory of build output to serve, relative to the
+                          source root. It is COPYed into a generated Dockerfile, so it carries
+                          source.subPath's pattern + no-".." rule: a newline would inject a
+                          Dockerfile instruction, and ".." would escape the build context.
+                        maxLength: 512
+                        minLength: 1
+                        pattern: ^[A-Za-z0-9_./-]+$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: dir must not contain '..'
+                          rule: '!self.contains(''..'')'
+                    required:
+                    - dir
+                    type: object
+                  strategy:
+                    enum:
+                    - Dockerfile
+                    - Static
+                    type: string
+                required:
+                - strategy
+                type: object
+                x-kubernetes-validations:
+                - message: build members must match the chosen strategy
+                  rule: 'self.strategy == ''Dockerfile'' ? !has(self.static) : (has(self.static)
+                    && !has(self.dockerfile))'
+              command:
+                description: Command overrides the image entrypoint.
+                items:
+                  type: string
+                maxItems: 32
+                type: array
+              env:
+                items:
+                  properties:
+                    name:
+                      maxLength: 253
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                      type: string
+                    secretRef:
+                      description: |-
+                        SecretKeyRef names a key in a Kubernetes Secret. Only references ever
+                        appear in Orkano CRs; values live exclusively in Secrets (INV-03).
+                      properties:
+                        key:
+                          maxLength: 253
+                          type: string
+                        name:
+                          maxLength: 253
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    value:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of value or secretRef must be set
+                    rule: has(self.value) != has(self.secretRef)
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              healthCheck:
+                description: |-
+                  HealthCheck set means HTTP readiness and liveness probes on Path with
+                  fixed sane timings; unset means a TCP readiness probe on the port.
+                properties:
+                  path:
+                    maxLength: 512
+                    pattern: ^/.*$
+                    type: string
+                required:
+                - path
+                type: object
+              port:
+                description: |-
+                  Port the container listens on. No schema default: defaulting here
+                  would inject a port into Worker apps. The operator defaults Web
+                  apps to 8080 at render time and injects PORT to match.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              replicas:
+                default: 1
+                format: int32
+                maximum: 20
+                minimum: 0
+                type: integer
+              resources:
+                description: |-
+                  Resources maps to container requests; the operator derives limits
+                  (memory limit = request, no CPU limit) so those defaults can improve
+                  without a stored-object migration.
+                properties:
+                  cpu:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  memory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              source:
+                properties:
+                  github:
+                    properties:
+                      ref:
+                        description: |-
+                          Ref has no schema default: a baked-in "main" would break "master"
+                          repos forever once persisted. Unset means the repo's default
+                          branch, resolved by the operator at build time.
+                        maxLength: 250
+                        type: string
+                      repo:
+                        maxLength: 140
+                        pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+                        type: string
+                    required:
+                    - repo
+                    type: object
+                  subPath:
+                    description: |-
+                      SubPath scopes the build context to a directory of the checkout,
+                      like volumeMount.subPath; the Dockerfile path resolves relative
+                      to it. The pattern and the no-".." rule mirror volumeMount.subPath:
+                      the value lands in the BuildKit git context URL, where "#" or ":"
+                      would change which ref/directory is built and ".." would escape
+                      the intended directory.
+                    maxLength: 512
+                    pattern: ^[A-Za-z0-9_./-]+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: subPath must not contain '..'
+                      rule: '!self.contains(''..'')'
+                required:
+                - github
+                type: object
+              type:
+                default: Web
+                enum:
+                - Web
+                - Worker
+                type: string
+            required:
+            - build
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: Worker apps cannot set port or healthCheck
+              rule: '!has(self.type) || self.type != ''Worker'' || (!has(self.port)
+                && !has(self.healthCheck))'
+          status:
+            properties:
+              availableReplicas:
+                format: int32
+                type: integer
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              image:
+                description: Image is the digest-pinned reference currently rolled
+                  out.
+                type: string
+              latestBuild:
+                description: LatestBuild names the most recent Build for this App.
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              url:
+                description: URL derived from Domains pointing at this App.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

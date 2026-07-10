@@ -1,0 +1,11 @@
+{{- /*
+The ADR-0019 static set: verbatim copies of config/ loaded via .Files.Get so
+values-gating never edits the manifest bytes (a Go drift guard asserts
+byte-equality with config/ — see internal/install/chart_test.go). cert-manager
+and external-secrets are gated in their own templates; the k3s-only Traefik
+redirect is excluded from the chart entirely.
+*/ -}}
+{{- range $path, $_ := .Files.Glob "static/{namespaces,rbac,netpol,registry,buildkit,components}/*.yaml" }}
+---
+{{ $.Files.Get $path }}
+{{- end }}

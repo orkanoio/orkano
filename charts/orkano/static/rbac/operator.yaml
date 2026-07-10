@@ -1,0 +1,161 @@
+# Operator ServiceAccount permissions — docs/security/rbac-matrix.md made
+# literal. The most privileged Orkano identity still holds no cluster-admin,
+# no exec, and nothing outside its three namespaces.
+#
+# The operator's one Secret read in orkano-system is the GitHub App private key
+# (INV-07), pinned by resourceNames to that single object — it can read no
+# other Secret in its own namespace. The grant lives in the orkano-system Role
+# below, kept in lockstep with the matrix doc by the rbac-matrix test.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-apps
+rules:
+  - apiGroups: ["orkano.io"]
+    resources:
+      - apps
+      - apps/status
+      - apps/finalizers
+      - builds
+      - builds/status
+      - builds/finalizers
+      - domains
+      - domains/status
+      - domains/finalizers
+      - postgreses
+      - postgreses/status
+      - postgreses/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The Postgres catalog data volume: the StatefulSet's volumeClaimTemplate is
+  # immutable, so the reconciler grows the live PVC directly (PVC expansion is
+  # native, one-way). Read uncached and updated by name only — no list/watch, so
+  # no informer; the operator cannot enumerate volumes it does not own here.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-builds
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # The internal CA bundle the install publishes for build pods; the digest
+  # resolver verifies its manifest HEAD against the same trust root. Read
+  # uncached and pinned — no informer, so no list/watch.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["orkano-registry-ca"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-builds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Registry TLS rotation: distribution loads its keypair once at startup, so
+  # the operator rolls the registry Deployment when cert-manager bumps the
+  # Certificate's status.revision. Deliberately the Certificate, not the
+  # Secret — this rotation path reads no Secret; the operator's only Secret
+  # read in orkano-system is the GitHub App key, pinned below (INV-07).
+  # The mutating verbs are pinned to the one Deployment the controller owns;
+  # list/watch stay a separate rule because collection requests carry no
+  # object name, so resourceNames can never authorize an informer.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["orkano-registry"]
+    verbs: ["get", "update"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  # The GitHub App private key, read to mint ≤1h installation tokens (INV-07).
+  # Pinned by resourceNames to the one Secret: the operator can read no other
+  # Secret in orkano-system, and never list them. Read uncached per mint
+  # (rotation-friendly), so no list/watch grant exists.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["orkano-github-app"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-operator
+subjects:
+  - kind: ServiceAccount
+    name: orkano-operator
+    namespace: orkano-system

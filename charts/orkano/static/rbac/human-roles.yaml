@@ -1,0 +1,36 @@
+# Human roles, bindable to OIDC identities and consumed via the dashboard's
+# impersonation (ADR-0013/ADR-0015). orkano-viewer is the dashboard's fixed
+# impersonation target — bound to the orkano:viewers group in
+# dashboard-impersonate.yaml — so it backs every read view; orkano-admin ships
+# unbound for direct OIDC binding. Humans get no secrets verbs at all in v1 —
+# secret writes flow through the dashboard SA's value-blind path, and values are
+# never displayed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-admin
+  namespace: orkano-apps
+rules:
+  - apiGroups: ["orkano.io"]
+    resources: ["apps", "builds", "domains", "postgreses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-viewer
+  namespace: orkano-apps
+rules:
+  - apiGroups: ["orkano.io"]
+    resources: ["apps", "builds", "domains", "postgreses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Vault status views (ADR-0018): ESO kinds hold configuration, never values.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "externalsecrets"]
+    verbs: ["get", "list", "watch"]

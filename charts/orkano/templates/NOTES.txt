@@ -1,0 +1,16 @@
+The Orkano {{ .Chart.AppVersion }} substrate is installing.
+
+NOTE (M4.2, under construction): this chart does not yet deploy the Orkano
+components or the bootstrap-secrets Job — there is no functioning control
+plane after this install, and platform-postgres stays unready until the
+Job that seeds its Secret lands. See the chart README.
+
+If you have not already, run the capability-probing preflight against this
+cluster — it is the documented gate for bring-your-own-cluster installs, and
+the same probes resurface as `orkano doctor` checks after install:
+
+  orkano preflight --kubeconfig <kubeconfig>
+
+Check the install's health and hardening once components are up:
+
+  orkano doctor --kubeconfig <kubeconfig>

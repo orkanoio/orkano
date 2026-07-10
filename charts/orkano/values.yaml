@@ -1,0 +1,16 @@
+# Values for the Orkano chart (ADR-0019). This surface grows with the chart:
+# component images/version, ACME, the repo allowlist, receiver host, ingress
+# class, and node prep land with their template sub-commits — never add a
+# value here before the template that consumes it exists.
+
+certManager:
+  # Install the vendored cert-manager (config/cert-manager, digest-pinned).
+  # Set false when the cluster already runs cert-manager — `orkano preflight`
+  # detects its CRDs and says so; Orkano then only creates its own namespaced
+  # internal-CA issuers against the existing installation.
+  install: true
+
+secretsVault:
+  # Install the vendored, namespace-scoped External Secrets Operator
+  # (ADR-0018, opt-in — the dashboard's Vault page needs it).
+  install: false

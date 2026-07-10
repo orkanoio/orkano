@@ -1,0 +1,14 @@
+apiVersion: v2
+name: orkano
+description: >-
+  Open-source, self-hosted PaaS on Kubernetes — push to GitHub and your app
+  deploys. This chart installs Orkano onto an existing (bring-your-own)
+  cluster; run `orkano preflight` against the target cluster first (ADR-0019).
+type: application
+# version is the chart's own release line; appVersion names the Orkano release
+# whose images the component templates default to.
+version: 0.1.0
+appVersion: "0.0.2"
+home: https://github.com/orkanoio/orkano
+sources:
+  - https://github.com/orkanoio/orkano
