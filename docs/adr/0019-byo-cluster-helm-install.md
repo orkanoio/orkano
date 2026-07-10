@@ -1,7 +1,7 @@
 # ADR-0019: Install onto existing clusters via a Helm chart gated by a capability-probing preflight
 
-- Status: Proposed
-- Date: 2026-07-07
+- Status: Accepted
+- Date: 2026-07-07 (proposed) · 2026-07-10 (accepted — all four open forks signed off as recommended)
 
 ## Context
 
@@ -27,9 +27,10 @@ not fork the k3s-only pieces (the Traefik `HelmChartConfig` redirect exists only
 
 ## Decision
 
-The numbered decisions are this proposal's recommendations, stated declaratively so they can
-be implemented as written once accepted; the four tagged **[open fork]** are exactly the ones
-the sign-off section at the end reopens — hence Proposed, not Accepted.
+The numbered decisions are stated declaratively so they can be implemented as written. The
+four tagged **[open fork]** were the ones the sign-off section at the end reopened while this
+ADR was Proposed; all four were signed off as recommended on 2026-07-10, so every decision
+below is binding as written.
 
 1. **The chart is hand-maintained in-repo (`charts/orkano/`), drift-guarded against the
    embedded set — never a fork of it.** *[open fork (b)]* Static manifests (`config/crd`, `namespaces`, `rbac`,
@@ -117,21 +118,24 @@ the sign-off section at the end reopens — hence Proposed, not Accepted.
    The chart's namespaces carry the same PSA labels as stage 1; whether PSA is enforced at
    all is what the preflight's capability probe answers.
 
-### Open forks needing user sign-off (why this ADR is Proposed)
+### Forks (resolved at sign-off, 2026-07-10 — each as recommended)
 
 - **(a) The privileged node-prep DaemonSet (decision 3)** — it is the first privileged
-  workload Orkano would ship. The alternative is manual-node-prep-only (weaker UX, zero
-  privileged surface).
+  workload Orkano ships. The alternative was manual-node-prep-only (weaker UX, zero
+  privileged surface). **Resolved: ship the opt-in DaemonSet;** the manual path remains
+  documented for clusters that forbid privileged workloads.
 - **(b) Hand-maintained chart + drift guards (decision 1)** vs generating the chart from the
   embedded set with a script (the vendor-external-secrets.sh pattern, inverted — the
-  recommendation disprefers it because the per-install templates need real Helm-values
+  recommendation dispreferred it because the per-install templates need real Helm-values
   plumbing a generator would obscure; drift guards give the same one-source guarantee with
-  boring, readable artifacts).
+  boring, readable artifacts). **Resolved: hand-maintained + drift guards.**
 - **(c) Pure Helm + bootstrap Job (decision 6)** vs an `orkano install --kubeconfig` wrapper
   that drives preflight → secrets → chart apply from the CLI (one command, but Orkano then
-  owns a Helm-execution surface and GitOps users bypass it anyway).
+  owns a Helm-execution surface and GitOps users bypass it anyway). **Resolved: pure Helm +
+  bootstrap Job;** `orkano preflight` stays the documented mandatory gate.
 - **(d) In-cluster registry + node prep (decision 5)** vs pulling external-registry support
-  forward into Phase 4.
+  forward into Phase 4. **Resolved: in-cluster registry;** external registries stay post-v1
+  (Backlog).
 
 ## Consequences
 
