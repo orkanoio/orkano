@@ -32,10 +32,14 @@ const (
 
 // Check IDs are PERMANENT — they appear in --json output and CI configs.
 const (
-	IDVersionSupported    = "cluster.version-supported"
-	IDStorageClassDefault = "cluster.storageclass-default"
-	IDIngressClassPresent = "cluster.ingressclass-present"
-	IDRBACSufficient      = "cluster.rbac-sufficient"
+	IDVersionSupported             = "cluster.version-supported"
+	IDStorageClassDefault          = "cluster.storageclass-default"
+	IDIngressClassPresent          = "cluster.ingressclass-present"
+	IDRBACSufficient               = "cluster.rbac-sufficient"
+	IDNetworkPolicyEnforced        = "net.networkpolicy-enforced"
+	IDPodSecurityAdmissionEnforced = "cluster.pod-security-admission-enforced"
+	IDAppArmorCapable              = "build.apparmor-capable"
+	IDSeccompDefaultDisabled       = "build.seccomp-default-disabled"
 )
 
 // Options carries the dependencies the cluster preflight checks close over.
@@ -62,6 +66,10 @@ func Checks(opt Options) []check.Check {
 		storageClassDefaultCheck(opt),
 		ingressClassPresentCheck(opt),
 		rbacSufficientCheck(opt),
+		networkPolicyEnforcedCheck(opt),
+		podSecurityAdmissionEnforcedCheck(opt),
+		appArmorCapableCheck(opt),
+		seccompDefaultDisabledCheck(opt),
 	}
 }
 

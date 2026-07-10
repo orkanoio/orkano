@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +55,10 @@ func TestChecksContract(t *testing.T) {
 		{"cluster.storageclass-default", check.SeverityCritical},
 		{"cluster.ingressclass-present", check.SeverityCritical},
 		{"cluster.rbac-sufficient", check.SeverityCritical},
+		{"net.networkpolicy-enforced", check.SeverityCritical},
+		{"cluster.pod-security-admission-enforced", check.SeverityCritical},
+		{"build.apparmor-capable", check.SeverityCritical},
+		{"build.seccomp-default-disabled", check.SeverityCritical},
 	}
 	cs := cluster.Checks(cluster.Options{})
 	if len(cs) != len(want) {
@@ -87,12 +92,18 @@ func TestRegisterRunsHealthyCluster(t *testing.T) {
 		WithObjects(
 			storageClass("standard", map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}),
 			ingressClass("traefik", "true"),
+			readyLinuxNode("worker-0"),
 		).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if ssar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
 					ssar.Status.Allowed = true
 					return nil
+				}
+				if pod, ok := obj.(*corev1.Pod); ok {
+					if err := healthyLivePod(pod); err != nil {
+						return err
+					}
 				}
 				return cl.Create(ctx, obj, opts...)
 			},
@@ -107,8 +118,8 @@ func TestRegisterRunsHealthyCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(run.Results) != 4 {
-		t.Fatalf("run produced %d results, want 4", len(run.Results))
+	if len(run.Results) != 8 {
+		t.Fatalf("run produced %d results, want 8", len(run.Results))
 	}
 	for _, res := range run.Results {
 		if res.Outcome != checks.OutcomePass {
