@@ -1,0 +1,87 @@
+# Dashboard ServiceAccount permissions — docs/security/rbac-matrix.md made
+# literal (INV-01). The value-blind secrets rule is the most load-bearing
+# line: create+update are the two mutation verbs whose response bodies return
+# nothing beyond the caller's own payload (probed by
+# TestSecretVerbValueBlindness), so a compromised dashboard can corrupt app
+# secrets (visible, recoverable) but never exfiltrate them. patch is never
+# granted ON SECRETS: a PATCH response returns the stored object, values
+# included (ADR-0013). The dashboard's read views run under an impersonated, fully
+# resourceNames-pinned viewer identity — that grant is a cluster-scoped
+# ClusterRole and lives in dashboard-impersonate.yaml (ADR-0015), since
+# impersonate on users/groups cannot be granted by a namespaced Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-apps
+rules:
+  - apiGroups: ["orkano.io"]
+    resources: ["apps", "domains", "postgreses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["orkano.io"]
+    resources: ["builds"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # ESO connect + sync objects (ADR-0018): configuration pointers, never
+  # values — the store credential rides the value-blind secrets rule below.
+  # Inert until `--secrets-vault` installs the ESO CRDs.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "externalsecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: orkano-dashboard
+    namespace: orkano-system
+---
+# The onboarding wizard's credential writes into orkano-system: the GitHub App
+# manifest flow (M2.6) writes the App credential and the webhook secret, and the
+# wizard's OIDC connect step writes the IdP client configuration. This is the
+# dashboard's only reach into orkano-system, and it is the narrowest possible:
+# UPDATE only (no get/create/delete), pinned by resourceNames to exactly the
+# three platform Secrets. update (not create) because create cannot be
+# resourceNames-pinned in Kubernetes RBAC — so the install pre-creates empty
+# orkano-github-app and orkano-oidc placeholders (orkano-webhook-secret already
+# exists), and the flows blind-overwrite them. A fully compromised dashboard can
+# thus rotate these credentials (visible, recoverable) but cannot read them
+# (value-blind, ADR-0013/INV-07) and cannot touch any other orkano-system Secret
+# (the superuser password, the enc-key, the bootstrap token). NB orkano-oidc
+# feeds the dashboard's OWN pod env — the write is gated on step-up re-auth,
+# and the Deployment mounts it via explicit per-key secretKeyRefs (never
+# envFrom), so a hostile write can only ever influence the named ORKANO_OIDC_*
+# variables: the blast radius stays the OIDC sign-in configuration itself.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-dashboard-credentials
+  namespace: orkano-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["update"]
+    resourceNames: ["orkano-github-app", "orkano-webhook-secret", "orkano-oidc"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-dashboard-credentials
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-dashboard-credentials
+subjects:
+  - kind: ServiceAccount
+    name: orkano-dashboard
+    namespace: orkano-system

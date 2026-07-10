@@ -1,0 +1,147 @@
+# Platform metadata Postgres (M1.5 component deploy) — the database the
+# receiver enqueues into and the operator's dispatcher consumes, and the future
+# home of users/sessions/audit/deploy-history (PLANNING). Distinct from the
+# user-facing Postgres catalog kind (orkano-apps): this is Orkano's own control
+# data, so it lives in orkano-system under restricted PSA.
+#
+# Single instance on a local-path PVC: the metadata DB is not HA in v1 (only the
+# control plane / etcd is). The PVC is node-local, so a node loss takes the
+# metadata DB down until the node returns — a documented v1 limitation, separate
+# from the app/etcd HA promise. Connections are in-cluster plaintext
+# (sslmode=disable), reachable only by the receiver and operator per the
+# orkano-receiver egress NetworkPolicy and orkano-system's restricted posture.
+#
+# The superuser name and database are the fixed value "orkano"; only the
+# superuser password is generated per install and read from the
+# orkano-postgres-superuser Secret (INV-03: the value lives only in the Secret,
+# referenced here by key — never inline). The migration Job (orkano-operator
+# migrate) connects as this superuser to apply the schema and set the
+# least-privilege role passwords; the receiver and operator connect as those
+# least-privilege roles, never the superuser.
+#
+# SecurityContext mirrors the proven Postgres-catalog reconciler pod: non-root
+# uid 999, fsGroup 999 for the data mount, RuntimeDefault seccomp, drop ALL,
+# no privilege escalation — restricted-PSA compliant (readOnlyRootFilesystem is
+# left unset, as the catalog pod does, since the official image writes to /tmp
+# and /var/run/postgresql; full restricted hardening rides M1.6's live E2E).
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-postgres
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-postgres
+spec:
+  # Headless: clients resolve the single pod directly; no need for a virtual IP.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: orkano-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: orkano-postgres
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-postgres
+spec:
+  serviceName: orkano-postgres
+  replicas: 1
+  # Explicit Retain (the default, made intentional): the metadata DB's data must
+  # survive a StatefulSet delete or scale — losing it is catastrophic, unlike the
+  # catalog Postgres whose delete-and-recreate contract deletes its PVC.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-postgres
+    spec:
+      # The database never talks to the Kubernetes API: no token, no Role.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Multi-arch index digest, the same pin the Postgres-catalog reconciler
+          # uses (postgresImages["16"]) so a node pulls exactly one postgres
+          # image. Bump deliberately (re-resolve the index digest); Renovate does
+          # not rewrite this.
+          image: postgres:16@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            # The superuser name and database name are fixed (not secret), so
+            # the probes below can reference them literally; only the password is
+            # generated per install and lives solely in the Secret (INV-03).
+            - name: POSTGRES_USER
+              value: orkano
+            - name: POSTGRES_DB
+              value: orkano
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-postgres-superuser
+                  key: password
+            # The 0700 subdirectory initdb needs under the group-writable mount.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Burstable: a DB working set varies with connections, so
+              # request==limit would OOM under light load. No CPU limit.
+              memory: 1Gi
+          # initdb binds TCP only after it finishes (minutes on slow storage); a
+          # startup probe gives it that window before liveness/readiness apply.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "orkano", "-d", "orkano"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "orkano", "-d", "orkano"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 8Gi

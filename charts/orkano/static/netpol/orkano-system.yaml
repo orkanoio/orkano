@@ -1,0 +1,51 @@
+# Registry ingress lockdown (M1.2): the registry has no auth yet (per-build
+# credentials land with the Build controller task group), so until then this
+# policy is the only thing keeping arbitrary in-cluster pods — including
+# user code in orkano-apps — from pushing to or pulling from it. Two peers
+# may reach it: build pods (push/pull) and the operator (digest resolution
+# via registry manifest HEAD, INV-06). The operator peer is a label
+# contract like the build-pod one: M1.5's component deploy MUST label the
+# operator pods app.kubernetes.io/name: orkano-operator or digest
+# resolution fails closed. Capability-probed by the substrate smoke
+# (operator-labeled canary connects, unlabeled orkano-system canary does
+# not — the allow keys on the label, never on the namespace).
+#
+# Node-originated traffic does not match pod selectors and its fate under an
+# ingress policy is CNI-specific: kubelet/containerd image pulls (wired to
+# the registry ClusterIP via k3s registries.yaml in M1.5) and the kubelet's
+# own readiness/liveness probes both originate from the host network
+# namespace. Capability-probed on kind/kindnet (substrate smoke probe 9):
+# same-node kubelet traffic is exempt (the registry stays Ready under this
+# policy), but CROSS-NODE host-originated traffic is policy-subject and this
+# policy blocks it — so multi-node kubelet pulls need an explicit allow.
+# That allow cannot live here: node IPs are install-specific. Init contract
+# (M1.5): render a companion policy `orkano-registry-ingress-nodes` with one
+# /32 ipBlock per cluster node InternalIP on port 5000 — the smoke rehearses
+# exactly that and re-probes; whether k3s/kube-router shows node or
+# flannel.1 source IPs is settled by init's own acceptance on real nodes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orkano-registry-ingress
+  namespace: orkano-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-registry
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orkano-builds
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orkano-build
+        # A bare podSelector scopes to this policy's own namespace: the
+        # operator runs in orkano-system next to the registry.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orkano-operator
+      ports:
+        - port: 5000
+          protocol: TCP

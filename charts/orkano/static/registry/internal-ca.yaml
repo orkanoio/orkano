@@ -1,0 +1,49 @@
+# Cluster-internal PKI (ADR-0012: the in-cluster registry speaks TLS from a
+# cluster-internal CA; registry.insecure never ships).
+#
+# Deliberately namespaced Issuers in orkano-system, not ClusterIssuers: the
+# registry is the only internal-TLS consumer in v1, and a namespaced Issuer
+# cannot sign certificates for workloads outside this namespace. Widening to a
+# ClusterIssuer is a deliberate decision for whenever a consumer outside
+# orkano-system appears. The app-facing ACME ClusterIssuer ("orkano-platform",
+# ADR-0006) is a separate thing and lands with M1.5's component deploy.
+#
+# cert-manager (and its CRDs) must be installed before these apply.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: orkano-selfsigned
+  namespace: orkano-system
+spec:
+  selfSigned: {}
+---
+# The CA root: 10 years, in practice never rotated in v1. Renewal would change
+# ca.crt and strand every projected copy (the orkano-registry-ca ConfigMap in
+# orkano-builds); the Phase 3 doctor cert-expiry checks own surfacing that
+# years before it bites.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: orkano-internal-ca
+  namespace: orkano-system
+spec:
+  isCA: true
+  commonName: orkano-internal-ca
+  secretName: orkano-internal-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    kind: Issuer
+    name: orkano-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: orkano-internal-ca
+  namespace: orkano-system
+spec:
+  ca:
+    secretName: orkano-internal-ca

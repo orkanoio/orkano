@@ -1,0 +1,55 @@
+# Dashboard impersonation (ADR-0015). Read views run as a FIXED, fully
+# resourceNames-pinned viewer identity — user orkano:viewer + group
+# orkano:viewers — so the cluster's RBAC + audit trail see a stable view-only
+# identity, never the dashboard ServiceAccount, while every impersonate verb
+# stays pinned: the dashboard can name no other user or group (system:masters
+# in particular), so INV-01 holds. impersonate on users/groups is a
+# cluster-scoped verb, so this is a ClusterRole — a namespaced Role cannot grant
+# it. The fixed identity carries no individual human; that attribution lives in
+# Orkano's own append-only audit_log (INV-08). The literals here MUST match the
+# ViewerUser/ViewerGroup consts in dashboard/internal/server (a cross-file
+# contract; rbac_matrix_test proves doc == manifest == live authorizer).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orkano-dashboard-impersonate
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    resourceNames: ["orkano:viewer"]
+    verbs: ["impersonate"]
+  - apiGroups: [""]
+    resources: ["groups"]
+    resourceNames: ["orkano:viewers"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orkano-dashboard-impersonate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: orkano-dashboard-impersonate
+subjects:
+  - kind: ServiceAccount
+    name: orkano-dashboard
+    namespace: orkano-system
+---
+# Bind the impersonated viewer group to the read-only orkano-viewer Role, so the
+# dashboard's impersonated reads work out of the box on a fresh single-admin
+# cluster. The group orkano:viewers is the only load-bearing impersonation
+# identity; orkano:viewer (the impersonated user) holds no binding of its own.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-viewers
+  namespace: orkano-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-viewer
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: orkano:viewers
