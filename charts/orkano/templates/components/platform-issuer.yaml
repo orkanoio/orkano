@@ -11,9 +11,12 @@ metadata:
   name: orkano-platform
 spec:
   acme:
-    server: {{ .ACMEServer }}
-{{- if .ACMEEmail }}
-    email: {{ .ACMEEmail }}
+    {{- /* `| default false` tolerates `acme.production: null` (the layered-
+    values "reset to default" idiom deletes the key before schema validation,
+    and sprig's ternary hard-errors on a nil condition). */}}
+    server: {{ ternary "https://acme-v02.api.letsencrypt.org/directory" "https://acme-staging-v02.api.letsencrypt.org/directory" (.Values.acme.production | default false) }}
+{{- if .Values.acme.email }}
+    email: {{ .Values.acme.email }}
 {{- end }}
     privateKeySecretRef:
       name: orkano-platform-acme-account
@@ -23,4 +26,4 @@ spec:
             # The class the solver Ingresses use (k3s bundles traefik).
             # Quoted: a class name that is a YAML-1.1 boolean word ("no",
             # "on", …) would silently decode as a boolean.
-            class: "traefik"
+            class: "{{ .Values.ingress.className }}"

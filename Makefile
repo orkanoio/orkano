@@ -1,6 +1,7 @@
 GOLANGCI_LINT_VERSION := v2.12.2
 GOVULNCHECK_VERSION   := v1.3.0
 SQLC_VERSION          := v1.31.1
+HELM_VERSION          := v4.2.2
 ENVTEST_K8S_VERSION   := 1.36.0
 MODULES               := . api
 BIN                   := $(CURDIR)/bin
@@ -23,6 +24,14 @@ SQLC_SHA256_linux_amd64  := 497ae4fcdfa64c5b0c311ffe4c2bd991e43991e82e5367792ed7
 SQLC_SHA256_linux_arm64  := b7cae247740d0c51a1e657479e5b2d21e6fef428f596682a01bc55bf4ab8a23d
 SQLC_SHA256_darwin_amd64 := c5af76772e3785d21663a62697056b383f07629979b1bd25b93872e73dbd519b
 SQLC_SHA256_darwin_arm64 := 21602158c99eb1f2bae197a66abfb1941d1e9e50b23125bb193349c6b1acc71e
+# helm publishes helm-<ver>-<os>-<arch>.tar.gz.sha256sum next to each tarball
+# on get.helm.sh — re-capture all four when bumping HELM_VERSION, and keep the
+# major at 4: helm 3 renders different bytes, which breaks the chart
+# golden-render guard (internal/install/chart_golden_test.go).
+HELM_SHA256_linux_amd64  := 9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+HELM_SHA256_linux_arm64  := 78803142087a0069fa4b50d3f32a84d3ef25c14d1ee8a40fbccf86a6216d2f36
+HELM_SHA256_darwin_amd64 := 10c1e36ee8c5f2e2ee25a16599cb03ab74c0953cd889cacb980a49ba4b6574ba
+HELM_SHA256_darwin_arm64 := 5410a0dae3d5d91f45653b161260d9301aabc4ae80ae50a6605d66884b6df8ea
 
 .DEFAULT_GOAL := all
 .PHONY: all lint test build vulncheck
@@ -112,6 +121,29 @@ manifests:
 
 validate-examples: manifests
 	hack/validate-examples.sh
+
+.PHONY: verify-chart
+
+$(BIN)/helm:
+	@mkdir -p $(BIN)
+	@want="$(HELM_SHA256_$(HOST_OS)_$(HOST_ARCH))"; \
+	[ -n "$$want" ] || { echo "no pinned helm sha256 for $(HOST_OS)/$(HOST_ARCH)" >&2; exit 1; }; \
+	tmp=$$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }; trap 'rm -rf "$$tmp"' EXIT; \
+	url="https://get.helm.sh/helm-$(HELM_VERSION)-$(HOST_OS)-$(HOST_ARCH).tar.gz"; \
+	echo "downloading $$url"; curl -sSfL "$$url" -o "$$tmp/helm.tar.gz"; \
+	got=$$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$tmp/helm.tar.gz"; else shasum -a 256 "$$tmp/helm.tar.gz"; fi | cut -d' ' -f1); \
+	[ "$$got" = "$$want" ] || { echo "helm checksum mismatch: got $$got want $$want" >&2; exit 1; }; \
+	tar -xzf "$$tmp/helm.tar.gz" -C $(BIN) --strip-components=1 "$(HOST_OS)-$(HOST_ARCH)/helm"
+
+# helm lint + the ADR-0019 golden-render drift guard: the chart's component
+# templates must render byte-identical documents to internal/install's
+# renderComponents for equivalent values. Runs the sha256-pinned helm (never a
+# mutable system helm — majors render different bytes); CI runs this target as
+# its own job. The static-manifest byte-equality half of the guard needs no
+# helm and already runs under make test (chart_test.go).
+verify-chart: $(BIN)/helm
+	$(BIN)/helm lint charts/orkano
+	ORKANO_HELM_BIN=$(BIN)/helm go test ./internal/install/ -run TestChartComponentGoldenRender -count=1 -v
 
 .PHONY: verify-image-pins
 

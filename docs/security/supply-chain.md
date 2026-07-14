@@ -47,11 +47,13 @@ Renovate because, for one reviewer: PR grouping and weekly scheduling cap review
 
 ## Required checks for branch protection (apply on GitHub after first push)
 
-`lint (.)` · `lint (api)` · `test` · `build (amd64)` · `build (arm64)` · `vulncheck` · `web` · `shell`
+`lint (.)` · `lint (api)` · `test` · `build (amd64)` · `build (arm64)` · `vulncheck` · `web` · `shell` · `chart`
 
 `web` guards the release's UI path: it builds the SPA and runs the webdist-tagged embed test, the check that stops a broken Vite build or misconfigured outDir from shipping a UI-less dashboard binary.
 
 `shell` guards the on-box installer: `hack/install/install.sh` is served to every downstream user and piped into a shell, so it is shellcheck-linted like product code (ADR-0017).
+
+`chart` guards the BYO install path (ADR-0019): helm lint plus the golden-render drift guard that keeps the chart's component templates byte-identical to `orkano init`'s render, run on the Makefile's sha256-pinned helm — the golden test skips everywhere else, so this job is the only place it executes.
 
 ## Throwaway-release runbook (deferred until the repo is on GitHub)
 

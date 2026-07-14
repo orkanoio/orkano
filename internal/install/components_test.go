@@ -181,11 +181,11 @@ func TestRenderComponentsReceiverIngressOptional(t *testing.T) {
 		t.Fatal("receiver Ingress should render with --receiver-host")
 	}
 	for _, want := range []string{
-		"host: hooks.example.com",
-		"- hooks.example.com",
+		`host: "hooks.example.com"`,
+		`- "hooks.example.com"`,
 		"cert-manager.io/cluster-issuer: orkano-platform",
 		"secretName: orkano-receiver-tls",
-		"ingressClassName: traefik",
+		`ingressClassName: "traefik"`,
 		"name: orkano-receiver",
 	} {
 		if !strings.Contains(ing, want) {
@@ -248,7 +248,7 @@ func TestApplyWritesReceiverIngressWhenHostSet(t *testing.T) {
 	if !ok {
 		t.Fatal("receiver Ingress was not deployed with a receiver host")
 	}
-	if !strings.Contains(ing, "host: hooks.example.com") {
+	if !strings.Contains(ing, `host: "hooks.example.com"`) {
 		t.Errorf("deployed receiver Ingress missing the host:\n%s", ing)
 	}
 }

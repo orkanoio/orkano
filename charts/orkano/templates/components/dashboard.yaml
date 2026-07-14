@@ -34,7 +34,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: dashboard
-          image: {{ .DashboardImage }}
+          image: {{ .Values.images.repository }}/orkano-dashboard:{{ include "orkano.imageTag" . }}
           env:
             # The dashboard's own store (users/sessions/audit/history) as the
             # least-privilege orkano_dashboard role (INV-03: only the DSN, by
@@ -60,7 +60,7 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
-{{- if .ReceiverHost }}
+{{- if .Values.receiver.host }}
             # The receiver's public webhook endpoint (init's --receiver-host /
             # the chart's receiver.host), baked into the GitHub App manifest
             # the wizard generates; without it the manifest flow refuses
@@ -70,7 +70,7 @@ spec:
             # request-derived origin is correct on the private access paths —
             # set it by hand when fronting the dashboard at a fixed URL.
             - name: ORKANO_WEBHOOK_URL
-              value: "https://{{ .ReceiverHost }}/webhook"
+              value: "https://{{ .Values.receiver.host }}/webhook"
 {{- end }}
             # OIDC sign-in config (ADR-0016), OPTIONAL per key: every ref is
             # optional:true, so the dashboard starts with OIDC disabled until

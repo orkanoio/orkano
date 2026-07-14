@@ -32,7 +32,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: {{ .OperatorImage }}
+          image: {{ .Values.images.repository }}/orkano-operator:{{ include "orkano.imageTag" . }}
           env:
             # The dispatcher consumes the queue as the least-privilege
             # orkano_dispatcher role (INV-03: only the DSN, by reference).

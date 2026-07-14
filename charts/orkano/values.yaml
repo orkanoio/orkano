@@ -1,7 +1,46 @@
-# Values for the Orkano chart (ADR-0019). This surface grows with the chart:
-# component images/version, ACME, the repo allowlist, receiver host, ingress
-# class, and node prep land with their template sub-commits — never add a
-# value here before the template that consumes it exists.
+# Values for the Orkano chart (ADR-0019). This surface grows with the chart
+# (node prep lands with its template sub-commit) — never add a value here
+# before the template that consumes it exists. storageClassName is deliberately
+# absent: both install paths pin PVCs to the cluster's default StorageClass
+# (the `cluster.storageclass-default` preflight check requires one), and
+# threading a class through the verbatim static manifests would break the
+# byte-equality drift guard (ADR-0019 decision 1).
+
+images:
+  # Registry namespace of the first-party component images; the components
+  # render <repository>/orkano-{operator,receiver,dashboard}:<tag>. A
+  # chart-only knob (`orkano init` always deploys from ghcr.io/orkanoio) —
+  # override it for a registry mirror; the default is pinned to the Go path's
+  # imageRepo const by the golden-render guard.
+  repository: ghcr.io/orkanoio
+  # Image tag for the first-party components. Empty = the chart's appVersion,
+  # the Orkano release this chart line ships with.
+  tag: ""
+
+acme:
+  # Registration email for the orkano-platform ACME ClusterIssuer (expiry
+  # notices from Let's Encrypt). Optional.
+  email: ""
+  # false = Let's Encrypt staging (the safe default while a fresh install's
+  # DNS and ingress still settle — staging never burns production rate
+  # limits); true = production certificates.
+  production: false
+
+receiver:
+  # Public hostname for the webhook receiver's Ingress — Orkano's one
+  # internet-facing component (INV-05). Empty = no Ingress: the receiver stays
+  # ClusterIP-only and can be exposed later by upgrading with a host set.
+  host: ""
+
+# GitHub repositories (owner/name) the receiver accepts webhooks from.
+# Empty = deny-all (fail closed).
+repoAllowlist: []
+
+ingress:
+  # IngressClass for the receiver Ingress and the ACME HTTP-01 solver.
+  # Domain-rendered app Ingresses follow the cluster default until the
+  # ingress-adapter work threads this into the operator (M4.2).
+  className: traefik
 
 certManager:
   # Install the vendored cert-manager (config/cert-manager, digest-pinned).
