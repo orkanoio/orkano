@@ -1,9 +1,11 @@
-The Orkano {{ .Chart.AppVersion }} substrate is installing.
+Orkano {{ .Chart.AppVersion }} is installing.
 
-NOTE (M4.2, under construction): this chart does not yet deploy the Orkano
-components or the bootstrap-secrets Job — there is no functioning control
-plane after this install, and platform-postgres stays unready until the
-Job that seeds its Secret lands. See the chart README.
+NOTE (M4.2, under construction): this chart does not yet run the
+bootstrap-secrets Job — the components it deploys (operator, receiver,
+dashboard, migration Job, platform Postgres) stay unready until the
+generate-once Secrets exist (orkano-postgres-superuser, the role DSNs, the
+webhook secret, the bootstrap token). Until that sub-commit lands, a
+`helm install` does not produce a working PaaS. See the chart README.
 
 If you have not already, run the capability-probing preflight against this
 cluster — it is the documented gate for bring-your-own-cluster installs, and
