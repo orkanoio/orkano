@@ -24,6 +24,7 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&Build{}, &BuildList{},
 		&Domain{}, &DomainList{},
 		&Postgres{}, &PostgresList{},
+		&Mongo{}, &MongoList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

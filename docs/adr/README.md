@@ -26,3 +26,4 @@ Rules:
 | [0017](0017-on-box-local-install.md) | On-box quick install via a local-exec runner and a thin, verifying installer | Accepted |
 | [0018](0018-external-secrets-operator.md) | External secrets via a vendored, opt-in, namespace-scoped External Secrets Operator | Accepted |
 | [0019](0019-byo-cluster-helm-install.md) | Install onto existing clusters via a Helm chart gated by a capability-probing preflight | Accepted |
+| [0020](0020-mongodb-catalog-kind.md) | Add MongoDB as an engine-specific Mongo catalog kind | Accepted |

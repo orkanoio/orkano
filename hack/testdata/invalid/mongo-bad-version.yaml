@@ -1,0 +1,7 @@
+apiVersion: orkano.io/v1alpha1
+kind: Mongo
+metadata:
+  name: invalid-mongo-version
+  namespace: orkano-apps
+spec:
+  version: "7.0"

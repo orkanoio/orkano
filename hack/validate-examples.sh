@@ -17,7 +17,7 @@ KC apply --server-side -f config/crd/ >/dev/null
 # the whole file would deploy the operator itself onto the dev cluster.
 awk '/^# Source: external-secrets\/templates\/crds\/(secretstore|externalsecret)\.yaml$/{p=1; print "---"} /^---$/{p=0} p' \
   config/external-secrets/external-secrets.yaml | KC apply --server-side -f - >/dev/null
-KC wait --for=condition=Established crd/apps.orkano.io crd/builds.orkano.io crd/domains.orkano.io crd/postgreses.orkano.io crd/secretstores.external-secrets.io crd/externalsecrets.external-secrets.io --timeout=60s >/dev/null
+KC wait --for=condition=Established crd/apps.orkano.io crd/builds.orkano.io crd/domains.orkano.io crd/mongoes.orkano.io crd/postgreses.orkano.io crd/secretstores.external-secrets.io crd/externalsecrets.external-secrets.io --timeout=60s >/dev/null
 KC create namespace orkano-apps --dry-run=client -o yaml | KC apply -f - >/dev/null
 
 for f in docs/examples/*.yaml; do
