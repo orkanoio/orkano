@@ -131,6 +131,10 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to set up Postgres controller: %v\n", err)
 		return 1
 	}
+	if err := (&MongoReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up Mongo controller: %v\n", err)
+		return 1
+	}
 
 	// Registered after the testEnv.Stop defer, so LIFO ordering joins the
 	// manager (lease released against a live apiserver) before teardown.
@@ -205,7 +209,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		t.Fatalf("schema default not applied: spec.type = %q, want %q", got.Spec.Type, orkanov1alpha1.WorkloadWeb)
 	}
 
-	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}, &orkanov1alpha1.PostgresList{}} {
+	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}, &orkanov1alpha1.PostgresList{}, &orkanov1alpha1.MongoList{}} {
 		if err := k8sClient.List(ctx, list); err != nil {
 			t.Fatalf("failed to list %T: %v", list, err)
 		}

@@ -26,6 +26,9 @@ rules:
       - postgreses
       - postgreses/status
       - postgreses/finalizers
+      - mongoes
+      - mongoes/status
+      - mongoes/finalizers
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
@@ -33,7 +36,7 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # The Postgres catalog data volume: the StatefulSet's volumeClaimTemplate is
+  # Catalog database data volumes: each StatefulSet's volumeClaimTemplate is
   # immutable, so the reconciler grows the live PVC directly (PVC expansion is
   # native, one-way). Read uncached and updated by name only — no list/watch, so
   # no informer; the operator cannot enumerate volumes it does not own here.

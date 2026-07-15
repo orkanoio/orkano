@@ -16,7 +16,7 @@ metadata:
   namespace: orkano-apps
 rules:
   - apiGroups: ["orkano.io"]
-    resources: ["apps", "domains", "postgreses"]
+    resources: ["apps", "domains", "postgreses", "mongoes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["orkano.io"]
     resources: ["builds"]

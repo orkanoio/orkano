@@ -176,6 +176,10 @@ func runOperator() {
 		log.Error(err, "unable to set up Postgres controller")
 		os.Exit(1)
 	}
+	if err := (&controller.MongoReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up Mongo controller")
+		os.Exit(1)
+	}
 
 	// The dispatcher consumes the webhook queue and creates Builds. It needs a
 	// DB connection (the orkano_dispatcher role) and re-fetches commits from

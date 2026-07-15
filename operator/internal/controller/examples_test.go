@@ -2,11 +2,11 @@
 // reconcile to its complete object graph — the objects, their shapes, their
 // ownership, and the status a user would read from kubectl get. Images arrive
 // the way M1.2 will deliver them, through a succeeded Build, never by poking
-// status directly. The sixth file (06, the Postgres catalog kind) is exercised
-// by TestExample06PostgresCatalogObjectGraph, which reconciles it to the full
-// StatefulSet + headless Service + connection Secret graph now that the M1.4
-// reconciler has landed. envtest runs no GC, so each example is applied exactly
-// once per suite run: these tests are the only consumers of the example files.
+// status directly. The database catalog examples (06 Postgres and 09 MongoDB)
+// are exercised by their object-graph tests, which reconcile them to the full
+// StatefulSet + headless Service + connection Secret graphs. envtest runs no
+// GC, so each example is applied exactly once per suite run: these tests are
+// the only consumers of the example files.
 package controller
 
 import (
@@ -439,6 +439,52 @@ func TestExample06PostgresCatalogObjectGraph(t *testing.T) {
 	}
 	markStatefulSetReady(t, "api-db", 1)
 	waitForPostgresCondition(t, "api-db", orkanov1alpha1.ConditionReady, metav1.ConditionTrue, reasonAvailable)
+}
+
+func TestExample09MongoDBCatalogObjectGraph(t *testing.T) {
+	applyExample(t, "09-mongodb-catalog.yaml")
+
+	var mongo orkanov1alpha1.Mongo
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "admin-dashboard-mongo", Namespace: appsNamespace}, &mongo); err != nil {
+		t.Fatalf("failed to get Mongo admin-dashboard-mongo: %v", err)
+	}
+	if mongo.Spec.Version != "8.0" || mongo.Spec.StorageSize == nil || mongo.Spec.StorageSize.String() != "10Gi" {
+		t.Errorf("Mongo spec = %+v, want 8.0 with defaulted 10Gi", mongo.Spec)
+	}
+
+	sts := getStatefulSet(t, mongo.Name)
+	assertOwnedBy(t, sts, "Mongo", mongo.Name)
+	if got := sts.Spec.Template.Spec.Containers[0].Image; got != mongoImages["8.0"] {
+		t.Errorf("image = %q, want the digest-pinned MongoDB 8.0 image", got)
+	}
+
+	secret := getPostgresSecret(t, mongo.Name)
+	assertOwnedBy(t, secret, "Mongo", mongo.Name)
+	if got := string(secret.Data[orkanov1alpha1.SecretKeyURI]); !strings.HasPrefix(got, "mongodb://admin_dashboard_mongo:") ||
+		!strings.Contains(got, "@admin-dashboard-mongo.orkano-apps.svc.cluster.local:27017/admin_dashboard_mongo?authSource=admin") {
+		t.Errorf("secret uri = %q, want the MongoDB connection contract", got)
+	}
+
+	build := supplyImage(t, "admin-dashboard")
+	deploy := getDeployment(t, "admin-dashboard")
+	env := envEntries(deploy.Spec.Template.Spec.Containers[0], "MONGODB_URI")
+	if len(env) != 1 || env[0].ValueFrom == nil || env[0].ValueFrom.SecretKeyRef == nil ||
+		env[0].ValueFrom.SecretKeyRef.Name != mongo.Name || env[0].ValueFrom.SecretKeyRef.Key != orkanov1alpha1.SecretKeyURI {
+		t.Errorf("MONGODB_URI = %+v, want secretKeyRef %s/uri", env, mongo.Name)
+	}
+	markDeploymentAvailable(t, "admin-dashboard", 1)
+	app := waitForReady(t, "admin-dashboard", metav1.ConditionTrue, reasonAvailable)
+	if app.Status.LatestBuild != build || app.Status.Image != testImage {
+		t.Errorf("latestBuild/image = %q/%q, want %q/%q", app.Status.LatestBuild, app.Status.Image, build, testImage)
+	}
+
+	got := waitForMongoCondition(t, mongo.Name, metav1.ConditionFalse, reasonProvisioning)
+	if got.Status.SecretName != mongo.Name {
+		t.Errorf("status.secretName = %q, want %q", got.Status.SecretName, mongo.Name)
+	}
+	markStatefulSetReady(t, mongo.Name, 1)
+	waitForMongoCondition(t, mongo.Name, metav1.ConditionTrue, reasonAvailable)
 }
 
 func TestExample05DockerfileObjectGraph(t *testing.T) {

@@ -17,3 +17,14 @@ func PinnedPostgresImages() []string {
 	slices.Sort(out)
 	return out
 }
+
+// PinnedMongoImages returns every MongoDB image served by the Mongo version
+// enum for the same multi-arch registry guard.
+func PinnedMongoImages() []string {
+	out := make([]string, 0, len(mongoImages))
+	for _, img := range mongoImages {
+		out = append(out, img)
+	}
+	slices.Sort(out)
+	return out
+}
