@@ -8,7 +8,7 @@ Namespaces (ADR-0005): user apps live in `orkano-apps`, builds run in `orkano-bu
 
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
-| apps, domains, postgreses (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| apps, domains, postgreses, mongoes (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | builds (orkano.io) | get, list, watch, create, delete | `orkano-apps` — create is the manual-redeploy button; delete is cancel/cleanup |
 | secretstores, externalsecrets (external-secrets.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — the external-vault connect (SecretStore) and per-key sync (ExternalSecret) objects the UI writes (ADR-0018); configuration pointers, never secret values (the store credential lives in a Secret under the value-blind row below); every write is step-up gated. Granted unconditionally — RBAC is name-based, so the rule is inert until the opt-in secrets-vault install adds the ESO CRDs |
 | secrets (core) | **create, update — no get, list, watch, patch, or delete** | `orkano-apps` |
@@ -27,9 +27,9 @@ The dashboard's read views run under an impersonated viewer identity (ADR-0013/A
 
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
-| apps, builds, domains, postgreses + `/status`, `/finalizers` (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
-| deployments, statefulsets (apps); services (core); ingresses (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — statefulsets back the Postgres catalog kind |
-| persistentvolumeclaims (core) | get, update | `orkano-apps` — grows the Postgres catalog data volume; the StatefulSet volumeClaimTemplate is immutable so the PVC is patched directly, read uncached so no list/watch |
+| apps, builds, domains, postgreses, mongoes + `/status`, `/finalizers` (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| deployments, statefulsets (apps); services (core); ingresses (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — statefulsets back the Postgres and Mongo catalog kinds |
+| persistentvolumeclaims (core) | get, update | `orkano-apps` — grows catalog database data volumes; volumeClaimTemplates are immutable so PVCs are patched directly, read uncached so no list/watch |
 | jobs (batch) | create, get, list, watch, delete | `orkano-builds` |
 | pods, pods/log (core) | get, list, watch | `orkano-apps`, `orkano-builds` |
 | configmaps[orkano-registry-ca] (core) | get | `orkano-builds` — the internal CA bundle published for build pods; the Build controller verifies its registry manifest HEAD (digest resolution, INV-06) against the same trust root, read uncached so no list/watch grant exists |
@@ -55,8 +55,8 @@ No Kubernetes permissions and no token mounted (`automountServiceAccountToken: f
 
 | Role | Resources | Verbs | Scope |
 |---|---|---|---|
-| orkano-admin | apps, builds, domains, postgreses (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
+| orkano-admin | apps, builds, domains, postgreses, mongoes (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
-| orkano-viewer | apps, builds, domains, postgreses (orkano.io); pods, pods/log (core); secretstores, externalsecrets (external-secrets.io) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group; the ESO kinds back the vault status views (ADR-0018) and hold configuration, never values |
+| orkano-viewer | apps, builds, domains, postgreses, mongoes (orkano.io); pods, pods/log (core); secretstores, externalsecrets (external-secrets.io) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group; the ESO kinds back the vault status views (ADR-0018) and hold configuration, never values |
 
 Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.
