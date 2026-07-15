@@ -28,6 +28,7 @@ var chartStaticSources = map[string]string{
 	"crds/orkano.io_apps.yaml":       "crd/orkano.io_apps.yaml",
 	"crds/orkano.io_builds.yaml":     "crd/orkano.io_builds.yaml",
 	"crds/orkano.io_domains.yaml":    "crd/orkano.io_domains.yaml",
+	"crds/orkano.io_mongoes.yaml":    "crd/orkano.io_mongoes.yaml",
 	"crds/orkano.io_postgreses.yaml": "crd/orkano.io_postgreses.yaml",
 
 	"static/namespaces/namespaces.yaml": "namespaces/namespaces.yaml",

@@ -265,6 +265,7 @@ func TestApplyAppliesCRDsBeforeComponents(t *testing.T) {
 		"crd-orkano.io_apps.yaml",
 		"crd-orkano.io_builds.yaml",
 		"crd-orkano.io_domains.yaml",
+		"crd-orkano.io_mongoes.yaml",
 		"crd-orkano.io_postgreses.yaml",
 	} {
 		want := path.Join(base, name)
@@ -283,6 +284,7 @@ func TestApplyAppliesCRDsBeforeComponents(t *testing.T) {
 	waitIdx := cmdIndex(n.cmds, func(c string) bool {
 		return strings.Contains(c, "kubectl wait --for=condition=Established") &&
 			strings.Contains(c, "crd/apps.orkano.io") &&
+			strings.Contains(c, "crd/mongoes.orkano.io") &&
 			strings.Contains(c, "crd/postgreses.orkano.io")
 	})
 	operatorWriteIdx := cmdIndex(n.cmds, func(c string) bool {

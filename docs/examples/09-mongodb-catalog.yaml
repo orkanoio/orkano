@@ -1,0 +1,28 @@
+# A Mongo object produces the same-named Secret. The App consumes only the
+# Secret reference as MONGODB_URI; credentials never appear in either CR.
+apiVersion: orkano.io/v1alpha1
+kind: Mongo
+metadata:
+  name: admin-dashboard-mongo
+  namespace: orkano-apps
+spec:
+  version: "8.0"
+---
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: admin-dashboard
+  namespace: orkano-apps
+spec:
+  type: Web
+  source:
+    github:
+      repo: levatax/admin-dashboard
+  build:
+    strategy: Dockerfile
+  port: 3000
+  env:
+    - name: MONGODB_URI
+      secretRef:
+        name: admin-dashboard-mongo
+        key: uri
