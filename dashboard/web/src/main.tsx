@@ -1,4 +1,7 @@
 import "@fontsource-variable/inter/index.css";
+import "@fontsource-variable/space-grotesk/index.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./index.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

@@ -23,7 +23,7 @@ export function StepUpGate({
     return null;
   }
   return (
-    <div className="flex flex-col gap-3 rounded-lg border p-4">
+    <div className="bg-card flex flex-col gap-3 rounded-lg border p-4">
       <p className="text-sm font-medium">
         This action needs a fresh identity check.
       </p>

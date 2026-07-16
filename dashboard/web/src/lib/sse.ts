@@ -7,7 +7,7 @@ import { errorFromResponse } from "@/lib/api";
 // the tail after the server's eof, and tests drive it with the same stubbed
 // fetch as every other call.
 
-export interface AppLogHandlers {
+export interface LogHandlers {
   onLine: (pod: string, line: string) => void;
   // One pod's stream failed (the server's `error` event); the other pods keep
   // streaming.
@@ -16,13 +16,13 @@ export interface AppLogHandlers {
   onEof: () => void;
 }
 
-// streamAppLogs consumes one log stream until the server ends it or signal
+// streamLogs consumes one resource log stream until the server ends it or signal
 // aborts (which resolves quietly — the caller chose to stop). A non-2xx
 // response rejects with ApiError before any event is delivered.
-export async function streamAppLogs(
+export async function streamLogs(
   path: string,
   signal: AbortSignal,
-  handlers: AppLogHandlers,
+  handlers: LogHandlers,
 ): Promise<void> {
   let res: Response;
   try {
@@ -72,7 +72,7 @@ export async function streamAppLogs(
 // separators) and routes it. The server frames every event as a single
 // `data:` line of JSON, optionally preceded by an `event:` line; bare `:`
 // comment lines are its keepalive heartbeats.
-function dispatchEvent(block: string, handlers: AppLogHandlers): void {
+function dispatchEvent(block: string, handlers: LogHandlers): void {
   let event = "";
   let data = "";
   for (const raw of block.split("\n")) {

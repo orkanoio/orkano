@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { BootstrapFlow } from "@/auth/BootstrapFlow";
 import { LoginFlow } from "@/auth/LoginFlow";
 import { readSSOError, stripSSOErrorParam } from "@/auth/sso";
+import { Logo } from "@/components/Logo";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -175,7 +176,8 @@ function CenteredPage({
   children: ReactNode;
 }) {
   return (
-    <main className="mx-auto flex min-h-svh w-full max-w-sm flex-col items-center justify-center gap-4 p-6">
+    <main className="mx-auto flex min-h-svh w-full max-w-sm flex-col items-center justify-center gap-5 p-6">
+      <Logo size={30} />
       {banner}
       {children}
     </main>
@@ -199,7 +201,7 @@ function AuthCard({
         <CardTitle
           role="heading"
           aria-level={1}
-          className="text-primary text-2xl"
+          className="font-display text-2xl tracking-tight text-white"
         >
           {title}
         </CardTitle>

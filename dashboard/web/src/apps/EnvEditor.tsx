@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { Check, LoaderCircle } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { StepUpGate } from "@/components/StepUpGate";
@@ -80,13 +81,14 @@ function managedRefs(app: AppResponse): EnvVar[] {
   return (app.spec.env ?? []).filter((e) => isManagedRef(e, secretName));
 }
 
-function VarsCard({ app }: { app: AppResponse }) {
+export function VarsCard({ app }: { app: AppResponse }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<VarRow[]>(() => varRowsFromSpec(app));
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const env: EnvVar[] = [
         ...rows.map((r) =>
           r.kind === "value"
@@ -98,17 +100,36 @@ function VarsCard({ app }: { app: AppResponse }) {
         ),
         ...managedRefs(app),
       ];
-      return updateApp(app.name, { ...app.spec, env });
+      return withMinimumDuration(
+        updateApp(app.name, { ...app.spec, env }),
+      );
+    },
+    onMutate: () => {
+      setSaved(false);
     },
     onSuccess: (updated) => {
       queryClient.setQueryData(appKey(app.name), updated);
       void queryClient.invalidateQueries({ queryKey: appsKey });
+      setSaved(true);
     },
   });
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+    }, 2_500);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [saved]);
 
   const submit = () => {
     const err = validateVarRows(rows, app);
     setError(err);
+    setSaved(false);
     if (err === "") {
       save.mutate();
     }
@@ -132,7 +153,9 @@ function VarsCard({ app }: { app: AppResponse }) {
         {error !== "" && <p className="text-destructive text-sm">{error}</p>}
         <ApiErrorAlert error={save.error} />
         {rows.length === 0 && (
-          <p className="text-muted-foreground text-sm">No variables.</p>
+          <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
+            No variables.
+          </p>
         )}
         {rows.map((row, i) => (
           <div key={i.toString()} className="flex flex-wrap items-center gap-2">
@@ -220,8 +243,28 @@ function VarsCard({ app }: { app: AppResponse }) {
             disabled={save.isPending}
             size="sm"
           >
-            {save.isPending ? "Saving…" : "Save variables"}
+            {save.isPending ? (
+              <>
+                <LoaderCircle
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+                Saving…
+              </>
+            ) : (
+              "Save variables"
+            )}
           </Button>
+          {saved ? (
+            <span
+              role="status"
+              className="flex items-center gap-1.5 font-mono text-xs text-success"
+            >
+              <Check className="size-4" aria-hidden="true" />
+              Variables saved
+            </span>
+          ) : null}
         </div>
       </CardContent>
     </Card>
@@ -271,25 +314,43 @@ interface SecretRow {
   value: string;
 }
 
-function SecretsCard({ app }: { app: AppResponse }) {
+export function SecretsCard({ app }: { app: AppResponse }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<SecretRow[]>(() =>
     managedRefs(app).map((e) => ({ key: e.name, value: "" })),
   );
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
 
   const save = useMutation({
     mutationFn: (secrets: Record<string, string>) =>
-      setAppEnv(app.name, secrets),
+      withMinimumDuration(setAppEnv(app.name, secrets)),
+    onMutate: () => {
+      setSaved(false);
+    },
     onSuccess: (updated) => {
       queryClient.setQueryData(appKey(app.name), updated);
       void queryClient.invalidateQueries({ queryKey: appsKey });
+      setSaved(true);
     },
   });
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+    }, 2_500);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [saved]);
 
   const submit = () => {
     const err = validateSecretRows(rows, app);
     setError(err);
+    setSaved(false);
     if (err === "") {
       save.mutate(Object.fromEntries(rows.map((r) => [r.key.trim(), r.value])));
     }
@@ -305,7 +366,10 @@ function SecretsCard({ app }: { app: AppResponse }) {
         <CardTitle>Secret values</CardTitle>
         <CardDescription>
           Stored only in the Kubernetes Secret{" "}
-          <span className="font-mono">{envSecretName(app.name)}</span>. Values
+          <span className="text-foreground font-mono text-[13px]">
+            {envSecretName(app.name)}
+          </span>
+          . Values
           are write-only — the dashboard cannot read them back, and saving
           replaces the whole set with what is entered here.
         </CardDescription>
@@ -314,7 +378,9 @@ function SecretsCard({ app }: { app: AppResponse }) {
         {error !== "" && <p className="text-destructive text-sm">{error}</p>}
         <ApiErrorAlert error={save.error} />
         {rows.length === 0 && (
-          <p className="text-muted-foreground text-sm">No secret values.</p>
+          <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
+            No secret values.
+          </p>
         )}
         {rows.map((row, i) => (
           <div key={i.toString()} className="flex flex-wrap items-center gap-2">
@@ -367,8 +433,28 @@ function SecretsCard({ app }: { app: AppResponse }) {
             disabled={save.isPending}
             size="sm"
           >
-            {save.isPending ? "Saving…" : "Save secrets"}
+            {save.isPending ? (
+              <>
+                <LoaderCircle
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+                Saving…
+              </>
+            ) : (
+              "Save secrets"
+            )}
           </Button>
+          {saved ? (
+            <span
+              role="status"
+              className="flex items-center gap-1.5 font-mono text-xs text-success"
+            >
+              <Check className="size-4" aria-hidden="true" />
+              Secrets saved
+            </span>
+          ) : null}
         </div>
         <StepUpGate
           error={save.error}
@@ -408,4 +494,14 @@ function validateSecretRows(rows: SecretRow[], app: AppResponse): string {
     return "An app can have at most 64 environment variables.";
   }
   return "";
+}
+
+async function withMinimumDuration<T>(request: Promise<T>): Promise<T> {
+  const [result] = await Promise.all([
+    request,
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 300);
+    }),
+  ]);
+  return result;
 }

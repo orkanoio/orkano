@@ -40,10 +40,8 @@ describe("AppList", () => {
     );
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText("WaitingForBuild")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "https://web.example.com" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("2/2")).toBeInTheDocument();
+    expect(screen.getByText("https://web.example.com")).toBeInTheDocument();
+    expect(screen.getByText("2 / 2")).toBeInTheDocument();
     expect(screen.getByText("Worker")).toBeInTheDocument();
   });
 

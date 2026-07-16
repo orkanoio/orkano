@@ -33,6 +33,12 @@ function detailRoutes(overrides?: Record<string, () => Response>) {
       ),
     "GET /api/domains": () => jsonResponse(200, { items: [] }),
     "GET /api/apps/web/deploys": () => jsonResponse(200, { items: [] }),
+    "GET /api/apps/web/logs": () =>
+      new Response(
+        'data: {"pod":"web-1","line":"ready"}\n\n' +
+          'event: eof\ndata: {"reason":"streams ended"}\n\n',
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ),
     ...overrides,
   };
 }
@@ -46,15 +52,13 @@ describe("AppDetail", () => {
       await screen.findByRole("heading", { name: "web" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "https://web.example.com" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open app" })).toHaveAttribute(
+      "href",
+      "https://web.example.com",
+    );
     expect(screen.getByText(/web@sha256:abc/)).toBeInTheDocument();
     expect(screen.getByText("web-abcdef123456")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Edit" })).toHaveAttribute(
-      "href",
-      "#/apps/web/edit",
-    );
+    expect(screen.queryByRole("link", { name: "Edit" })).not.toBeInTheDocument();
   });
 
   it("explains a missing app", async () => {
@@ -85,6 +89,7 @@ describe("AppDetail", () => {
     renderWithSession(<AppDetail name="web" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Settings" }));
     await user.click(await screen.findByRole("button", { name: "Delete app" }));
     await user.click(screen.getByRole("button", { name: "Confirm delete" }));
 

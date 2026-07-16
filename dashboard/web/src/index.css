@@ -1,64 +1,45 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:is(.dark *));
-
 /*
- * shadcn/ui theme tokens (Tailwind v4, CSS-variable mode) carrying the PRD
- * brand palette: deep ocean teal primary (#0E7C7B), warm coral accent
- * (#FF6B5B, exposed as --color-coral for sparing CTA use), slate neutrals,
- * off-white background, near-black text. Inter is the UI face (loaded in
- * main.tsx via @fontsource-variable, self-hosted — no external font CDN).
+ * The orkano-landing design system ported into shadcn/ui theme tokens
+ * (Tailwind v4, CSS-variable mode). Dark-only: near-black blue surfaces on a
+ * dot-grid backdrop, hairline white borders, the teal accent ramp
+ * (#00A88F logo → #00C9AB accent → #2BD9A0 healthy), amber for busy states.
+ * Space Grotesk carries headings, IBM Plex Mono carries labels / badges /
+ * buttons / values, Inter carries body prose — all self-hosted via
+ * @fontsource in main.tsx (no font CDN, air-gap-safe).
  */
 :root {
   --radius: 0.5rem;
-  --background: #f8fafc;
-  --foreground: #0f172a;
-  --card: #ffffff;
-  --card-foreground: #0f172a;
-  --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --primary: #0e7c7b;
-  --primary-foreground: #f8fafc;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --muted: #f1f5f9;
-  --muted-foreground: #64748b;
-  --accent: #f1f5f9;
-  --accent-foreground: #0f172a;
-  --destructive: #dc2626;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --ring: #0e7c7b;
-  --coral: #ff6b5b;
-}
-
-.dark {
-  --background: #0f172a;
-  --foreground: #f8fafc;
-  --card: #1e293b;
-  --card-foreground: #f8fafc;
-  --popover: #1e293b;
-  --popover-foreground: #f8fafc;
-  --primary: #14a3a1;
-  --primary-foreground: #0f172a;
-  --secondary: #1e293b;
-  --secondary-foreground: #f8fafc;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #1e293b;
-  --accent-foreground: #f8fafc;
-  /* red-400, not red-500: error text renders at /90 opacity on --card, and
-     #ef4444 lands under the WCAG AA 4.5:1 contrast floor there. */
+  --background: #0b0e13;
+  --foreground: #e6eaf1;
+  --card: #12161d;
+  --card-foreground: #e6eaf1;
+  --popover: #141920;
+  --popover-foreground: #e6eaf1;
+  --sidebar: #0d1015;
+  --primary: #00c9ab;
+  --primary-foreground: #04241f;
+  --secondary: #1a202b;
+  --secondary-foreground: #e6eaf1;
+  --muted: #171c24;
+  --muted-foreground: #9aa3b2;
+  --accent: #1a202b;
+  --accent-foreground: #ffffff;
   --destructive: #f87171;
-  --border: rgb(255 255 255 / 10%);
-  --input: rgb(255 255 255 / 15%);
-  --ring: #14a3a1;
-  --coral: #ff6b5b;
+  --success: #2bd9a0;
+  --warning: #f0a45b;
+  --faint: #5a6478;
+  --terminal: #05070a;
+  --border: rgb(255 255 255 / 8%);
+  --input: rgb(255 255 255 / 14%);
+  --ring: #00c9ab;
 }
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Space Grotesk Variable", var(--font-sans);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -69,6 +50,7 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-sidebar: var(--sidebar);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -78,10 +60,13 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-faint: var(--faint);
+  --color-terminal: var(--terminal);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-coral: var(--coral);
 }
 
 @layer base {
@@ -90,5 +75,32 @@
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    background-image: radial-gradient(
+      rgb(255 255 255 / 5%) 1px,
+      transparent 1.3px
+    );
+    background-size: 22px 22px;
+  }
+  ::selection {
+    background: rgb(0 201 171 / 30%);
+    color: #eafbf6;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight text-white;
+  }
+  /* CardTitle is a div (not h1-h3), so it needs its own display-font rule.
+     Base layer on purpose: .overline-label (components layer) must still win
+     where a card header is a mono panel label instead of a heading. */
+  [data-slot="card-title"] {
+    @apply font-display tracking-tight;
+  }
+}
+
+@layer components {
+  /* The landing's mono section-label idiom ("connection uri", "apps"). */
+  .overline-label {
+    @apply text-muted-foreground font-mono text-[10.5px] tracking-[0.09em] uppercase;
   }
 }

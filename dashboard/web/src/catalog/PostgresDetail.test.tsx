@@ -35,8 +35,10 @@ describe("PostgresDetail", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ProvisionFailed")).toBeInTheDocument();
     expect(screen.getByText("cannot shrink")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Connection" }));
     // The connect hint names the Secret and the load-bearing uri key.
-    expect(screen.getByText(/uri, host, port, database, username, password/)).toBeInTheDocument();
+    expect(screen.getAllByText("uri")).not.toHaveLength(0);
+    expect(screen.getByText("password")).toBeInTheDocument();
   });
 
   it("grows storage carrying the immutable version along", async () => {
@@ -55,6 +57,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
     const grow = await screen.findByLabelText("Grow storage");
     await user.clear(grow);
     await user.type(grow, "20Gi");
@@ -85,6 +88,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
     const grow = await screen.findByLabelText("Grow storage");
     await user.clear(grow);
     await user.type(grow, "5Gi");
@@ -110,6 +114,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Danger" }));
     await user.click(
       await screen.findByRole("button", { name: "Delete database" }),
     );
@@ -137,6 +142,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Danger" }));
     await user.click(
       await screen.findByRole("button", { name: "Delete database" }),
     );

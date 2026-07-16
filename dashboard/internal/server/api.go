@@ -89,6 +89,7 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		pr.Use(s.RequireSession)
 		pr.Get("/", s.handleListPostgres)
 		pr.Post("/", s.handleCreatePostgres)
+		pr.Get("/{name}/logs", s.handlePostgresLogs)
 		pr.Get("/{name}", s.handleGetPostgres)
 		pr.Put("/{name}", s.handleUpdatePostgres)
 		// Deleting a database destroys its data (delete-and-recreate is the only
@@ -100,6 +101,7 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		mr.Use(s.RequireSession)
 		mr.Get("/", s.handleListMongo)
 		mr.Post("/", s.handleCreateMongo)
+		mr.Get("/{name}/logs", s.handleMongoLogs)
 		mr.Get("/{name}", s.handleGetMongo)
 		mr.Put("/{name}", s.handleUpdateMongo)
 		mr.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteMongo)

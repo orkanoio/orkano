@@ -76,10 +76,12 @@ export function VaultPage() {
   }
 
   return (
-    <section className="flex flex-col gap-8">
+    <section className="flex flex-col gap-6">
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold">Secret stores</h1>
+          <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+            Secret stores
+          </h1>
           <Button asChild>
             <Link to="/vault/connect">Connect a store</Link>
           </Button>
@@ -92,7 +94,7 @@ export function VaultPage() {
           too (see docs/vault.md in the Orkano repo).
         </p>
         {stores.isPending && (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <p className="font-mono text-xs text-muted-foreground">Loading…</p>
         )}
         <ApiErrorAlert error={stores.error} />
         {stores.data && <StoresTable stores={stores.data} />}
@@ -100,7 +102,9 @@ export function VaultPage() {
 
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Synced secrets</h2>
+          <h2 className="font-display text-xl font-medium tracking-tight text-white">
+            Synced secrets
+          </h2>
           {stores.data && stores.data.length > 0 ? (
             <Button asChild>
               <Link to="/vault/sync">New sync</Link>
@@ -116,7 +120,7 @@ export function VaultPage() {
           Reference it from an app's environment by the sync's name.
         </p>
         {syncs.isPending && (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <p className="font-mono text-xs text-muted-foreground">Loading…</p>
         )}
         <ApiErrorAlert error={syncs.error} />
         {syncs.data && <SyncsTable syncs={syncs.data} />}
@@ -128,13 +132,15 @@ export function VaultPage() {
 function NotInstalled() {
   return (
     <section className="flex max-w-xl flex-col gap-4">
-      <h1 className="text-xl font-semibold">Secret stores</h1>
+      <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+        Secret stores
+      </h1>
       <p className="text-muted-foreground text-sm">
         External vault support is opt-in and not installed on this cluster.
         Re-run the installer with the flag to add the External Secrets
         Operator — the re-run converges, it does not reinstall:
       </p>
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs">
+      <pre className="bg-terminal overflow-x-auto rounded-lg border p-3 font-mono text-xs text-foreground">
         orkano init --secrets-vault …your original flags…
       </pre>
       <p className="text-muted-foreground text-sm">
@@ -158,7 +164,7 @@ function StoresTable({ stores }: { stores: SecretStoreItem[] }) {
 
   if (stores.length === 0) {
     return (
-      <p className="text-muted-foreground text-sm">
+      <p className="rounded-lg border border-dashed border-primary/50 px-5 py-4 font-mono text-[13px] leading-relaxed text-primary">
         No stores connected yet — connect your vault to sync secrets from it.
       </p>
     );
@@ -179,13 +185,15 @@ function StoresTable({ stores }: { stores: SecretStoreItem[] }) {
         <TableBody>
           {stores.map((store) => (
             <TableRow key={store.name}>
-              <TableCell className="font-medium">{store.name}</TableCell>
-              <TableCell>
+              <TableCell className="font-mono text-[13px] font-medium text-foreground">
+                {store.name}
+              </TableCell>
+              <TableCell className="font-mono text-[13px] text-foreground">
                 <span className="flex items-center gap-2">
                   {store.provider}
                   {alphaProviders.has(store.provider) && (
                     <Badge
-                      variant="outline"
+                      variant="secondary"
                       title="Alpha and community-maintained in the External Secrets Operator — supported, not covered by Orkano's release tests."
                     >
                       alpha
@@ -193,13 +201,18 @@ function StoresTable({ stores }: { stores: SecretStoreItem[] }) {
                   )}
                 </span>
               </TableCell>
-              <TableCell className="max-w-56 truncate" title={store.server}>
+              <TableCell
+                className="max-w-56 truncate font-mono text-[13px] text-foreground"
+                title={store.server}
+              >
                 {store.server ?? "—"}
               </TableCell>
               <TableCell>
                 <StatusBadge conditions={readyConditions(store)} />
               </TableCell>
-              <TableCell>{formatAge(store.creationTimestamp)}</TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground">
+                {formatAge(store.creationTimestamp)}
+              </TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-2">
                   <Button asChild variant="ghost" size="sm">
@@ -276,7 +289,7 @@ function SyncsTable({ syncs }: { syncs: ExternalSecretItem[] }) {
 
   if (syncs.length === 0) {
     return (
-      <p className="text-muted-foreground text-sm">
+      <p className="rounded-lg border border-dashed border-primary/50 px-5 py-4 font-mono text-[13px] leading-relaxed text-primary">
         No synced secrets yet — a sync pulls named keys out of a connected
         store on a schedule.
       </p>
@@ -298,15 +311,21 @@ function SyncsTable({ syncs }: { syncs: ExternalSecretItem[] }) {
         <TableBody>
           {syncs.map((sync) => (
             <TableRow key={sync.name}>
-              <TableCell className="font-medium">{sync.name}</TableCell>
-              <TableCell>{sync.storeName}</TableCell>
+              <TableCell className="font-mono text-[13px] font-medium text-foreground">
+                {sync.name}
+              </TableCell>
+              <TableCell className="font-mono text-[13px] text-muted-foreground">
+                {sync.storeName}
+              </TableCell>
               <TableCell
-                className="max-w-56 truncate"
+                className="max-w-56 truncate font-mono text-xs text-foreground"
                 title={sync.keys.map((k) => k.secretKey).join(", ")}
               >
                 {sync.keys.map((k) => k.secretKey).join(", ") || "—"}
               </TableCell>
-              <TableCell>{sync.refreshInterval ?? "1h"}</TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground">
+                {sync.refreshInterval ?? "1h"}
+              </TableCell>
               <TableCell>
                 <StatusBadge conditions={readyConditions(sync)} />
               </TableCell>

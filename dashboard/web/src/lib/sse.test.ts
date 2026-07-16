@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
-import { streamAppLogs } from "@/lib/sse";
+import { streamLogs } from "@/lib/sse";
 import { jsonResponse, stubFetch } from "@/test/helpers";
 
 function sseResponse(body: string): Response {
@@ -19,7 +19,7 @@ function handlers() {
   };
 }
 
-describe("streamAppLogs", () => {
+describe("streamLogs", () => {
   it("dispatches lines, per-pod errors, and eof; ignores heartbeats", async () => {
     stubFetch().mockResolvedValueOnce(
       sseResponse(
@@ -32,7 +32,7 @@ describe("streamAppLogs", () => {
     );
     const h = handlers();
 
-    await streamAppLogs("/api/apps/web/logs", new AbortController().signal, h);
+    await streamLogs("/api/apps/web/logs", new AbortController().signal, h);
 
     expect(h.onLine.mock.calls).toEqual([
       ["web-1", "hello"],
@@ -57,7 +57,7 @@ describe("streamAppLogs", () => {
     );
     const h = handlers();
 
-    await streamAppLogs("/api/apps/web/logs", new AbortController().signal, h);
+    await streamLogs("/api/apps/web/logs", new AbortController().signal, h);
 
     expect(h.onLine.mock.calls).toEqual([["web-1", "split"]]);
   });
@@ -67,7 +67,7 @@ describe("streamAppLogs", () => {
       jsonResponse(404, { error: "not_found" }),
     );
 
-    const err = await streamAppLogs(
+    const err = await streamLogs(
       "/api/apps/gone/logs",
       new AbortController().signal,
       handlers(),
@@ -87,7 +87,7 @@ describe("streamAppLogs", () => {
     });
 
     await expect(
-      streamAppLogs("/api/apps/web/logs", ctrl.signal, handlers()),
+      streamLogs("/api/apps/web/logs", ctrl.signal, handlers()),
     ).resolves.toBeUndefined();
   });
 
@@ -99,7 +99,7 @@ describe("streamAppLogs", () => {
     );
     const h = handlers();
 
-    await streamAppLogs("/api/apps/web/logs", new AbortController().signal, h);
+    await streamLogs("/api/apps/web/logs", new AbortController().signal, h);
 
     expect(h.onLine.mock.calls).toEqual([["web-1", "after"]]);
   });

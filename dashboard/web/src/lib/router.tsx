@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore, type ComponentProps } from "react";
 
 // A hash-based router in ~40 lines instead of a router dependency: the SPA is
 // served from a single embedded index.html, so hash routes need no server
@@ -37,20 +37,6 @@ export function routeSegments(path: string): string[] {
     .map(decodeURIComponent);
 }
 
-export function Link({
-  to,
-  className,
-  children,
-  "aria-current": ariaCurrent,
-}: {
-  to: string;
-  className?: string;
-  children: ReactNode;
-  "aria-current"?: "page";
-}) {
-  return (
-    <a href={`#${to}`} className={className} aria-current={ariaCurrent}>
-      {children}
-    </a>
-  );
+export function Link({ to, ...props }: Omit<ComponentProps<"a">, "href"> & { to: string }) {
+  return <a href={`#${to}`} {...props} />;
 }

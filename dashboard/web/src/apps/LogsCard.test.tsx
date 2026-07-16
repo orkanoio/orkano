@@ -13,8 +13,8 @@ function sseResponse(body: string): Response {
 }
 
 describe("LogsCard", () => {
-  it("streams on demand and shows lines with a short pod gutter", async () => {
-    const mock = stubFetchRoutes({
+  it("streams automatically and shows lines with a short pod gutter", async () => {
+    stubFetchRoutes({
       "GET /api/apps/web/logs": () =>
         sseResponse(
           'data: {"pod":"web-5b9f7-abcde","line":"listening on :8080"}\n\n' +
@@ -23,13 +23,9 @@ describe("LogsCard", () => {
     });
     renderWithSession(<LogsCard appName="web" />);
 
-    // No connection until asked.
-    expect(mock).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Stream logs" }));
-
     expect(await screen.findByText("listening on :8080")).toBeInTheDocument();
     expect(screen.getByText("5b9f7-abcde")).toBeInTheDocument();
-    expect(await screen.findByText("stream ended")).toBeInTheDocument();
+    expect(await screen.findByText("Stream ended")).toBeInTheDocument();
   });
 
   it("surfaces per-pod stream failures", async () => {
@@ -42,8 +38,6 @@ describe("LogsCard", () => {
     });
     renderWithSession(<LogsCard appName="web" />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Stream logs" }));
-
     expect(
       await screen.findByText(/Some pod streams failed: web-1/),
     ).toBeInTheDocument();
@@ -55,8 +49,6 @@ describe("LogsCard", () => {
         jsonResponse(503, { error: "unavailable" }),
     });
     renderWithSession(<LogsCard appName="web" />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Stream logs" }));
 
     expect(
       await screen.findByText(/cluster API is unavailable/),
@@ -84,12 +76,11 @@ describe("LogsCard", () => {
     renderWithSession(<LogsCard appName="web" />);
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Stream logs" }));
     expect(await screen.findByText("tick")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await user.click(screen.getByRole("button", { name: "Pause stream" }));
     expect(
-      screen.getByRole("button", { name: "Stream logs" }),
+      screen.getByRole("button", { name: "Resume stream" }),
     ).toBeInTheDocument();
   });
 });

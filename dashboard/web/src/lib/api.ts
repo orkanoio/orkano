@@ -317,8 +317,8 @@ export function listAppDeploys(name: string): Promise<DeployRow[]> {
   return listItems(`/api/apps/${encodeURIComponent(name)}/deploys`);
 }
 
-// appLogsPath builds the SSE stream URL for lib/sse.ts (not a JSON endpoint).
-export function appLogsPath(
+function resourceLogsPath(
+  basePath: string,
   name: string,
   opts?: { pod?: string; follow?: boolean; tail?: number },
 ): string {
@@ -333,7 +333,23 @@ export function appLogsPath(
     params.set("tail", opts.tail.toString());
   }
   const query = params.toString();
-  return `/api/apps/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
+  return `${basePath}/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
+}
+
+// appLogsPath builds the SSE stream URL for lib/sse.ts (not a JSON endpoint).
+export function appLogsPath(
+  name: string,
+  opts?: { pod?: string; follow?: boolean; tail?: number },
+): string {
+  return resourceLogsPath("/api/apps", name, opts);
+}
+
+export function postgresLogsPath(name: string): string {
+  return resourceLogsPath("/api/postgres", name);
+}
+
+export function mongoLogsPath(name: string): string {
+  return resourceLogsPath("/api/mongo", name);
 }
 
 export function listDomains(): Promise<DomainResponse[]> {
