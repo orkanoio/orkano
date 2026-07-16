@@ -34,28 +34,31 @@ type fakePodStreamer struct {
 	streamErr map[string]error
 	block     bool
 
-	mu      sync.Mutex
-	opts    []PodLogOptions
-	ctxs    []context.Context
-	listNS  string
-	listApp string
+	mu           sync.Mutex
+	opts         []PodLogOptions
+	ctxs         []context.Context
+	listNS       string
+	listLabelKey string
+	listValue    string
+	streamNS     string
 }
 
-func (f *fakePodStreamer) ListAppPods(_ context.Context, namespace, appName string) ([]string, error) {
+func (f *fakePodStreamer) ListPods(_ context.Context, namespace, labelKey, labelValue string) ([]string, error) {
 	f.mu.Lock()
-	f.listNS, f.listApp = namespace, appName
+	f.listNS, f.listLabelKey, f.listValue = namespace, labelKey, labelValue
 	f.mu.Unlock()
 	return f.pods, f.listErr
 }
 
-func (f *fakePodStreamer) lastList() (ns, app string) {
+func (f *fakePodStreamer) lastList() (ns, labelKey, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.listNS, f.listApp
+	return f.listNS, f.listLabelKey, f.listValue
 }
 
-func (f *fakePodStreamer) StreamPodLog(ctx context.Context, _, pod string, opts PodLogOptions) (io.ReadCloser, error) {
+func (f *fakePodStreamer) StreamPodLog(ctx context.Context, namespace, pod string, opts PodLogOptions) (io.ReadCloser, error) {
 	f.mu.Lock()
+	f.streamNS = namespace
 	f.opts = append(f.opts, opts)
 	f.ctxs = append(f.ctxs, ctx)
 	f.mu.Unlock()
@@ -63,6 +66,12 @@ func (f *fakePodStreamer) StreamPodLog(ctx context.Context, _, pod string, opts 
 		return nil, err
 	}
 	return &scriptedReader{data: []byte(f.content[pod]), block: f.block, ctx: ctx, closed: make(chan struct{})}, nil
+}
+
+func (f *fakePodStreamer) lastStreamNamespace() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.streamNS
 }
 
 func (f *fakePodStreamer) recordedOpts() []PodLogOptions {
@@ -256,8 +265,8 @@ func TestAppLogsStreamsAllPods(t *testing.T) {
 	if xb := rec.Header().Get("X-Accel-Buffering"); xb != "no" {
 		t.Errorf("X-Accel-Buffering = %q, want no (proxies must not buffer the tail)", xb)
 	}
-	if ns, app := streamer.lastList(); ns != appsNamespace || app != "web" {
-		t.Errorf("listed pods in (ns=%q app=%q), want (orkano-apps, web)", ns, app)
+	if ns, key, value := streamer.lastList(); ns != appsNamespace || key != appPodLabel || value != "web" {
+		t.Errorf("listed pods in (ns=%q label=%q value=%q), want (orkano-apps, %s, web)", ns, key, value, appPodLabel)
 	}
 
 	evs := parseSSE(t, rec.Body.String())
@@ -272,6 +281,35 @@ func TestAppLogsStreamsAllPods(t *testing.T) {
 	}
 	if !hasEvent(evs, "eof") {
 		t.Error("expected a terminating eof event")
+	}
+}
+
+func TestDatabaseLogsSelectTheOwningPodAndContainer(t *testing.T) {
+	tests := []struct {
+		path      string
+		labelKey  string
+		container string
+	}{
+		{path: "/api/postgres/data/logs?follow=false", labelKey: postgresPodLabel, container: postgresContainerName},
+		{path: "/api/mongo/data/logs?follow=false", labelKey: mongoPodLabel, container: mongoContainerName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.container, func(t *testing.T) {
+			streamer := &fakePodStreamer{pods: []string{"data-0"}, content: map[string]string{"data-0": "ready\n"}}
+			s, store := logsServer(t, streamer)
+			ck := authedSession(t, store)
+			rec := apiReq(t, s, http.MethodGet, tt.path, nil, ck)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+			}
+			if ns, key, value := streamer.lastList(); ns != appsNamespace || key != tt.labelKey || value != "data" {
+				t.Errorf("listed pods in (ns=%q label=%q value=%q), want (orkano-apps, %s, data)", ns, key, value, tt.labelKey)
+			}
+			opts := streamer.recordedOpts()
+			if len(opts) != 1 || opts[0].Container != tt.container {
+				t.Fatalf("stream opts = %+v, want container %q", opts, tt.container)
+			}
+		})
 	}
 }
 
@@ -563,16 +601,16 @@ func TestClientsetPodLogStreamer(t *testing.T) {
 	)
 	st := NewPodLogStreamer(cs)
 
-	names, err := st.ListAppPods(context.Background(), appsNamespace, "web")
+	names, err := st.ListPods(context.Background(), appsNamespace, appPodLabel, "web")
 	if err != nil {
-		t.Fatalf("ListAppPods: %v", err)
+		t.Fatalf("ListPods: %v", err)
 	}
 	got := map[string]bool{}
 	for _, n := range names {
 		got[n] = true
 	}
 	if !got["web-1"] || !got["web-2"] || got["api-1"] {
-		t.Errorf("ListAppPods returned %v, want only web-1+web-2 (label-filtered)", names)
+		t.Errorf("ListPods returned %v, want only web-1+web-2 (label-filtered)", names)
 	}
 
 	rc, err := st.StreamPodLog(context.Background(), appsNamespace, "web-1", PodLogOptions{Container: appContainerName, TailLines: 10})

@@ -92,11 +92,15 @@ export function DomainsCard({ appName }: { appName: string }) {
       <CardContent className="flex flex-col gap-3">
         <ApiErrorAlert error={query.error} />
         {query.data && domains.length === 0 && (
-          <p className="text-muted-foreground text-sm">No domains.</p>
+          <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
+            No domains.
+          </p>
         )}
         {domains.map((d) => (
           <div key={d.name} className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-sm">{d.spec.host}</span>
+            <span className="text-foreground font-mono text-[13px]">
+              {d.spec.host}
+            </span>
             <StatusBadge conditions={d.status.conditions} />
             <ConditionBadge
               conditions={d.status.conditions}
@@ -105,7 +109,7 @@ export function DomainsCard({ appName }: { appName: string }) {
             />
             {confirmingRemove === d.name ? (
               <>
-                <span className="text-sm">
+                <span className="text-muted-foreground text-sm">
                   Remove this hostname and its certificate?
                 </span>
                 <Button

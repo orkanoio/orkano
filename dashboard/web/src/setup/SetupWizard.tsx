@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { Field } from "@/components/Field";
+import { StatusDot } from "@/components/StatusBadge";
 import { StepUpGate } from "@/components/StepUpGate";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -73,7 +74,7 @@ export function SetupWizard() {
   });
 
   if (status.isPending) {
-    return <p className="text-muted-foreground text-sm">Loading setup…</p>;
+    return <p className="font-mono text-xs text-muted-foreground">Loading setup…</p>;
   }
   if (status.error) {
     return <ApiErrorAlert error={status.error} />;
@@ -81,9 +82,11 @@ export function SetupWizard() {
   const s = status.data;
 
   return (
-    <section className="flex max-w-2xl flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">Setup</h1>
+    <section className="flex max-w-2xl flex-col gap-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+          Setup
+        </h1>
         <p className="text-muted-foreground text-sm">
           Walk the steps below to finish this install. Everything can be
           revisited later.
@@ -113,25 +116,26 @@ function OutcomeBadge({ check }: { check: SetupCheck | undefined }) {
   }
   const render = (
     label: string,
-    variant?: "secondary" | "outline" | "destructive",
+    variant?: "success" | "warning" | "secondary" | "outline" | "destructive",
   ) => (
     <Badge
       variant={variant}
       title={check.message}
       aria-label={check.message ? `${label}: ${check.message}` : label}
     >
+      <StatusDot />
       {label}
     </Badge>
   );
   switch (check.outcome) {
     case "pass":
-      return render("Done");
+      return render("Done", "success");
     case "skip":
       return render("Not applicable", "secondary");
     case "blocked":
       return render(
         `Waiting on ${blockerLabel(check.blockers?.[0])}`,
-        "outline",
+        "warning",
       );
     case "error":
       return render("Could not check", "destructive");
@@ -151,12 +155,30 @@ function StepCard({
   badge: ReactNode;
   children?: ReactNode;
 }) {
+  // The landing's mono-teal step-index look: split a leading "N." off the
+  // title for styling only — the rendered text (and so the accessible name
+  // the tests query) stays byte-identical. NOT aria-hidden: hiding the index
+  // would drop it from the heading's accessible name.
+  const numbered = /^(\d+\.)\s(.*)$/.exec(title);
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle role="heading" aria-level={2}>
-            {title}
+          <CardTitle
+            role="heading"
+            aria-level={2}
+            className="flex items-baseline gap-2 font-display text-lg tracking-tight text-white"
+          >
+            {numbered ? (
+              <>
+                <span className="font-mono text-[11px] font-normal tracking-[0.2em] text-primary">
+                  {numbered[1]}
+                </span>{" "}
+                {numbered[2]}
+              </>
+            ) : (
+              title
+            )}
           </CardTitle>
           {badge}
         </div>
@@ -174,7 +196,7 @@ function StepCard({
 function CommandLine({ command }: { command: string }) {
   return (
     <div className="flex items-center gap-2">
-      <code className="bg-muted flex-1 overflow-x-auto rounded-md px-3 py-2 font-mono text-xs">
+      <code className="bg-terminal text-foreground flex-1 overflow-x-auto rounded-lg border px-3 py-2 font-mono text-xs">
         {command}
       </code>
       <Button
@@ -609,7 +631,7 @@ function VaultStep({ status }: { status: SetupStatus }) {
             the installer with the flag — the re-run converges, it does not
             reinstall:
           </p>
-          <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs">
+          <pre className="bg-terminal text-foreground overflow-x-auto rounded-lg border p-3 font-mono text-xs">
             orkano init --secrets-vault …your original flags…
           </pre>
         </div>

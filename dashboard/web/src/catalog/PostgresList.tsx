@@ -23,20 +23,22 @@ export function PostgresList() {
   });
 
   return (
-    <section className="flex flex-col gap-4">
+    <section className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Databases</h1>
+        <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+          Databases
+        </h1>
         <Button asChild>
           <Link to="/databases/new">New database</Link>
         </Button>
       </div>
       {query.isPending && (
-        <p className="text-muted-foreground text-sm">Loading…</p>
+        <p className="font-mono text-xs text-muted-foreground">Loading…</p>
       )}
       <ApiErrorAlert error={query.error} />
       {query.data &&
         (query.data.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
+          <p className="rounded-lg border border-dashed border-primary/50 px-5 py-4 font-mono text-[13px] leading-relaxed text-primary">
             No databases yet — provision a PostgreSQL instance from the
             catalog.
           </p>
@@ -57,17 +59,23 @@ export function PostgresList() {
                   <TableCell>
                     <Link
                       to={`/databases/${encodeURIComponent(pg.name)}`}
-                      className="text-primary font-medium hover:underline"
+                      className="font-mono text-primary hover:underline"
                     >
                       {pg.name}
                     </Link>
                   </TableCell>
-                  <TableCell>PostgreSQL {pg.spec.version ?? "16"}</TableCell>
-                  <TableCell>{pg.spec.storageSize ?? "10Gi"}</TableCell>
+                  <TableCell className="font-mono text-foreground">
+                    PostgreSQL {pg.spec.version ?? "16"}
+                  </TableCell>
+                  <TableCell className="font-mono text-foreground">
+                    {pg.spec.storageSize ?? "10Gi"}
+                  </TableCell>
                   <TableCell>
                     <StatusBadge conditions={pg.status.conditions} />
                   </TableCell>
-                  <TableCell>{formatAge(pg.creationTimestamp)}</TableCell>
+                  <TableCell className="font-mono text-muted-foreground">
+                    {formatAge(pg.creationTimestamp)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

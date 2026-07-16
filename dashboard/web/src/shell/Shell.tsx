@@ -1,4 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Database,
+  KeyRound,
+  LayoutGrid,
+  SlidersHorizontal,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { StepUpForm } from "@/auth/StepUpForm";
@@ -11,6 +18,7 @@ import { PostgresList } from "@/catalog/PostgresList";
 import { StoreForm } from "@/vault/StoreForm";
 import { SyncForm } from "@/vault/SyncForm";
 import { VaultPage } from "@/vault/VaultPage";
+import { Logo } from "@/components/Logo";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,9 +33,9 @@ import { SessionContext } from "./session";
 // "unlocked" banner must not outlive the window RequireStepUp enforces.
 const stepUpFreshnessMs = 5 * 60 * 1000;
 
-// Shell is the signed-in application frame: brand, Apps/Databases navigation,
-// and the session controls (proactive step-up re-auth, sign out) that sub-4's
-// placeholder carried — plus the hash-routed App/catalog screens.
+// Shell is the signed-in application frame, laid out landing-style: a dark
+// sidebar rail (brand, Apps/Databases/Vault/Setup navigation, session
+// controls) beside the hash-routed content pane.
 export function Shell({
   status,
   banner,
@@ -41,33 +49,55 @@ export function Shell({
     <SessionContext.Provider
       value={{ username: status.username, oidc: status.oidc }}
     >
-      <div className="min-h-svh">
-        <header className="bg-card border-b">
-          <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-4 px-6 py-3">
-            <Link to="/apps" className="text-primary text-lg font-semibold">
-              Orkano
-            </Link>
-            <nav className="flex gap-1">
-              <NavLink to="/apps" active={isSection(route, "apps")}>
-                Apps
-              </NavLink>
-              <NavLink to="/databases" active={isSection(route, "databases")}>
-                Databases
-              </NavLink>
-              <NavLink to="/vault" active={isSection(route, "vault")}>
-                Vault
-              </NavLink>
-              <NavLink to="/setup" active={isSection(route, "setup")}>
-                Setup
-              </NavLink>
-            </nav>
-            <SessionControls username={status.username} oidc={status.oidc} />
-          </div>
-        </header>
-        <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
-          {banner}
-          {routeContent(routeSegments(route))}
-        </main>
+      <div className="flex min-h-svh flex-col md:flex-row">
+        <aside className="bg-sidebar flex w-full shrink-0 flex-col border-b md:sticky md:top-0 md:h-svh md:w-60 md:border-r md:border-b-0">
+          <Link
+            to="/apps"
+            className="flex h-[62px] shrink-0 items-center gap-2.5 border-b px-5"
+          >
+            <Logo size={22} />
+            <span className="font-display text-[15px] font-semibold tracking-tight text-white">
+              orkano
+            </span>
+          </Link>
+          <nav className="flex gap-1 overflow-x-auto p-2 md:flex-col md:p-3">
+            <NavLink
+              to="/apps"
+              active={isSection(route, "apps")}
+              icon={LayoutGrid}
+            >
+              Apps
+            </NavLink>
+            <NavLink
+              to="/databases"
+              active={isSection(route, "databases")}
+              icon={Database}
+            >
+              Databases
+            </NavLink>
+            <NavLink
+              to="/vault"
+              active={isSection(route, "vault")}
+              icon={KeyRound}
+            >
+              Vault
+            </NavLink>
+            <NavLink
+              to="/setup"
+              active={isSection(route, "setup")}
+              icon={SlidersHorizontal}
+            >
+              Setup
+            </NavLink>
+          </nav>
+          <SessionControls username={status.username} oidc={status.oidc} />
+        </aside>
+        <div className="min-w-0 flex-1">
+          <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 sm:p-6 lg:p-8">
+            {banner}
+            {routeContent(routeSegments(route))}
+          </main>
+        </div>
       </div>
     </SessionContext.Provider>
   );
@@ -81,10 +111,12 @@ function isSection(route: string, section: string): boolean {
 function NavLink({
   to,
   active,
+  icon: Icon,
   children,
 }: {
   to: string;
   active: boolean;
+  icon: LucideIcon;
   children: ReactNode;
 }) {
   return (
@@ -92,12 +124,13 @@ function NavLink({
       to={to}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "rounded-md px-3 py-1.5 text-sm font-medium",
+        "flex shrink-0 items-center gap-2.5 rounded-md border px-3 py-2 font-mono text-[12.5px] transition-colors",
         active
-          ? "bg-secondary text-foreground"
-          : "text-muted-foreground hover:text-foreground",
+          ? "border-primary/25 bg-primary/8 text-primary"
+          : "border-transparent text-muted-foreground hover:text-foreground",
       )}
     >
+      <Icon className="size-4" aria-hidden="true" />
       {children}
     </Link>
   );
@@ -159,8 +192,8 @@ function routeContent(segments: string[]): ReactNode {
   );
 }
 
-// SessionControls keeps sub-4's session surface alive: proactive re-auth
-// (unlock destructive actions for the next 5 minutes) and sign out.
+// SessionControls is the sidebar footer: the signed-in identity, proactive
+// re-auth (unlock destructive actions for the next 5 minutes), and sign out.
 function SessionControls({
   username,
   oidc,
@@ -193,8 +226,8 @@ function SessionControls({
   });
 
   return (
-    <div className="ml-auto flex items-center gap-2">
-      <span className="text-muted-foreground text-sm">
+    <div className="flex flex-wrap items-center gap-2 border-t p-3 md:mt-auto md:flex-col md:items-stretch md:p-4">
+      <span className="text-muted-foreground truncate font-mono text-[11px]">
         <span className="text-foreground font-medium">{username}</span>
         {oidc ? " via SSO" : ""}
       </span>
@@ -234,7 +267,7 @@ function SessionControls({
             <CardContent className="flex flex-col gap-3">
               {reauthDone ? (
                 <>
-                  <Alert>
+                  <Alert variant="success">
                     <AlertDescription>
                       Identity confirmed — destructive actions are unlocked for
                       the next 5 minutes.

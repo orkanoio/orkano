@@ -20,16 +20,16 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// appPodLabel selects the pods backing an App. It MUST match the operator's
-// appLabel ("app.orkano.io/app"), written into every App Deployment's immutable
-// selector — a cross-component contract; renaming it on either side breaks the
-// logs view for every existing app.
-const appPodLabel = "app.orkano.io/app"
-
-// appContainerName is the container the operator names in every App pod
-// (operator's containerName const); it is the default log source when the
-// request gives no ?container=.
-const appContainerName = "app"
+// These labels and container names MUST match the operator's immutable pod
+// selectors. Renaming either side breaks the corresponding resource stream.
+const (
+	appPodLabel           = "app.orkano.io/app"
+	appContainerName      = "app"
+	postgresPodLabel      = "app.orkano.io/postgres"
+	postgresContainerName = "postgres"
+	mongoPodLabel         = "app.orkano.io/mongo"
+	mongoContainerName    = "mongo"
+)
 
 const (
 	defaultTailLines = 200
@@ -56,15 +56,15 @@ type PodLogOptions struct {
 	TailLines int
 }
 
-// PodLogStreamer lists an App's pods and streams their container logs under the
+// PodLogStreamer lists a resource's pods and streams their container logs under the
 // dashboard's impersonated viewer identity (ADR-0015) — so the cluster's RBAC +
 // audit trail attribute the read to the fixed view-only identity, never the
 // dashboard ServiceAccount. The production implementation wraps a client-go
 // clientset built from the viewer rest.Config (NewViewerPodLogStreamer); tests
 // supply a fake.
 type PodLogStreamer interface {
-	// ListAppPods returns the names of the pods backing appName in namespace.
-	ListAppPods(ctx context.Context, namespace, appName string) ([]string, error)
+	// ListPods returns pod names matching one exact label in namespace.
+	ListPods(ctx context.Context, namespace, labelKey, labelValue string) ([]string, error)
 	// StreamPodLog opens a log stream for one pod. With Follow set it stays open
 	// until the context is cancelled or the pod terminates.
 	StreamPodLog(ctx context.Context, namespace, pod string, opts PodLogOptions) (io.ReadCloser, error)
@@ -85,8 +85,8 @@ func NewPodLogStreamer(cs kubernetes.Interface) PodLogStreamer {
 	return &clientsetPodLogStreamer{cs: cs}
 }
 
-func (c *clientsetPodLogStreamer) ListAppPods(ctx context.Context, namespace, appName string) ([]string, error) {
-	sel := labels.SelectorFromSet(labels.Set{appPodLabel: appName}).String()
+func (c *clientsetPodLogStreamer) ListPods(ctx context.Context, namespace, labelKey, labelValue string) ([]string, error) {
+	sel := labels.SelectorFromSet(labels.Set{labelKey: labelValue}).String()
 	list, err := c.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
 	if err != nil {
 		return nil, err
@@ -126,20 +126,36 @@ type logEvent struct {
 // goroutines and merge into this handler goroutine, which is the sole writer to
 // the ResponseWriter (never written concurrently).
 func (s *Server) handleAppLogs(w http.ResponseWriter, r *http.Request) {
+	s.handleResourceLogs(w, r, appPodLabel, appContainerName, "apps.logs.list_pods")
+}
+
+func (s *Server) handlePostgresLogs(w http.ResponseWriter, r *http.Request) {
+	s.handleResourceLogs(w, r, postgresPodLabel, postgresContainerName, "postgres.logs.list_pods")
+}
+
+func (s *Server) handleMongoLogs(w http.ResponseWriter, r *http.Request) {
+	s.handleResourceLogs(w, r, mongoPodLabel, mongoContainerName, "mongo.logs.list_pods")
+}
+
+func (s *Server) handleResourceLogs(w http.ResponseWriter, r *http.Request, podLabel, container, action string) {
 	name := chi.URLParam(r, "name")
 	if !validResourceName(name) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	opts, ok := parseLogOptions(w, r)
+	s.handleLabeledLogs(w, r, appsNamespace, podLabel, name, container, action)
+}
+
+func (s *Server) handleLabeledLogs(w http.ResponseWriter, r *http.Request, namespace, podLabel, labelValue, container, action string) {
+	opts, ok := parseLogOptions(w, r, container)
 	if !ok {
 		return
 	}
 
 	ctx := r.Context()
-	pods, err := s.cfg.PodLogs.ListAppPods(ctx, appsNamespace, name)
+	pods, err := s.cfg.PodLogs.ListPods(ctx, namespace, podLabel, labelValue)
 	if err != nil {
-		s.writeK8sError(w, "apps.logs.list_pods", err)
+		s.writeK8sError(w, action, err)
 		return
 	}
 
@@ -160,14 +176,14 @@ func (s *Server) handleAppLogs(w http.ResponseWriter, r *http.Request) {
 	// views — list apps, deploys, audit — are likewise unaudited, and the apiserver
 	// audit log records this pods/log access under the impersonated viewer). Revisit
 	// per-read auditing if multi-user OIDC makes the logs view a covert channel.
-	s.streamLogs(w, r, pods, opts)
+	s.streamLogs(w, r, namespace, pods, opts)
 }
 
 // parseLogOptions reads the query params into PodLogOptions, writing a 400 and
 // returning false on any malformed value.
-func parseLogOptions(w http.ResponseWriter, r *http.Request) (PodLogOptions, bool) {
+func parseLogOptions(w http.ResponseWriter, r *http.Request, defaultContainer string) (PodLogOptions, bool) {
 	q := r.URL.Query()
-	opts := PodLogOptions{Container: appContainerName, Follow: true, TailLines: defaultTailLines}
+	opts := PodLogOptions{Container: defaultContainer, Follow: true, TailLines: defaultTailLines}
 
 	if c := q.Get("container"); c != "" {
 		// Container names are DNS-1123 labels; reject anything else rather than
@@ -213,7 +229,7 @@ func parseLogOptions(w http.ResponseWriter, r *http.Request) (PodLogOptions, boo
 // streamLogs commits to a 200 text/event-stream response and pumps merged pod
 // logs to the client until every pod's stream ends (follow=false or all pods
 // terminate) or the client disconnects.
-func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, pods []string, opts PodLogOptions) {
+func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, namespace string, pods []string, opts PodLogOptions) {
 	rc := http.NewResponseController(w)
 	// The dashboard's http.Server sets a WriteTimeout that would sever a live tail;
 	// clear the per-request write deadline. A ResponseWriter that cannot (e.g. a
@@ -250,7 +266,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, pods []strin
 		wg.Add(1)
 		go func(pod string) {
 			defer wg.Done()
-			rcl, err := s.cfg.PodLogs.StreamPodLog(streamCtx, appsNamespace, pod, opts)
+			rcl, err := s.cfg.PodLogs.StreamPodLog(streamCtx, namespace, pod, opts)
 			if err != nil {
 				send(logEvent{pod: pod, err: err})
 				return
