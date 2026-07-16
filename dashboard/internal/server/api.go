@@ -96,6 +96,15 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		pr.With(s.RequireStepUp).Delete("/{name}", s.handleDeletePostgres)
 	})
 
+	r.Route("/api/mongo", func(mr chi.Router) {
+		mr.Use(s.RequireSession)
+		mr.Get("/", s.handleListMongo)
+		mr.Post("/", s.handleCreateMongo)
+		mr.Get("/{name}", s.handleGetMongo)
+		mr.Put("/{name}", s.handleUpdateMongo)
+		mr.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteMongo)
+	})
+
 	// External-vault sync (ADR-0018): ESO's own kinds written directly, no
 	// wrapper CR. Unlike the catalog routes, EVERY write here gates on step-up
 	// (ADR-0018 decision 4 tightens the creates-need-only-a-session rule):

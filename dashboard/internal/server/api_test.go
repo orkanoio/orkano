@@ -54,7 +54,7 @@ func apiServer(t *testing.T, store *fakeStore, objs ...client.Object) *Server {
 	t.Helper()
 	k8s := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
-		WithStatusSubresource(&orkanov1alpha1.App{}, &orkanov1alpha1.Domain{}, &orkanov1alpha1.Postgres{}).
+		WithStatusSubresource(&orkanov1alpha1.App{}, &orkanov1alpha1.Domain{}, &orkanov1alpha1.Postgres{}, &orkanov1alpha1.Mongo{}).
 		WithObjects(objs...).
 		Build()
 	return serverWith(t, store, k8s)
