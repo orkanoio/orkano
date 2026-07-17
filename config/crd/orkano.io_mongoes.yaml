@@ -59,6 +59,17 @@ spec:
               produces one persistent database, while engine-specific upgrades and tuning
               stay explicit instead of hiding behind a generic Database abstraction.
             properties:
+              mongoExpress:
+                description: |-
+                  MongoExpress enables the optional, internal-only Mongo Express admin UI.
+                  It is absent by default because upstream recommends the tool only for
+                  private development use.
+                properties:
+                  enabled:
+                    type: boolean
+                required:
+                - enabled
+                type: object
               storageSize:
                 anyOf:
                 - type: integer
@@ -141,6 +152,11 @@ spec:
                   - type
                   type: object
                 type: array
+              mongoExpressServiceName:
+                description: |-
+                  MongoExpressServiceName is the operator-owned ClusterIP Service behind the
+                  authenticated dashboard proxy. Empty while Mongo Express is disabled.
+                type: string
               observedGeneration:
                 format: int64
                 type: integer

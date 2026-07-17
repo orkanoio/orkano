@@ -66,4 +66,81 @@ describe("MongoDetail", () => {
       spec: { version: "8.0", storageSize: "20Gi" },
     });
   });
+
+  it("enables Mongo Express through its dedicated endpoint", async () => {
+    const mongo = makeMongo({ name: "documents" });
+    const mock = stubFetchRoutes({
+      "GET /api/mongo/documents": () => jsonResponse(200, mongo),
+      "PUT /api/mongo/documents/express": () =>
+        jsonResponse(200, {
+          ...mongo,
+          spec: { ...mongo.spec, mongoExpress: { enabled: true } },
+        }),
+    });
+    renderWithSession(<MongoDetail name="documents" />);
+    const user = userEvent.setup();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Mongo Express" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Enable Mongo Express" }),
+    );
+
+    await waitFor(() => {
+      const put = mock.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(put?.[0]).toBe("/api/mongo/documents/express");
+      expect(JSON.parse((put?.[1] as RequestInit).body as string)).toEqual({
+        enabled: true,
+      });
+    });
+  });
+
+  it("opens a ready Mongo Express with the current session and can disable it", async () => {
+    const mongo = makeMongo({
+      name: "documents",
+      spec: { mongoExpress: { enabled: true } },
+      status: {
+        secretName: "documents",
+        mongoExpressServiceName: "documents-mongo-express",
+        conditions: [
+          readyCondition("True", "Available"),
+          {
+            type: "MongoExpressReady",
+            status: "True",
+            reason: "Available",
+          },
+        ],
+      },
+    });
+    const mock = stubFetchRoutes({
+      "GET /api/mongo/documents": () => jsonResponse(200, mongo),
+      "PUT /api/mongo/documents/express": () =>
+        jsonResponse(200, {
+          ...mongo,
+          spec: { ...mongo.spec, mongoExpress: undefined },
+        }),
+    });
+    renderWithSession(<MongoDetail name="documents" />);
+    const user = userEvent.setup();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Mongo Express" }),
+    );
+    const open = await screen.findByRole("link", { name: "Open Mongo Express" });
+    expect(open).toHaveAttribute("href", "/api/mongo/documents/express/");
+    expect(open).toHaveAttribute("target", "_blank");
+    await user.click(screen.getByRole("button", { name: "Disable Mongo Express" }));
+
+    await waitFor(() => {
+      const put = mock.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(JSON.parse((put?.[1] as RequestInit).body as string)).toEqual({
+        enabled: false,
+      });
+    });
+  });
 });

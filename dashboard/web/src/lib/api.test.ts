@@ -9,8 +9,10 @@ import {
   listApps,
   loginTotp,
   logout,
+  mongoExpressPath,
   redeemInstallToken,
   setAppEnv,
+  updateMongoExpress,
   updateApp,
 } from "@/lib/api";
 import { emptyResponse, jsonResponse, requestBody, stubFetch } from "@/test/helpers";
@@ -167,6 +169,22 @@ describe("app/catalog client", () => {
     expect(appLogsPath("web")).toBe("/api/apps/web/logs");
     expect(appLogsPath("web", { pod: "web-1", follow: false, tail: 50 })).toBe(
       "/api/apps/web/logs?pod=web-1&follow=false&tail=50",
+    );
+  });
+
+  it("updates Mongo Express through the step-up endpoint", async () => {
+    const mock = stubFetch();
+    mock.mockResolvedValueOnce(jsonResponse(200, { name: "document db" }));
+
+    await updateMongoExpress("document db", true);
+
+    expect(mock).toHaveBeenCalledWith(
+      "/api/mongo/document%20db/express",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(await requestBody(mock)).toEqual({ enabled: true });
+    expect(mongoExpressPath("document db")).toBe(
+      "/api/mongo/document%20db/express/",
     );
   });
 });
