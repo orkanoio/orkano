@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -105,6 +106,10 @@ type Server struct {
 	log    *slog.Logger
 	router chi.Router
 	rl     *rateLimiter
+	// nameMu makes the cross-kind name check + create one critical section for
+	// the single dashboard replica shipped in v1. Kubernetes itself has no
+	// atomic uniqueness primitive across different resource kinds.
+	nameMu sync.Mutex
 	// started is when this process loaded its configuration — the wizard's
 	// setup status compares the orkano-oidc write marker against it to detect a
 	// credential rotation this process has not picked up yet.

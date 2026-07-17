@@ -23,12 +23,14 @@ export type AuthStatus =
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly existingKind?: string;
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: string, existingKind?: string) {
     super(`${status.toString()} ${code}`);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.existingKind = existingKind;
   }
 }
 
@@ -37,6 +39,7 @@ export class ApiError extends Error {
 // proxy error page or an empty body must not crash error handling).
 async function parseError(res: Response): Promise<ApiError> {
   let code = "";
+  let existingKind: string | undefined;
   try {
     const body: unknown = await res.json();
     if (
@@ -46,11 +49,18 @@ async function parseError(res: Response): Promise<ApiError> {
       typeof body.error === "string"
     ) {
       code = body.error;
+      if ("existingKind" in body && typeof body.existingKind === "string") {
+        existingKind = body.existingKind;
+      }
     }
   } catch {
     // Non-JSON error body — fall through to the status-only code.
   }
-  return new ApiError(res.status, code || `http_${res.status.toString()}`);
+  return new ApiError(
+    res.status,
+    code || `http_${res.status.toString()}`,
+    existingKind,
+  );
 }
 
 // errorFromResponse is parseError for callers outside this module that drive

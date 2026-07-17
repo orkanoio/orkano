@@ -44,6 +44,24 @@ describe("api client", () => {
     expect(err).toMatchObject({ status: 401, code: "invalid_token" });
   });
 
+  it("preserves the existing kind on a cross-kind name collision", async () => {
+    const mock = stubFetch();
+    mock.mockResolvedValueOnce(
+      jsonResponse(409, { error: "name_in_use", existingKind: "Postgres" }),
+    );
+
+    const err = await createApp("api-db", {
+      source: { github: { repo: "o/r" } },
+      build: { strategy: "Dockerfile" },
+    }).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({
+      status: 409,
+      code: "name_in_use",
+      existingKind: "Postgres",
+    });
+  });
+
   it("falls back to a status-only code on a non-JSON error body", async () => {
     const mock = stubFetch();
     mock.mockResolvedValueOnce(

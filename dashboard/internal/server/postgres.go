@@ -73,15 +73,28 @@ func (s *Server) handleCreatePostgres(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_name")
 		return
 	}
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+	if kind, err := s.conflictingResourceKind(r.Context(), req.Name, "Postgres"); err != nil {
+		s.auditResult(r, user, "postgres.create", req.Name, err)
+		s.writeK8sError(w, "postgres.create", err)
+		return
+	} else if kind != "" {
+		s.auditResult(r, user, "postgres.create", req.Name, errResourceNameInUse)
+		writeNameInUse(w, kind)
+		return
+	}
 	// The connection Secret is named after this object (ADR-0014), so a name
 	// an ESO sync target or a store's credentials Secret already claims would
 	// collide at the Secret layer — the reconciler would refuse it onto
 	// ProvisionFailed; refuse earlier with a clean 409 (ADR-0018, the mirror
 	// of the vault API's collision checks).
 	if taken, err := s.esoClaimsSecretName(r.Context(), req.Name); err != nil {
+		s.auditResult(r, user, "postgres.create", req.Name, err)
 		s.writeK8sError(w, "postgres.create", err)
 		return
 	} else if taken {
+		s.auditResult(r, user, "postgres.create", req.Name, errResourceNameInUse)
 		writeJSONError(w, http.StatusConflict, "name_conflict")
 		return
 	}

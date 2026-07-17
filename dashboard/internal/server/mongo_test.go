@@ -112,3 +112,35 @@ func TestDeleteMongoRequiresStepUp(t *testing.T) {
 	}
 	assertAudited(t, store, "mongo.delete", "success")
 }
+
+func TestCrossKindResourceNamesRejected(t *testing.T) {
+	tests := []struct {
+		name         string
+		seed         client.Object
+		path         string
+		body         any
+		action       string
+		existingKind string
+	}{
+		{"app-blocked-by-postgres", seedPostgres(t, "shared", "10Gi"), "/api/apps", appCreateRequest{Name: "shared", Spec: webAppSpec()}, "app.create", "Postgres"},
+		{"postgres-blocked-by-app", seedApp("shared"), "/api/postgres", postgresCreateRequest{Name: "shared", Spec: orkanov1alpha1.PostgresSpec{Version: "16"}}, "postgres.create", "App"},
+		{"mongo-blocked-by-postgres", seedPostgres(t, "shared", "10Gi"), "/api/mongo", mongoCreateRequest{Name: "shared", Spec: orkanov1alpha1.MongoSpec{Version: "8.0"}}, "mongo.create", "Postgres"},
+		{"postgres-blocked-by-mongo", seedMongo(t, "shared", "10Gi"), "/api/postgres", postgresCreateRequest{Name: "shared", Spec: orkanov1alpha1.PostgresSpec{Version: "16"}}, "postgres.create", "Mongo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			s := apiServer(t, store, tc.seed)
+			ck := authedSession(t, store)
+			rec := apiReq(t, s, http.MethodPost, tc.path, tc.body, ck)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("create = %d (%s), want 409", rec.Code, rec.Body.String())
+			}
+			body := decodeBody(t, rec)
+			if body["error"] != "name_in_use" || body["existingKind"] != tc.existingKind {
+				t.Fatalf("body = %v, want name_in_use existingKind=%s", body, tc.existingKind)
+			}
+			assertAudited(t, store, tc.action, "failure")
+		})
+	}
+}

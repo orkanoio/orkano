@@ -21,6 +21,10 @@ export function apiErrorMessage(err: unknown): string {
       return "Not found — it may have just been deleted.";
     case "already_exists":
       return "That name is already taken.";
+    case "name_in_use":
+      return err.existingKind
+        ? `That name is already used by an existing ${err.existingKind} resource — choose another.`
+        : "That name is already used by another Orkano resource — choose another.";
     case "conflict":
       return "Someone else changed this at the same time — reload and retry.";
     case "invalid":
