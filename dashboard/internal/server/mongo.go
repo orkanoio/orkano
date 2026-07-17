@@ -66,10 +66,23 @@ func (s *Server) handleCreateMongo(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_name")
 		return
 	}
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+	if kind, err := s.conflictingResourceKind(r.Context(), req.Name, "Mongo"); err != nil {
+		s.auditResult(r, user, "mongo.create", req.Name, err)
+		s.writeK8sError(w, "mongo.create", err)
+		return
+	} else if kind != "" {
+		s.auditResult(r, user, "mongo.create", req.Name, errResourceNameInUse)
+		writeNameInUse(w, kind)
+		return
+	}
 	if taken, err := s.esoClaimsSecretName(r.Context(), req.Name); err != nil {
+		s.auditResult(r, user, "mongo.create", req.Name, err)
 		s.writeK8sError(w, "mongo.create", err)
 		return
 	} else if taken {
+		s.auditResult(r, user, "mongo.create", req.Name, errResourceNameInUse)
 		writeJSONError(w, http.StatusConflict, "name_conflict")
 		return
 	}

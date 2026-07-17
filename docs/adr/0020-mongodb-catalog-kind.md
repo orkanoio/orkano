@@ -16,6 +16,7 @@ MongoDB now publishes both long-lived major release lines and faster-moving mino
 - Render a single-node, authentication-enabled MongoDB StatefulSet backed by a persistent volume. Replication, backups, tuning, extra users/databases, TLS, and exposure remain additive future fields.
 - Name the connection Secret exactly `metadata.name` and use the same frozen six keys as Postgres: `uri`, `host`, `port`, `database`, `username`, and `password`. `uri` uses `mongodb://.../<database>?authSource=admin` and is the value applications reference as `MONGODB_URI`. No credential value appears in a custom resource or Orkano's metadata database.
 - Resolve `8.0` to a digest-pinned, amd64+arm64 image index and verify the pin with the existing image-pin CI guard.
+- Keep cross-kind names unique in the dashboard API across `App`, `Postgres`, and `Mongo`. Kubernetes cannot atomically enforce uniqueness across different resource kinds without the admission webhook ADR-0010 rejected, so direct `kubectl` creates retain the controllers' foreign-owner conflict as the honest backstop.
 
 ## Consequences
 
@@ -23,10 +24,12 @@ MongoDB now publishes both long-lived major release lines and faster-moving mino
 - `Mongo` is additive beside `Postgres`; no stored Postgres object or Secret contract changes.
 - The immutable `8.0` enum means Orkano must keep a working image pin while this API version is served. A future major release is an additive enum value only after its upgrade and compatibility story is deliberately accepted.
 - Delete-and-recreate deletes the data PVC. The dashboard therefore keeps deletion behind step-up authentication and states that data loss is permanent.
+- A direct Kubernetes client can still create cross-kind duplicate names. The losing controller refuses to adopt or overwrite the other resource's child object and reports the conflict in `Ready`; avoiding a validating webhook keeps ADR-0010 intact.
 - A single authenticated root-style application user is simple but broad inside that MongoDB instance. Per-database least privilege and replica sets are future additions, not hidden v1 behavior.
 
 ## Alternatives considered
 
 - **Generic `Database` with an engine enum** — rejected by ADR-0014: engine-specific lifecycle, workload, and Secret semantics do not fit an honest lowest-common-denominator resource.
 - **MongoDB minor release track (8.2/8.3)** — rejected because it requires more frequent sequential upgrades; the major 8.0 line gives a predictable support window and manual upgrade control.
+- **A validating admission webhook for global names** — rejected because it would reverse ADR-0010 and add an availability-critical component for a dashboard-detectable usability issue.
 - **Unauthenticated MongoDB inside the namespace** — rejected because any compromised app pod could read or mutate every database with no credential boundary.

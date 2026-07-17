@@ -78,6 +78,17 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_name")
 		return
 	}
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+	if kind, err := s.conflictingResourceKind(r.Context(), req.Name, "App"); err != nil {
+		s.auditResult(r, user, "app.create", req.Name, err)
+		s.writeK8sError(w, "apps.create", err)
+		return
+	} else if kind != "" {
+		s.auditResult(r, user, "app.create", req.Name, errResourceNameInUse)
+		writeNameInUse(w, kind)
+		return
+	}
 	app := &orkanov1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: appsNamespace},
 		Spec:       req.Spec,

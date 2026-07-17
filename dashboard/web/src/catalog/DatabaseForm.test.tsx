@@ -32,4 +32,21 @@ describe("DatabaseForm", () => {
     });
     expect(window.location.hash).toBe("#/databases/mongo/documents");
   });
+
+  it("explains which kind already uses a rejected name", async () => {
+    stubFetchRoutes({
+      "POST /api/mongo": () =>
+        jsonResponse(409, { error: "name_in_use", existingKind: "App" }),
+    });
+    renderWithSession(<DatabaseForm />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Engine"), "mongo");
+    await user.type(screen.getByLabelText("Name"), "admin-dashboard");
+    await user.click(screen.getByRole("button", { name: "Create database" }));
+
+    expect(
+      await screen.findByText(/already used by an existing App resource/),
+    ).toBeInTheDocument();
+  });
 });
