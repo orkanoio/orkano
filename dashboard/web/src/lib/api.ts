@@ -263,6 +263,25 @@ export interface PostgresResponse {
   status: PostgresStatus;
 }
 
+export interface MongoSpec {
+  version?: string;
+  storageSize?: string;
+}
+
+export interface MongoStatus {
+  observedGeneration?: number;
+  conditions?: Condition[];
+  secretName?: string;
+}
+
+export interface MongoResponse {
+  name: string;
+  namespace: string;
+  creationTimestamp: string | null;
+  spec: MongoSpec;
+  status: MongoStatus;
+}
+
 export interface DeployRow {
   occurredAt: string;
   buildName?: string;
@@ -278,6 +297,8 @@ export const appDeploysKey = (name: string) =>
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
 export const postgresKey = (name: string) => ["postgres", name] as const;
+export const mongoListKey = ["mongo"] as const;
+export const mongoKey = (name: string) => ["mongo", name] as const;
 
 async function listItems<T>(path: string): Promise<T[]> {
   return (await getJSON<{ items: T[] }>(path)).items;
@@ -488,6 +509,32 @@ export function updatePostgres(
 
 export async function deletePostgres(name: string): Promise<void> {
   await send("DELETE", `/api/postgres/${encodeURIComponent(name)}`);
+}
+
+export function listMongo(): Promise<MongoResponse[]> {
+  return listItems("/api/mongo");
+}
+
+export function getMongo(name: string): Promise<MongoResponse> {
+  return getJSON(`/api/mongo/${encodeURIComponent(name)}`);
+}
+
+export function createMongo(
+  name: string,
+  spec: MongoSpec,
+): Promise<MongoResponse> {
+  return postJSON("/api/mongo", { name, spec });
+}
+
+export function updateMongo(
+  name: string,
+  spec: MongoSpec,
+): Promise<MongoResponse> {
+  return putJSON(`/api/mongo/${encodeURIComponent(name)}`, { spec });
+}
+
+export async function deleteMongo(name: string): Promise<void> {
+  await send("DELETE", `/api/mongo/${encodeURIComponent(name)}`);
 }
 
 // ---------------------------------------------------------------------------

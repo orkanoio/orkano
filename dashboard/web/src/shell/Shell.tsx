@@ -12,9 +12,10 @@ import { StepUpForm } from "@/auth/StepUpForm";
 import { AppDetail } from "@/apps/AppDetail";
 import { AppForm } from "@/apps/AppForm";
 import { AppList } from "@/apps/AppList";
+import { DatabaseForm } from "@/catalog/DatabaseForm";
+import { DatabaseList } from "@/catalog/DatabaseList";
+import { MongoDetail } from "@/catalog/MongoDetail";
 import { PostgresDetail } from "@/catalog/PostgresDetail";
-import { PostgresForm } from "@/catalog/PostgresForm";
-import { PostgresList } from "@/catalog/PostgresList";
 import { StoreForm } from "@/vault/StoreForm";
 import { SyncForm } from "@/vault/SyncForm";
 import { VaultPage } from "@/vault/VaultPage";
@@ -156,12 +157,15 @@ function routeContent(segments: string[]): ReactNode {
   }
   if (head === "databases") {
     if (second === "new") {
-      return <PostgresForm />;
+      return <DatabaseForm />;
+    }
+    if (second === "mongo" && third !== undefined) {
+      return <MongoDetail key={third} name={third} />;
     }
     if (second !== undefined) {
       return <PostgresDetail key={second} name={second} />;
     }
-    return <PostgresList />;
+    return <DatabaseList />;
   }
   if (head === "vault") {
     if (second === "connect") {

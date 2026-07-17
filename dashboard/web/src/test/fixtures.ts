@@ -5,6 +5,9 @@ import type {
   Condition,
   DomainResponse,
   ExternalSecretItem,
+  MongoResponse,
+  MongoSpec,
+  MongoStatus,
   PostgresResponse,
   PostgresSpec,
   PostgresStatus,
@@ -65,6 +68,20 @@ export function makePostgres(overrides?: {
     namespace: "orkano-apps",
     creationTimestamp: "2026-07-01T10:00:00Z",
     spec: { version: "16", storageSize: "10Gi", ...overrides?.spec },
+    status: { ...overrides?.status },
+  };
+}
+
+export function makeMongo(overrides?: {
+  name?: string;
+  spec?: Partial<MongoSpec>;
+  status?: MongoStatus;
+}): MongoResponse {
+  return {
+    name: overrides?.name ?? "documents",
+    namespace: "orkano-apps",
+    creationTimestamp: "2026-07-01T10:00:00Z",
+    spec: { version: "8.0", storageSize: "10Gi", ...overrides?.spec },
     status: { ...overrides?.status },
   };
 }
