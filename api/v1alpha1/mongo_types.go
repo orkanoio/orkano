@@ -6,6 +6,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// ConditionMongoExpressReady reports whether the optional, internal-only
+// Mongo Express admin UI is available through the authenticated dashboard
+// proxy. It never affects the database's Ready summary condition.
+const ConditionMongoExpressReady = "MongoExpressReady"
+
+// MongoExpressSpec controls the optional Mongo Express development UI. The
+// operator keeps it ClusterIP-only; users reach it through Orkano's
+// authenticated dashboard proxy, never through a public service or credential
+// bearing URL.
+type MongoExpressSpec struct {
+	Enabled bool `json:"enabled"`
+}
+
 // MongoSpec is intentionally the same small shape as PostgresSpec: a name
 // produces one persistent database, while engine-specific upgrades and tuning
 // stay explicit instead of hiding behind a generic Database abstraction.
@@ -22,6 +35,12 @@ type MongoSpec struct {
 	// rejects shrink requests because Kubernetes volume expansion is one-way.
 	// +kubebuilder:default="10Gi"
 	StorageSize *resource.Quantity `json:"storageSize,omitempty"`
+
+	// MongoExpress enables the optional, internal-only Mongo Express admin UI.
+	// It is absent by default because upstream recommends the tool only for
+	// private development use.
+	// +optional
+	MongoExpress *MongoExpressSpec `json:"mongoExpress,omitempty"`
 }
 
 type MongoStatus struct {
@@ -30,6 +49,9 @@ type MongoStatus struct {
 	// SecretName is the connection Secret produced for this database. It carries
 	// only the name, never any credential value.
 	SecretName string `json:"secretName,omitempty"`
+	// MongoExpressServiceName is the operator-owned ClusterIP Service behind the
+	// authenticated dashboard proxy. Empty while Mongo Express is disabled.
+	MongoExpressServiceName string `json:"mongoExpressServiceName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -62,6 +84,19 @@ func (m *Mongo) ReadyCondition() *metav1.Condition {
 func (m *Mongo) IsReady() bool {
 	c := m.ReadyCondition()
 	return c != nil && c.Status == metav1.ConditionTrue
+}
+
+func (m *Mongo) MongoExpressEnabled() bool {
+	return m.Spec.MongoExpress != nil && m.Spec.MongoExpress.Enabled
+}
+
+func (m *Mongo) MongoExpressReadyCondition() *metav1.Condition {
+	for i := range m.Status.Conditions {
+		if m.Status.Conditions[i].Type == ConditionMongoExpressReady {
+			return &m.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 func (m *Mongo) ConnectionSecretRef() *corev1.SecretReference {

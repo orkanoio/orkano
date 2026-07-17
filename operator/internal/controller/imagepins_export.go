@@ -21,10 +21,11 @@ func PinnedPostgresImages() []string {
 // PinnedMongoImages returns every MongoDB image served by the Mongo version
 // enum for the same multi-arch registry guard.
 func PinnedMongoImages() []string {
-	out := make([]string, 0, len(mongoImages))
+	out := make([]string, 0, len(mongoImages)+1)
 	for _, img := range mongoImages {
 		out = append(out, img)
 	}
+	out = append(out, mongoExpressImage)
 	slices.Sort(out)
 	return out
 }

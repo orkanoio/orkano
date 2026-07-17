@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -88,6 +89,11 @@ type Config struct {
 	// redirect (callback) URL. Empty derives it from the request (scheme + Host),
 	// which is trustworthy on the dashboard's private access paths (INV-05).
 	PublicURL string
+	// MongoExpressTransport carries requests from the authenticated dashboard
+	// proxy to an operator-owned ClusterIP Service. OPTIONAL: New installs a
+	// direct, timeout-bounded transport that ignores ambient HTTP proxy settings;
+	// tests inject a fake RoundTripper.
+	MongoExpressTransport http.RoundTripper
 	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
 	// presented token's hash against it in constant time.
 	BootstrapTokenHash string
@@ -166,6 +172,18 @@ func New(cfg Config) (*Server, error) {
 		cfg.OIDCValidator = func(ctx context.Context, getenv func(string) string) error {
 			_, err := oidc.New(ctx, getenv)
 			return err
+		}
+	}
+
+	if cfg.MongoExpressTransport == nil {
+		cfg.MongoExpressTransport = &http.Transport{
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   4,
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
 		}
 	}
 

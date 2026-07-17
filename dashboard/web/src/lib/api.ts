@@ -276,12 +276,14 @@ export interface PostgresResponse {
 export interface MongoSpec {
   version?: string;
   storageSize?: string;
+  mongoExpress?: { enabled: boolean };
 }
 
 export interface MongoStatus {
   observedGeneration?: number;
   conditions?: Condition[];
   secretName?: string;
+  mongoExpressServiceName?: string;
 }
 
 export interface MongoResponse {
@@ -541,6 +543,17 @@ export function updateMongo(
   spec: MongoSpec,
 ): Promise<MongoResponse> {
   return putJSON(`/api/mongo/${encodeURIComponent(name)}`, { spec });
+}
+
+export function updateMongoExpress(
+  name: string,
+  enabled: boolean,
+): Promise<MongoResponse> {
+  return putJSON(`/api/mongo/${encodeURIComponent(name)}/express`, { enabled });
+}
+
+export function mongoExpressPath(name: string): string {
+  return `/api/mongo/${encodeURIComponent(name)}/express/`;
 }
 
 export async function deleteMongo(name: string): Promise<void> {
