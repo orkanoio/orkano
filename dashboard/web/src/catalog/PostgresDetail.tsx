@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gauge, HardDrive, Plug, TriangleAlert } from "lucide-react";
+import {
+  Database,
+  Gauge,
+  HardDrive,
+  Plug,
+  TriangleAlert,
+} from "lucide-react";
 import { useState, type FormEvent } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
@@ -7,8 +13,9 @@ import {
   DetailWorkspace,
   type DetailSection,
 } from "@/components/DetailWorkspace";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusBadge, StatusDot } from "@/components/StatusBadge";
 import { StepUpGate } from "@/components/StepUpGate";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,10 +30,12 @@ import {
   ApiError,
   deletePostgres,
   getPostgres,
+  pgwebPath,
   postgresKey,
   postgresListKey,
   postgresLogsPath,
   updatePostgres,
+  updatePgweb,
   type PostgresResponse,
 } from "@/lib/api";
 import { findCondition, formatAge, readiness } from "@/lib/format";
@@ -34,12 +43,13 @@ import { parseQuantityBytes } from "@/lib/quantity";
 import { Link, navigate } from "@/lib/router";
 import { ResourceStreamCard } from "@/apps/LogsCard";
 
-type PostgresSection = "overview" | "connection" | "storage" | "danger";
+type PostgresSection = "overview" | "connection" | "storage" | "pgweb" | "danger";
 
 const postgresSections: readonly DetailSection<PostgresSection>[] = [
   { id: "overview", label: "Overview", icon: Gauge },
   { id: "connection", label: "Connection", icon: Plug },
   { id: "storage", label: "Storage", icon: HardDrive },
+  { id: "pgweb", label: "Pgweb", icon: Database },
   { id: "danger", label: "Danger", icon: TriangleAlert, destructive: true },
 ];
 
@@ -125,6 +135,7 @@ export function PostgresDetail({ name }: { name: string }) {
             </CardContent>
           </Card>
         ) : null}
+        {section === "pgweb" ? <PgwebCard pg={pg} /> : null}
         {section === "danger" ? (
           <Card>
             <CardHeader>
@@ -218,6 +229,108 @@ function PostgresConnectionCard({ pg }: { pg: PostgresResponse }) {
         <p className="text-sm leading-relaxed text-muted-foreground">
           For a full connection string, select this database and the <span className="font-mono text-foreground">uri</span> key in an app's Variables section.
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PgwebCard({ pg }: { pg: PostgresResponse }) {
+  const queryClient = useQueryClient();
+  const enabled = pg.spec.pgweb?.enabled ?? false;
+  const condition = findCondition(pg.status.conditions, "PgwebReady");
+  const ready = enabled && condition?.status === "True";
+  const provisioning = enabled && condition?.reason === "Provisioning";
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => updatePgweb(pg.name, next),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(postgresKey(pg.name), updated);
+      void queryClient.invalidateQueries({ queryKey: postgresListKey });
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-3">
+          <CardTitle className="overline-label">Pgweb</CardTitle>
+          {!enabled ? (
+            <Badge variant="secondary">
+              <StatusDot />
+              Disabled
+            </Badge>
+          ) : ready ? (
+            <Badge variant="success">
+              <StatusDot />
+              Available
+            </Badge>
+          ) : provisioning ? (
+            <Badge variant="warning">
+              <StatusDot />
+              Starting
+            </Badge>
+          ) : (
+            <Badge variant="destructive" title={condition?.message}>
+              <StatusDot />
+              Unavailable
+            </Badge>
+          )}
+        </div>
+        <CardDescription>
+          An optional SQL browser locked to this database. It opens through
+          your current Orkano session without another login or a credential in
+          the URL.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Pgweb has full access to this database. Enable it only while you need
+          to inspect or edit data, then disable it when you are finished.
+        </p>
+        {enabled && condition?.message && !ready ? (
+          <p className="font-mono text-xs text-muted-foreground">
+            {condition.message}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {ready ? (
+            <Button asChild size="sm">
+              <a
+                href={pgwebPath(pg.name)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open Pgweb
+              </a>
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant={enabled ? "outline" : "default"}
+            size="sm"
+            disabled={toggle.isPending}
+            onClick={() => {
+              toggle.mutate(!enabled);
+            }}
+          >
+            {toggle.isPending
+              ? enabled
+                ? "Disabling…"
+                : "Enabling…"
+              : enabled
+                ? "Disable Pgweb"
+                : "Enable Pgweb"}
+          </Button>
+        </div>
+        <ApiErrorAlert error={toggle.error} />
+        <StepUpGate
+          error={toggle.error}
+          onConfirmed={() => {
+            toggle.mutate(!enabled);
+          }}
+          onDismiss={() => {
+            toggle.reset();
+          }}
+        />
       </CardContent>
     </Card>
   );

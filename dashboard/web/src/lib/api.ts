@@ -257,12 +257,14 @@ export interface DomainResponse {
 export interface PostgresSpec {
   version?: string;
   storageSize?: string;
+  pgweb?: { enabled: boolean };
 }
 
 export interface PostgresStatus {
   observedGeneration?: number;
   conditions?: Condition[];
   secretName?: string;
+  pgwebServiceName?: string;
 }
 
 export interface PostgresResponse {
@@ -517,6 +519,17 @@ export function updatePostgres(
   spec: PostgresSpec,
 ): Promise<PostgresResponse> {
   return putJSON(`/api/postgres/${encodeURIComponent(name)}`, { spec });
+}
+
+export function updatePgweb(
+  name: string,
+  enabled: boolean,
+): Promise<PostgresResponse> {
+  return putJSON(`/api/postgres/${encodeURIComponent(name)}/pgweb`, { enabled });
+}
+
+export function pgwebPath(name: string): string {
+  return `/api/postgres/${encodeURIComponent(name)}/pgweb/`;
 }
 
 export async function deletePostgres(name: string): Promise<void> {
