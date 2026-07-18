@@ -273,6 +273,7 @@ export interface PostgresResponse {
   creationTimestamp: string | null;
   spec: PostgresSpec;
   status: PostgresStatus;
+  secretKeys: string[];
 }
 
 export interface MongoSpec {
@@ -294,6 +295,7 @@ export interface MongoResponse {
   creationTimestamp: string | null;
   spec: MongoSpec;
   status: MongoStatus;
+  secretKeys: string[];
 }
 
 export interface DeployRow {

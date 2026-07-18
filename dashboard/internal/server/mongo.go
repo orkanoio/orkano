@@ -21,11 +21,12 @@ type mongoResponse struct {
 	CreationTimestamp metav1.Time                `json:"creationTimestamp"`
 	Spec              orkanov1alpha1.MongoSpec   `json:"spec"`
 	Status            orkanov1alpha1.MongoStatus `json:"status"`
+	SecretKeys        []string                   `json:"secretKeys"`
 }
 
 func mongoToResponse(m *orkanov1alpha1.Mongo) mongoResponse {
 	return mongoResponse{
-		Name: m.Name, Namespace: m.Namespace, CreationTimestamp: m.CreationTimestamp, Spec: m.Spec, Status: m.Status,
+		Name: m.Name, Namespace: m.Namespace, CreationTimestamp: m.CreationTimestamp, Spec: m.Spec, Status: m.Status, SecretKeys: connectionSecretKeys(),
 	}
 }
 

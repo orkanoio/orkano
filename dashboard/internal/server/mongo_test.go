@@ -92,6 +92,7 @@ func TestMongoReadAndList(t *testing.T) {
 	if status["secretName"] != "documents" {
 		t.Fatalf("status not surfaced: %v", status)
 	}
+	assertConnectionSecretKeys(t, body)
 
 	rec = apiReq(t, s, http.MethodGet, "/api/mongo", nil, ck)
 	items, _ := decodeBody(t, rec)["items"].([]any)

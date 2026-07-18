@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -17,6 +17,10 @@ import { Select } from "@/components/ui/select";
 import {
   appKey,
   appsKey,
+  listMongo,
+  listPostgres,
+  mongoListKey,
+  postgresListKey,
   setAppEnv,
   updateApp,
   type AppResponse,
@@ -55,6 +59,14 @@ interface VarRow {
   refKey: string;
 }
 
+interface CatalogDatabase {
+  id: string;
+  engine: "MongoDB" | "PostgreSQL";
+  name: string;
+  secretName: string;
+  secretKeys: string[];
+}
+
 function isManagedRef(e: EnvVar, secretName: string): boolean {
   return e.secretRef?.name === secretName;
 }
@@ -86,6 +98,36 @@ export function VarsCard({ app }: { app: AppResponse }) {
   const [rows, setRows] = useState<VarRow[]>(() => varRowsFromSpec(app));
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const postgres = useQuery({
+    queryKey: postgresListKey,
+    queryFn: listPostgres,
+    refetchInterval: 10_000,
+  });
+  const mongo = useQuery({
+    queryKey: mongoListKey,
+    queryFn: listMongo,
+    refetchInterval: 10_000,
+  });
+  const databases: CatalogDatabase[] = [
+    ...(postgres.data ?? [])
+      .filter((database) => (database.status.secretName ?? "") !== "")
+      .map((database) => ({
+        id: `postgres:${database.name}`,
+        engine: "PostgreSQL" as const,
+        name: database.name,
+        secretName: database.status.secretName ?? database.name,
+        secretKeys: database.secretKeys,
+      })),
+    ...(mongo.data ?? [])
+      .filter((database) => (database.status.secretName ?? "") !== "")
+      .map((database) => ({
+        id: `mongo:${database.name}`,
+        engine: "MongoDB" as const,
+        name: database.name,
+        secretName: database.status.secretName ?? database.name,
+        secretKeys: database.secretKeys,
+      })),
+  ].sort((a, b) => a.name.localeCompare(b.name));
 
   const save = useMutation({
     mutationFn: async () => {
@@ -152,6 +194,7 @@ export function VarsCard({ app }: { app: AppResponse }) {
       <CardContent className="flex flex-col gap-3">
         {error !== "" && <p className="text-destructive text-sm">{error}</p>}
         <ApiErrorAlert error={save.error} />
+        <ApiErrorAlert error={postgres.error ?? mongo.error} />
         {rows.length === 0 && (
           <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
             No variables.
@@ -189,26 +232,14 @@ export function VarsCard({ app }: { app: AppResponse }) {
                 }}
               />
             ) : (
-              <>
-                <Input
-                  aria-label="Secret name"
-                  className="w-44 font-mono"
-                  placeholder="secret name"
-                  value={row.refName}
-                  onChange={(e) => {
-                    update(i, { refName: e.target.value });
-                  }}
-                />
-                <Input
-                  aria-label="Secret key"
-                  className="w-32 font-mono"
-                  placeholder="key"
-                  value={row.refKey}
-                  onChange={(e) => {
-                    update(i, { refKey: e.target.value });
-                  }}
-                />
-              </>
+              <SecretRefFields
+                row={row}
+                databases={databases}
+                loading={postgres.isPending || mongo.isPending}
+                onChange={(patch) => {
+                  update(i, patch);
+                }}
+              />
             )}
             <Button
               type="button"
@@ -268,6 +299,116 @@ export function VarsCard({ app }: { app: AppResponse }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function SecretRefFields({
+  row,
+  databases,
+  loading,
+  onChange,
+}: {
+  row: VarRow;
+  databases: CatalogDatabase[];
+  loading: boolean;
+  onChange: (patch: Partial<VarRow>) => void;
+}) {
+  const selected = databases.find(
+    (database) =>
+      database.secretName === row.refName &&
+      (row.refKey === "" || database.secretKeys.includes(row.refKey)),
+  );
+  const postgres = databases.filter(
+    (database) => database.engine === "PostgreSQL",
+  );
+  const mongo = databases.filter((database) => database.engine === "MongoDB");
+
+  return (
+    <>
+      <Select
+        aria-label="Catalog database"
+        className="w-48"
+        value={selected?.id ?? ""}
+        onChange={(event) => {
+          const database = databases.find(
+            (candidate) => candidate.id === event.target.value,
+          );
+          if (!database) {
+            onChange({ refName: "", refKey: "" });
+            return;
+          }
+          onChange({
+            refName: database.secretName,
+            refKey: database.secretKeys.includes(row.refKey)
+              ? row.refKey
+              : (database.secretKeys[0] ?? ""),
+          });
+        }}
+      >
+        <option value="">
+          {loading
+            ? "Loading databases…"
+            : databases.length === 0
+              ? "No available databases"
+              : "Manual Secret reference"}
+        </option>
+        {postgres.length > 0 ? (
+          <optgroup label="PostgreSQL">
+            {postgres.map((database) => (
+              <option key={database.id} value={database.id}>
+                {database.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+        {mongo.length > 0 ? (
+          <optgroup label="MongoDB">
+            {mongo.map((database) => (
+              <option key={database.id} value={database.id}>
+                {database.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+      </Select>
+      {selected ? (
+        <Select
+          aria-label="Database Secret key"
+          className="w-40"
+          value={row.refKey}
+          onChange={(event) => {
+            onChange({ refKey: event.target.value });
+          }}
+        >
+          {selected.secretKeys.map((key) => (
+            <option key={key} value={key}>
+              {key}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <>
+          <Input
+            aria-label="Secret name"
+            className="w-44 font-mono"
+            placeholder="secret name"
+            value={row.refName}
+            onChange={(event) => {
+              onChange({ refName: event.target.value });
+            }}
+          />
+          <Input
+            aria-label="Secret key"
+            className="w-32 font-mono"
+            placeholder="key"
+            value={row.refKey}
+            onChange={(event) => {
+              onChange({ refKey: event.target.value });
+            }}
+          />
+        </>
+      )}
+    </>
   );
 }
 
