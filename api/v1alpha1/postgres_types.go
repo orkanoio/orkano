@@ -18,11 +18,22 @@ const (
 	SecretKeyDatabase = "database"
 	SecretKeyUsername = "username"
 	SecretKeyPassword = "password"
+
+	// ConditionPgwebReady reports whether the optional internal Pgweb admin UI
+	// is available through the authenticated dashboard proxy. It never changes
+	// the database's Ready summary condition.
+	ConditionPgwebReady = "PgwebReady"
 )
 
-// PostgresSpec is the whole story: a name produces a database. Everything else
-// (replicas/HA, backups, tuning, extra users, TLS, exposure) is a v2 dial that
-// ADR-0011 lets us add additively later (ADR-0014).
+// PgwebSpec controls the optional Pgweb database browser. The operator keeps it
+// ClusterIP-only and locked to this Postgres; users reach it only through the
+// authenticated dashboard proxy.
+type PgwebSpec struct {
+	Enabled bool `json:"enabled"`
+}
+
+// PostgresSpec keeps the database lifecycle intentionally small. Optional
+// stateless tools are explicit additive fields and do not change that contract.
 type PostgresSpec struct {
 	// Version is the PostgreSQL major series, resolved by the operator to a
 	// digest-pinned postgres:<version> image. Immutable: a major upgrade needs
@@ -44,6 +55,11 @@ type PostgresSpec struct {
 	// +kubebuilder:default="10Gi"
 	// +optional
 	StorageSize *resource.Quantity `json:"storageSize,omitempty"`
+
+	// Pgweb enables the optional internal database browser. It is absent by
+	// default and does not expose a Service outside the cluster.
+	// +optional
+	Pgweb *PgwebSpec `json:"pgweb,omitempty"`
 }
 
 type PostgresStatus struct {
@@ -63,6 +79,11 @@ type PostgresStatus struct {
 	// name ever appears here, never a value.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
+
+	// PgwebServiceName is the operator-owned ClusterIP Service behind the
+	// authenticated dashboard proxy. Empty while Pgweb is disabled.
+	// +optional
+	PgwebServiceName string `json:"pgwebServiceName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -84,6 +105,19 @@ type Postgres struct {
 
 	Spec   PostgresSpec   `json:"spec,omitempty"`
 	Status PostgresStatus `json:"status,omitempty"`
+}
+
+func (p *Postgres) PgwebEnabled() bool {
+	return p.Spec.Pgweb != nil && p.Spec.Pgweb.Enabled
+}
+
+func (p *Postgres) PgwebReadyCondition() *metav1.Condition {
+	for i := range p.Status.Conditions {
+		if p.Status.Conditions[i].Type == ConditionPgwebReady {
+			return &p.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 // +kubebuilder:object:root=true

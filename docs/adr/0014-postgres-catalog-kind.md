@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-06-21
+- Amended: 2026-07-19 — optional authenticated Pgweb admin UI
 
 ## Context
 
@@ -12,12 +13,14 @@ Three forces pin the design. v1 ships **only** PostgreSQL; Redis and MongoDB are
 ## Decision
 
 - A new namespaced kind **`Postgres`** in group **`orkano.io`**, version `v1alpha1` — an engine-specific kind, not a generic `Database{engine: …}`. Plural `postgreses`, set explicitly (`+kubebuilder:resource:path=postgreses`) to avoid the ambiguous auto-derived plural for a kind that already ends in `s`; the `orkano` category (`categories=orkano`, as on App/Build/Domain); no short names (ADR-0005's no-short-names rule). Future engines, if they ship, are **sibling kinds** (`Redis`, `Mongo`), each with its own version enum, conditions, and Secret contract.
-- **Spec is two fields.** Everything else (replicas/HA, backups, tuning, extra users/databases, TLS, exposure) is a v2 dial that ADR-0011 lets us add additively later:
+- **The database spec starts with two fields.** Everything else (replicas/HA, backups, tuning, extra users/databases, TLS, exposure) is a v2 dial that ADR-0011 lets us add additively later. The optional `pgweb` tool field was added later without changing either database field:
   - `version` — the PostgreSQL major series, enum `"14"|"15"|"16"|"17"`, **default `"16"`**, **immutable** (`self == oldSelf`). The operator resolves it to a digest-pinned `postgres:<version>` image. The enum may be *loosened* additively (add `"17"`), never tightened.
   - `storageSize` — the data-directory PVC size, a typed `resource.Quantity` (mirrors `Resources.CPU/Memory` in `shared_types.go`, so the apiserver validates units), **default `"10Gi"`**, **mutable** (grow-only; PVC expansion is Kubernetes-native — the operator grows on increase and rejects a shrink onto the Ready condition).
+  - `pgweb.enabled` — an optional additive desired-state flag for the internal Pgweb database browser. Absent and false are equivalent. It never changes Postgres lifecycle, credentials, or readiness.
 - **Status** carries a single `Ready` summary condition (reasons `Provisioning`, `ProvisionFailed`, `Available`) plus `observedGeneration` — matching the long-lived App/Domain shape, not Build's run-to-completion phase. It also echoes `secretName` so `kubectl describe` and the dashboard surface the wiring. No `phase`, no `connectionString` (a credential in status invites a log leak).
 - **The produced connection Secret is named exactly `metadata.name`** — object `api-db` produces Secret `api-db` in `orkano-apps`. No suffix, no `spec.secretName` dial: the name is what Apps already reference, so deriving it is the simplest rule with one correct value. The operator is the Secret's single writer and owns it via `ownerReference`, so deletion cascades. Frozen key set: **`uri`, `host`, `port`, `database`, `username`, `password`** — the names `username` (not `user`) and `database` (not `dbname`) follow the Kubernetes-Secret convention established by CloudNativePG, Crossplane, and the Bitnami charts, so a future App splitting the `uri` finds the expected keys; `port` is a string because every Secret value is bytes. Only `uri` is load-bearing for v1; the other five are additive-safe to ship now and save a version bump later. A rename of any key, by contrast, is *not* additive (ADR-0011), so the names are chosen to be the ones we will not want to change. INV-03 holds: no value of this Secret ever appears in any CR — only the name does.
 - **Upgrade story is delete-and-recreate.** A major-version bump needs `pg_upgrade`/dump+restore, too sharp to automate in v1, which is why `version` is immutable. Apps keep working across the recreate because they reference the Secret by name (INV-03), not the running pod.
+- **Pgweb is opt-in and internal-only.** When `pgweb.enabled` is true, the operator reconciles a digest-pinned Pgweb Deployment, ClusterIP Service, and default-deny NetworkPolicy. Pgweb reads the existing connection URI through a Secret reference, is locked to that one database, has no ServiceAccount token, and may receive HTTP only from the dashboard pod while egressing only to DNS and its owning Postgres pod. The dashboard reverse proxy requires the current Orkano session, strips browser credentials before forwarding and upstream cookies before returning, and applies a path-confined Content Security Policy. Enable and disable require step-up authentication. `Ready` continues to describe Postgres only; `PgwebReady` and `status.pgwebServiceName` report the optional tool separately.
 
 ### Design by example
 
@@ -100,6 +103,7 @@ stringData:
 - The immutable `version` enum is sticky: because dropping a value is a tightening ADR-0011 forbids, the operator must keep shipping a digest-pinned image for **every** enum value while v1alpha1 is served — including a major that reaches end-of-life. That EOL pressure is the natural forcing function for the first version bump (v1alpha2), which is exactly when ADR-0011's conversion webhook arrives; until then, the enum only ever grows.
 - Accepted sharp edges, all to be surfaced by the reconciler (validation belongs there, not a webhook — ADR-0010): a major-version change destroys the PVC and data unless the user runs their own dump/restore (backups are a deliberate v2 cut); a too-small `storageSize` (e.g. `50Mi`) that Postgres can't start on surfaces as `ProvisionFailed`; an object name that sanitizes to an invalid SQL identifier (`1-app` → `1_app`) must be caught when deriving `database`/`username`; and a user-applied Secret colliding with the produced name is prevented by the operator owning and overwriting it.
 - Single-tenant v1 puts the database and its superuser-grade connection Secret in the shared `orkano-apps` namespace, so any App that can read the Secret reaches the DB — accepted risk #3 (no inter-app isolation), restated here because a database raises the stakes over a stateless App. Per-app namespaces arrive with teams in v2.
+- Enabling Pgweb gives the authenticated Orkano admin a full SQL browser for that database. The feature is disabled by default and never publicly exposed, but any page capable of editing data is high impact; the user explicitly accepts that instance-local risk when enabling it. Disabling Pgweb removes only its stateless Deployment, Service, and NetworkPolicy. The Postgres StatefulSet, data PVC, and connection Secret are untouched.
 
 ## Alternatives considered
 
@@ -109,3 +113,7 @@ stringData:
 - **`spec.secretName` field** — has exactly one correct value (must match what the App references); a dial that only adds a footgun.
 - **New `catalog.orkano.io` group now** — ADR-0005 notes it only as a *later* additive option, not a commitment; standing it up for one kind doubles the RBAC/CRD-gen/reconciler-wiring surface for a solo maintainer and splits `kubectl get orkano`, with no benefit until a second catalog kind exists.
 - **Mutable `version` with in-place upgrade** — would require the operator to automate `pg_upgrade`/dump+restore, a real 11pm failure mode; delete-and-recreate is honest and safe, and Apps survive it via the Secret name.
+- **pgAdmin** — mature but substantially heavier and adds its own account, setup, and state lifecycle, which conflicts with one-click access through the current Orkano session.
+- **Adminer** — lightweight, but its normal flow presents another database login. Auto-login needs custom plugins or a custom image, increasing the maintenance and supply-chain surface.
+- **A public Pgweb Ingress or credential-bearing launch URL** — would leak long-lived database credentials into browser history, logs, or referrers and violate Orkano's private-by-default control-plane posture.
+- **Dashboard-created Deployment/Service objects** — would make the dashboard a workload controller. The dashboard writes only the desired `pgweb.enabled` field; the narrow-RBAC operator owns the Kubernetes children.

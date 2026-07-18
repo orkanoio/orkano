@@ -28,7 +28,7 @@ The dashboard's read views run under an impersonated viewer identity (ADR-0013/A
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
 | apps, builds, domains, postgreses, mongoes + `/status`, `/finalizers` (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
-| deployments, statefulsets (apps); services (core); ingresses, networkpolicies (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — statefulsets back the Postgres and Mongo catalog kinds; the optional Mongo Express workload is internal-only behind an operator-owned NetworkPolicy |
+| deployments, statefulsets (apps); services (core); ingresses, networkpolicies (networking.k8s.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — statefulsets back the Postgres and Mongo catalog kinds; the optional Pgweb and Mongo Express workloads are internal-only behind operator-owned NetworkPolicies |
 | persistentvolumeclaims (core) | get, update | `orkano-apps` — grows catalog database data volumes; volumeClaimTemplates are immutable so PVCs are patched directly, read uncached so no list/watch |
 | jobs (batch) | create, get, list, watch, delete | `orkano-builds` |
 | pods, pods/log (core) | get, list, watch | `orkano-apps`, `orkano-builds` |

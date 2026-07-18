@@ -58,10 +58,19 @@ spec:
             type: object
           spec:
             description: |-
-              PostgresSpec is the whole story: a name produces a database. Everything else
-              (replicas/HA, backups, tuning, extra users, TLS, exposure) is a v2 dial that
-              ADR-0011 lets us add additively later (ADR-0014).
+              PostgresSpec keeps the database lifecycle intentionally small. Optional
+              stateless tools are explicit additive fields and do not change that contract.
             properties:
+              pgweb:
+                description: |-
+                  Pgweb enables the optional internal database browser. It is absent by
+                  default and does not expose a Service outside the cluster.
+                properties:
+                  enabled:
+                    type: boolean
+                required:
+                - enabled
+                type: object
               storageSize:
                 anyOf:
                 - type: integer
@@ -162,6 +171,11 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              pgwebServiceName:
+                description: |-
+                  PgwebServiceName is the operator-owned ClusterIP Service behind the
+                  authenticated dashboard proxy. Empty while Pgweb is disabled.
+                type: string
               secretName:
                 description: |-
                   SecretName echoes the produced connection Secret's name (== metadata.name)

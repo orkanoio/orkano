@@ -94,6 +94,10 @@ type Config struct {
 	// direct, timeout-bounded transport that ignores ambient HTTP proxy settings;
 	// tests inject a fake RoundTripper.
 	MongoExpressTransport http.RoundTripper
+	// PgwebTransport carries requests from the authenticated dashboard proxy to
+	// an operator-owned internal Pgweb Service. OPTIONAL and timeout-bounded;
+	// tests inject a fake RoundTripper.
+	PgwebTransport http.RoundTripper
 	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
 	// presented token's hash against it in constant time.
 	BootstrapTokenHash string
@@ -177,6 +181,17 @@ func New(cfg Config) (*Server, error) {
 
 	if cfg.MongoExpressTransport == nil {
 		cfg.MongoExpressTransport = &http.Transport{
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   4,
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
+		}
+	}
+	if cfg.PgwebTransport == nil {
+		cfg.PgwebTransport = &http.Transport{
 			Proxy:                 nil,
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			ForceAttemptHTTP2:     false,
