@@ -198,8 +198,6 @@ function PostgresOverviewCard({
   );
 }
 
-const connectionKeys = ["uri", "host", "port", "database", "username", "password"];
-
 function PostgresConnectionCard({ pg }: { pg: PostgresResponse }) {
   return (
     <Card>
@@ -219,7 +217,7 @@ function PostgresConnectionCard({ pg }: { pg: PostgresResponse }) {
         <div>
           <p className="overline-label">Available keys</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {connectionKeys.map((key) => (
+            {pg.secretKeys.map((key) => (
               <code key={key} className="rounded-md border bg-terminal px-2 py-1 text-xs text-primary">
                 {key}
               </code>

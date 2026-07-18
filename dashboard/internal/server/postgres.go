@@ -24,6 +24,7 @@ type postgresResponse struct {
 	CreationTimestamp metav1.Time                   `json:"creationTimestamp"`
 	Spec              orkanov1alpha1.PostgresSpec   `json:"spec"`
 	Status            orkanov1alpha1.PostgresStatus `json:"status"`
+	SecretKeys        []string                      `json:"secretKeys"`
 }
 
 func postgresToResponse(p *orkanov1alpha1.Postgres) postgresResponse {
@@ -33,6 +34,18 @@ func postgresToResponse(p *orkanov1alpha1.Postgres) postgresResponse {
 		CreationTimestamp: p.CreationTimestamp,
 		Spec:              p.Spec,
 		Status:            p.Status,
+		SecretKeys:        connectionSecretKeys(),
+	}
+}
+
+func connectionSecretKeys() []string {
+	return []string{
+		orkanov1alpha1.SecretKeyURI,
+		orkanov1alpha1.SecretKeyHost,
+		orkanov1alpha1.SecretKeyPort,
+		orkanov1alpha1.SecretKeyDatabase,
+		orkanov1alpha1.SecretKeyUsername,
+		orkanov1alpha1.SecretKeyPassword,
 	}
 }
 

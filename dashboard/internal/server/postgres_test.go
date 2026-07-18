@@ -149,6 +149,21 @@ func TestGetPostgres(t *testing.T) {
 	if status["secretName"] != "api-db" {
 		t.Fatalf("status not surfaced: %v", body["status"])
 	}
+	assertConnectionSecretKeys(t, body)
+}
+
+func assertConnectionSecretKeys(t *testing.T, body map[string]any) {
+	t.Helper()
+	got, ok := body["secretKeys"].([]any)
+	want := connectionSecretKeys()
+	if !ok || len(got) != len(want) {
+		t.Fatalf("secretKeys = %#v, want %v", body["secretKeys"], want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("secretKeys[%d] = %v, want %q", i, got[i], want[i])
+		}
+	}
 }
 
 func TestListPostgresNamespacePinned(t *testing.T) {

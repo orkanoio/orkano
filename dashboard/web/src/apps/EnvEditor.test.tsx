@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { EnvEditor } from "@/apps/EnvEditor";
 import type { EnvVar } from "@/lib/api";
-import { makeApp } from "@/test/fixtures";
+import { makeApp, makeMongo, makePostgres } from "@/test/fixtures";
 import {
   emptyResponse,
   jsonResponse,
@@ -35,7 +35,24 @@ function stubEnvFetchRoutes(
     (init?: RequestInit) => Response | Promise<Response>
   > = {},
 ) {
-  return stubFetchRoutes(routes);
+  return stubFetchRoutes({
+    "GET /api/postgres": () =>
+      jsonResponse(200, {
+        items: [
+          makePostgres({ name: "api-db", status: { secretName: "api-db" } }),
+        ],
+      }),
+    "GET /api/mongo": () =>
+      jsonResponse(200, {
+        items: [
+          makeMongo({
+            name: "documents",
+            status: { secretName: "documents" },
+          }),
+        ],
+      }),
+    ...routes,
+  });
 }
 
 function writeCalls(mock: ReturnType<typeof stubFetchRoutes>) {
@@ -55,8 +72,13 @@ describe("EnvEditor variables", () => {
       "DATABASE_URL",
     ]);
     expect(screen.getByDisplayValue("prod")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("api-db")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("uri")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("option", { name: "api-db" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Catalog database")).toHaveValue(
+      "postgres:api-db",
+    );
+    expect(screen.getByLabelText("Database Secret key")).toHaveValue("uri");
     // The managed key appears only in the secrets section, without a value.
     expect(
       (screen.getByLabelText("Secret variable name") as HTMLInputElement).value,
@@ -198,6 +220,48 @@ describe("EnvEditor variables", () => {
     ).toBeInTheDocument();
 
     expect(writeCalls(mock)).toHaveLength(0);
+  });
+
+  it("picks a catalog database and one of its advertised Secret keys", async () => {
+    const app = makeApp({ name: "web" });
+    const mock = stubEnvFetchRoutes({
+      "PUT /api/apps/web": (init) =>
+        jsonResponse(200, {
+          ...app,
+          spec: (JSON.parse(init?.body as string) as { spec: object }).spec,
+        }),
+    });
+    renderWithSession(<EnvEditor app={app} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Add variable" }));
+    await user.type(screen.getByLabelText("Variable name"), "DB_PASSWORD");
+    await user.selectOptions(screen.getByLabelText("Variable kind"), "ref");
+    await user.selectOptions(
+      await screen.findByLabelText("Catalog database"),
+      "postgres:api-db",
+    );
+
+    expect(screen.getByLabelText("Database Secret key")).toHaveValue("uri");
+    await user.selectOptions(
+      screen.getByLabelText("Database Secret key"),
+      "password",
+    );
+    await user.click(screen.getByRole("button", { name: "Save variables" }));
+
+    await waitFor(() => {
+      expect(writeCalls(mock)).toHaveLength(1);
+    });
+    const request = writeCalls(mock)[0];
+    const body = JSON.parse((request?.[1] as RequestInit).body as string) as {
+      spec: { env: unknown };
+    };
+    expect(body.spec.env).toEqual([
+      {
+        name: "DB_PASSWORD",
+        secretRef: { name: "api-db", key: "password" },
+      },
+    ]);
   });
 
   it("enforces the 64-variable cap exactly", async () => {

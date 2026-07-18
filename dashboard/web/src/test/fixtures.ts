@@ -62,6 +62,7 @@ export function makePostgres(overrides?: {
   name?: string;
   spec?: Partial<PostgresSpec>;
   status?: PostgresStatus;
+  secretKeys?: string[];
 }): PostgresResponse {
   return {
     name: overrides?.name ?? "api-db",
@@ -69,6 +70,14 @@ export function makePostgres(overrides?: {
     creationTimestamp: "2026-07-01T10:00:00Z",
     spec: { version: "16", storageSize: "10Gi", ...overrides?.spec },
     status: { ...overrides?.status },
+    secretKeys: overrides?.secretKeys ?? [
+      "uri",
+      "host",
+      "port",
+      "database",
+      "username",
+      "password",
+    ],
   };
 }
 
@@ -76,6 +85,7 @@ export function makeMongo(overrides?: {
   name?: string;
   spec?: Partial<MongoSpec>;
   status?: MongoStatus;
+  secretKeys?: string[];
 }): MongoResponse {
   return {
     name: overrides?.name ?? "documents",
@@ -83,6 +93,14 @@ export function makeMongo(overrides?: {
     creationTimestamp: "2026-07-01T10:00:00Z",
     spec: { version: "8.0", storageSize: "10Gi", ...overrides?.spec },
     status: { ...overrides?.status },
+    secretKeys: overrides?.secretKeys ?? [
+      "uri",
+      "host",
+      "port",
+      "database",
+      "username",
+      "password",
+    ],
   };
 }
 

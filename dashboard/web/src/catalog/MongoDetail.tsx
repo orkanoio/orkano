@@ -205,8 +205,6 @@ function MongoOverviewCard({
   );
 }
 
-const mongoConnectionKeys = ["uri", "host", "port", "database", "username", "password"];
-
 function MongoConnectionCard({ mongo }: { mongo: MongoResponse }) {
   return (
     <Card>
@@ -226,7 +224,7 @@ function MongoConnectionCard({ mongo }: { mongo: MongoResponse }) {
         <div>
           <p className="overline-label">Available keys</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {mongoConnectionKeys.map((key) => (
+            {mongo.secretKeys.map((key) => (
               <code
                 key={key}
                 className="rounded-md border bg-terminal px-2 py-1 text-xs text-primary"
