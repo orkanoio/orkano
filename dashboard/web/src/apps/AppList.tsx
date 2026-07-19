@@ -12,7 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { appsKey, listApps, type AppResponse } from "@/lib/api";
+import { appsKey, listApps, sourceLabel, type AppResponse } from "@/lib/api";
 import { formatAge, readiness } from "@/lib/format";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -110,8 +110,8 @@ function AppCard({ app }: { app: AppResponse }) {
               {app.status.latestBuild ?? "—"}
             </dd>
             <dt className="text-muted-foreground">Source</dt>
-            <dd className="truncate text-right text-foreground" title={app.spec.source.github.repo}>
-              {app.spec.source.github.repo}
+            <dd className="truncate text-right text-foreground" title={sourceLabel(app.spec.source)}>
+              {sourceLabel(app.spec.source)}
             </dd>
             <dt className="text-muted-foreground">Age</dt>
             <dd className="text-right text-foreground">

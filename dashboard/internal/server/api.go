@@ -53,12 +53,15 @@ func parsePage(r *http.Request) (limit, offset int32) {
 // non-destructive updates need only a session, matching ADR-0003's "step-up for
 // destructive actions" (delete an app, rotate secrets), not for provisioning.
 func (s *Server) mountAPIRoutes(r chi.Router) {
+	r.With(s.RequireSession).Get("/api/features", s.handleFeatures)
 	r.Route("/api/apps", func(ar chi.Router) {
 		ar.Use(s.RequireSession)
 		ar.Get("/", s.handleListApps)
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
 		ar.Get("/{name}/deploys", s.handleListDeploys)
+		ar.Post("/{name}/source/archive", s.handleUploadSourceArchive)
+		ar.Put("/{name}/source", s.handleUpdateAppSource)
 		// Live logs (Server-Sent Events) — a read view, streamed through the viewer
 		// impersonation like the other reads.
 		ar.Get("/{name}/logs", s.handleAppLogs)

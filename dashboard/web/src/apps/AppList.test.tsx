@@ -60,6 +60,41 @@ describe("AppList", () => {
     );
   });
 
+  it("labels non-GitHub sources without assuming a repository", async () => {
+    stubFetchRoutes({
+      "GET /api/apps": () =>
+        jsonResponse(200, {
+          items: [
+            makeApp({
+              name: "mirror",
+              spec: {
+                source: {
+                  git: { url: "https://git.example.com/team/mirror.git" },
+                },
+              },
+            }),
+            makeApp({
+              name: "archive",
+              spec: {
+                source: {
+                  upload: {
+                    digest: `sha256:${"a".repeat(64)}`,
+                    fileName: "release.zip",
+                  },
+                },
+              },
+            }),
+          ],
+        }),
+    });
+    renderWithSession(<AppList />);
+
+    expect(
+      await screen.findByText("https://git.example.com/team/mirror.git"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("release.zip")).toBeInTheDocument();
+  });
+
   it("surfaces a list failure", async () => {
     stubFetchRoutes({
       "GET /api/apps": () => jsonResponse(503, { error: "unavailable" }),
