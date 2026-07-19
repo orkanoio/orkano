@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
 )
 
@@ -41,6 +42,8 @@ const (
 	reasonJobConflict      = "JobConflict"
 	reasonJobMissing       = "JobMissing"
 	reasonResolvingDigest  = "ResolvingDigest"
+	reasonFeatureDisabled  = "FeatureDisabled"
+	reasonInvalidBuild     = "InvalidBuild"
 )
 
 // BuildReconciler runs one Build as one rootless BuildKit Job and mirrors
@@ -61,6 +64,12 @@ type BuildReconciler struct {
 	// Compose, so production keeps the github.com behaviour; the hermetic E2E
 	// points it at an in-cluster git server.
 	GitBaseURL string
+	// SourceFetcherImage is this operator image, reused as a restricted init
+	// container for digest-verified ZIP extraction.
+	SourceFetcherImage string
+	// Features is the validated process-wide unsafe-feature set. The zero value
+	// rejects every unsafe source/strategy.
+	Features features.Set
 }
 
 func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -77,6 +86,22 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if isTerminal(&build) {
 		return ctrl.Result{}, nil
 	}
+	statusBefore := build.Status.DeepCopy()
+	// Gates apply at the point where work would begin. Once a Job has been
+	// created, disabling a feature must not rewrite the immutable build record
+	// as failed while that already-authorized Job is still running.
+	if build.Status.JobRef == nil {
+		if err := r.Features.ValidateApp(orkanov1alpha1.AppSpec{Source: build.Spec.Source, Build: build.Spec.Strategy}); err != nil {
+			started, observeErr := r.adoptStartedJob(ctx, &build)
+			if observeErr != nil {
+				return ctrl.Result{}, observeErr
+			}
+			if !started {
+				failBuild(&build, reasonFeatureDisabled, err.Error())
+				return ctrl.Result{}, r.updateStatus(ctx, &build, statusBefore)
+			}
+		}
+	}
 
 	if controllerutil.AddFinalizer(&build, buildFinalizer) {
 		if err := r.Update(ctx, &build); err != nil {
@@ -84,7 +109,6 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
-	statusBefore := build.Status.DeepCopy()
 	job, err := r.ensureJob(ctx, &build)
 	if err != nil {
 		// ensureJob recorded what it learned on the Build (a terminal
@@ -97,17 +121,50 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, errors.Join(observeErr, r.updateStatus(ctx, &build, statusBefore))
 }
 
+// adoptStartedJob closes the create-before-status crash window. A Job create
+// may have reached the apiserver before status.jobRef did; after a gate is
+// disabled, a live read must adopt that already-authorized Job instead of
+// marking its Build failed while the unobserved Job keeps running.
+func (r *BuildReconciler) adoptStartedJob(ctx context.Context, build *orkanov1alpha1.Build) (bool, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var job batchv1.Job
+	key := types.NamespacedName{Namespace: buildjob.Namespace, Name: buildjob.JobName(build.Name)}
+	err := reader.Get(ctx, key, &job)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("checking for an already-started Job %s/%s: %w", key.Namespace, key.Name, err)
+	case !ownsJob(build, &job):
+		return false, nil
+	default:
+		build.Status.JobRef = &orkanov1alpha1.JobReference{Namespace: key.Namespace, Name: key.Name}
+		return true, nil
+	}
+}
+
 // ensureJob creates the Build's Job or adopts the one a previous reconcile
 // created before crashing (the annotations are the proof of ownership —
 // cross-namespace ownerReferences are forbidden). A same-name Job that is
 // not ours is refused, never adopted, never deleted.
 func (r *BuildReconciler) ensureJob(ctx context.Context, build *orkanov1alpha1.Build) (*batchv1.Job, error) {
-	inv := buildjob.Compose(build, r.GitBaseURL)
+	inv, err := buildjob.Compose(build, r.GitBaseURL)
+	if err != nil {
+		failBuild(build, reasonInvalidBuild, err.Error())
+		return nil, err
+	}
 	desired, err := buildjob.Render(build, buildjob.Options{
 		ContextURL:          inv.ContextURL,
+		LocalSource:         inv.LocalSource,
 		DockerfilePath:      inv.DockerfilePath,
 		GeneratedDockerfile: inv.GeneratedDockerfile,
 		ImageRef:            inv.ImageRef,
+		SourceFetcherImage:  r.SourceFetcherImage,
+		Nixpacks:            inv.Nixpacks,
+		NixpacksConfigPath:  inv.NixpacksConfigPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rendering Job: %w", err)
@@ -186,7 +243,11 @@ func (r *BuildReconciler) observeJob(ctx context.Context, build *orkanov1alpha1.
 		failBuild(build, reason, message)
 
 	case jobCondition(job, batchv1.JobComplete) != nil:
-		ref := buildjob.Compose(build, r.GitBaseURL).ImageRef
+		inv, err := buildjob.Compose(build, r.GitBaseURL)
+		if err != nil {
+			return err
+		}
+		ref := inv.ImageRef
 		pinned, err := r.ResolveDigest(ctx, ref)
 		if err != nil {
 			// The image is pushed but unpinned: stay Running, record why,

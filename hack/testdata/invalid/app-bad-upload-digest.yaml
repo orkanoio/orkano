@@ -1,0 +1,15 @@
+# Violates: uploaded source is identified by a lowercase sha256 digest.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-upload-digest
+  namespace: orkano-apps
+spec:
+  source:
+    upload:
+      digest: sha256:not-a-digest
+      fileName: source.zip
+  build:
+    strategy: Static
+    static:
+      dir: public

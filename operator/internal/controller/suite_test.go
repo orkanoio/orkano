@@ -191,7 +191,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "scheme-smoke", Namespace: "default"},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 		},
@@ -220,7 +220,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-worker", Namespace: "default"},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 			Type:  orkanov1alpha1.WorkloadWorker,

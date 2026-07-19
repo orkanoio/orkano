@@ -17,7 +17,7 @@ import (
 // apiserver's validation is proven in the operator's envtest suite.
 func webAppSpec() orkanov1alpha1.AppSpec {
 	return orkanov1alpha1.AppSpec{
-		Source: orkanov1alpha1.Source{GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/demo"}},
+		Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/demo"}},
 		Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
 	}
 }

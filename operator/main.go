@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,17 +20,27 @@ import (
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/internal/db"
+	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/sourcearchive"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
 	"github.com/orkanoio/orkano/operator/internal/controller"
 	"github.com/orkanoio/orkano/operator/internal/dispatcher"
 	"github.com/orkanoio/orkano/operator/internal/githubapp"
+	"github.com/orkanoio/orkano/operator/internal/gitresolver"
 	"github.com/orkanoio/orkano/operator/internal/registry"
+	"github.com/orkanoio/orkano/operator/internal/sourcefetch"
 )
 
 // envDBDSN is the connection string for the webhook delivery queue, using the
 // least-privilege orkano_dispatcher role. Empty disables the dispatcher (e.g.
 // dev runs and envtest), so the rest of the operator still works without a DB.
 const envDBDSN = "ORKANO_DB_DSN"
+
+const (
+	envUnsafeFeatures     = "ORKANO_UNSAFE_FEATURES"
+	envSourceFetcherImage = "ORKANO_SOURCE_FETCHER_IMAGE"
+	defaultRegistryCAFile = "/orkano-registry-ca/ca.crt"
+)
 
 // The migrate subcommand reads the superuser DSN from envDBDSN and the
 // install-generated passwords for the least-privilege roles from these (the
@@ -43,6 +54,13 @@ const (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "source-fetch" {
+		if err := runSourceFetch(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "source-fetch:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `orkano-operator migrate` is the one-shot entrypoint the platform's
 	// migration Job runs at install: apply the schema and set the role
 	// passwords with the superuser DSN, then exit. The long-running operator
@@ -59,6 +77,27 @@ func main() {
 	}
 
 	runOperator()
+}
+
+func runSourceFetch(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("source-fetch", flag.ContinueOnError)
+	var appName, digest, destination, registryURL, caFile string
+	flags.StringVar(&appName, "app", "", "App that owns the source archive")
+	flags.StringVar(&digest, "digest", "", "Expected sha256 source archive digest")
+	flags.StringVar(&destination, "destination", "/workspace/source", "Empty directory to extract into")
+	flags.StringVar(&registryURL, "registry-url", sourcearchive.DefaultRegistryURL, "Internal source registry URL")
+	flags.StringVar(&caFile, "ca-file", defaultRegistryCAFile, "Registry CA certificate")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if appName == "" || digest == "" {
+		return errors.New("--app and --digest are required")
+	}
+	registryClient, err := sourcearchive.NewTLSRegistry(registryURL, caFile)
+	if err != nil {
+		return err
+	}
+	return sourcefetch.Fetch(ctx, registryClient, sourcefetch.Config{AppName: appName, Digest: digest, Destination: destination})
 }
 
 // runMigrate applies the platform schema and assigns the least-privilege role
@@ -122,6 +161,16 @@ func runOperator() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 	log := ctrl.Log.WithName("setup")
 	log.Info("starting orkano-operator", "version", version)
+	featureSet, err := features.ParseCSV(os.Getenv(envUnsafeFeatures))
+	if err != nil {
+		log.Error(err, "invalid unsafe feature configuration", "env", envUnsafeFeatures)
+		os.Exit(1)
+	}
+	sourceFetcherImage := strings.TrimSpace(os.Getenv(envSourceFetcherImage))
+	if featureSet.Enabled(features.SourceZip) && sourceFetcherImage == "" {
+		log.Error(errors.New("source fetcher image is required when source.zip is enabled"), "invalid unsafe feature configuration", "env", envSourceFetcherImage)
+		os.Exit(1)
+	}
 
 	// Compose appends "<owner>/<name>.git#<commit>" straight onto the base, so a
 	// missing trailing slash silently malforms every git context. Fail fast.
@@ -168,7 +217,14 @@ func runOperator() {
 		os.Exit(1)
 	}
 	resolver := &registry.Resolver{Reader: mgr.GetAPIReader()}
-	if err := (&controller.BuildReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), ResolveDigest: resolver.ResolveDigest, GitBaseURL: gitBaseURL}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.BuildReconciler{
+		Client:             mgr.GetClient(),
+		APIReader:          mgr.GetAPIReader(),
+		ResolveDigest:      resolver.ResolveDigest,
+		GitBaseURL:         gitBaseURL,
+		SourceFetcherImage: sourceFetcherImage,
+		Features:           featureSet,
+	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up Build controller")
 		os.Exit(1)
 	}
@@ -196,6 +252,8 @@ func runOperator() {
 			Client:              mgr.GetClient(),
 			Queue:               &dispatcher.PgxQueue{Pool: pool},
 			GitHub:              &githubapp.TokenSource{Reader: mgr.GetAPIReader(), BaseURL: githubBaseURL},
+			Git:                 gitresolver.New(),
+			Features:            featureSet,
 			Log:                 ctrl.Log.WithName("dispatcher"),
 			PollInterval:        dispatchPollInterval,
 			MaxConcurrentBuilds: maxConcurrentBuilds,

@@ -2,8 +2,16 @@ package v1alpha1
 
 import "k8s.io/apimachinery/pkg/api/resource"
 
+// +kubebuilder:validation:XValidation:rule="has(self.github) ? (!has(self.git) && !has(self.upload)) : (has(self.git) != has(self.upload))",message="exactly one of github, git, or upload must be set"
 type Source struct {
-	GitHub GitHubSource `json:"github"`
+	// +optional
+	GitHub *GitHubSource `json:"github,omitempty"`
+
+	// +optional
+	Git *GitSource `json:"git,omitempty"`
+
+	// +optional
+	Upload *UploadSource `json:"upload,omitempty"`
 
 	// SubPath scopes the build context to a directory of the checkout,
 	// like volumeMount.subPath; the Dockerfile path resolves relative
@@ -31,15 +39,50 @@ type GitHubSource struct {
 	Ref string `json:"ref,omitempty"`
 }
 
+// GitSource describes an unauthenticated HTTPS Git repository. Generic Git is
+// manual-deploy-only: automatic push delivery remains a GitHub App capability.
+// The feature gate and public-address checks are enforced by every component
+// before it performs network I/O; the CRD schema rejects credentials, query
+// parameters, fragments, and non-HTTPS URLs at the API boundary.
+type GitSource struct {
+	// +kubebuilder:validation:MinLength=9
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https://[A-Za-z0-9.-]+(:443)?/[A-Za-z0-9._~!$&'()*+,;=:%/-]+$`
+	URL string `json:"url"`
+
+	// Ref is a branch, tag, or commit-like name. Unset means the repository's
+	// advertised HEAD. It is resolved to an immutable commit before a Build is
+	// created.
+	// +kubebuilder:validation:MaxLength=250
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="ref must not contain '..'"
+	// +optional
+	Ref string `json:"ref,omitempty"`
+}
+
+// UploadSource identifies an immutable ZIP artifact stored in Orkano's
+// in-cluster OCI registry. FileName is display-only and never a filesystem
+// destination.
+type UploadSource struct {
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	Digest string `json:"digest"`
+
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]{0,250}[.]zip$`
+	// +optional
+	FileName string `json:"fileName,omitempty"`
+}
+
 // Build strategy values, kept in sync with the Strategy enum below.
 const (
 	StrategyDockerfile = "Dockerfile"
 	StrategyStatic     = "Static"
+	StrategyNixpacks   = "Nixpacks"
 )
 
-// +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? !has(self.static) : (has(self.static) && !has(self.dockerfile))",message="build members must match the chosen strategy"
+// +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? (!has(self.static) && !has(self.nixpacks)) : (self.strategy == 'Static' ? (has(self.static) && !has(self.dockerfile) && !has(self.nixpacks)) : (has(self.nixpacks) && !has(self.dockerfile) && !has(self.static)))",message="build members must match the chosen strategy"
 type BuildStrategy struct {
-	// +kubebuilder:validation:Enum=Dockerfile;Static
+	// +kubebuilder:validation:Enum=Dockerfile;Static;Nixpacks
 	Strategy string `json:"strategy"`
 
 	// +optional
@@ -47,6 +90,9 @@ type BuildStrategy struct {
 
 	// +optional
 	Static *StaticBuild `json:"static,omitempty"`
+
+	// +optional
+	Nixpacks *NixpacksBuild `json:"nixpacks,omitempty"`
 }
 
 // DockerfileBuild is deliberately path-only in v1alpha1: buildArgs and
@@ -77,6 +123,19 @@ type StaticBuild struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
 	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="dir must not contain '..'"
 	Dir string `json:"dir"`
+}
+
+// NixpacksBuild configures Dockerfile generation by Nixpacks before the
+// existing rootless BuildKit build. Nixpacks never receives a Docker socket.
+// An empty block uses Nixpacks' conventional repository configuration.
+type NixpacksBuild struct {
+	// ConfigPath optionally selects a Nixpacks TOML file relative to
+	// source.subPath.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_./-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.contains('..')",message="configPath must not contain '..'"
+	// +optional
+	ConfigPath string `json:"configPath,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="has(self.value) != has(self.secretRef)",message="exactly one of value or secretRef must be set"

@@ -17,7 +17,7 @@ Rules:
 | [0008](0008-dashboard-stack.md) | Dashboard on React, TypeScript, Vite, TanStack Query, Tailwind, shadcn/ui | Accepted |
 | [0009](0009-monorepo-layout-and-module-strategy.md) | Monorepo layout with a separate api module | Accepted |
 | [0010](0010-cel-only-validation-no-webhook.md) | Validate with OpenAPI and CEL only — no admission webhook in v1alpha1 | Accepted |
-| [0011](0011-api-versioning-deprecation.md) | API versioning and deprecation policy | Accepted |
+| [0011](0011-api-versioning-deprecation.md) | API versioning and deprecation policy | Superseded by ADR-0021 |
 | [0012](0012-build-namespace-psa-baseline.md) | Build namespace runs at PSA baseline with AppArmor confinement | Accepted |
 | [0013](0013-dashboard-value-blind-secrets-no-impersonation.md) | Make dashboard secret writes value-blind and defer impersonation to Phase 2 | Accepted |
 | [0014](0014-postgres-catalog-kind.md) | Model the service catalog as an engine-specific Postgres kind | Accepted |
@@ -27,3 +27,4 @@ Rules:
 | [0018](0018-external-secrets-operator.md) | External secrets via a vendored, opt-in, namespace-scoped External Secrets Operator | Accepted |
 | [0019](0019-byo-cluster-helm-install.md) | Install onto existing clusters via a Helm chart gated by a capability-probing preflight | Accepted |
 | [0020](0020-mongodb-catalog-kind.md) | Add MongoDB as an engine-specific Mongo catalog kind | Accepted |
+| [0021](0021-unsafe-source-and-build-feature-gates.md) | Gate unsafe source and automatic-build options explicitly | Accepted |

@@ -24,8 +24,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
@@ -224,6 +228,81 @@ func TestBuildCreatesJobAndReportsPending(t *testing.T) {
 	}
 }
 
+func TestBuildRefusesDisabledUnsafeFeatureBeforeJobCreation(t *testing.T) {
+	ctx := context.Background()
+	build := &orkanov1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "bc-feature-disabled", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.BuildSpec{
+			AppName:  "generic-app",
+			Commit:   "0123456789abcdef0123456789abcdef01234567",
+			Source:   orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{URL: "https://git.example.com/acme/app.git"}},
+			Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+	}
+	if err := k8sClient.Create(ctx, build); err != nil {
+		t.Fatalf("create Build: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, build) })
+	got := waitForCompleted(t, build.Name, reasonFeatureDisabled)
+	if got.Status.Phase != orkanov1alpha1.BuildFailed || len(got.Finalizers) != 0 {
+		t.Fatalf("disabled Build = phase %s finalizers %v", got.Status.Phase, got.Finalizers)
+	}
+	err := k8sClient.Get(ctx, buildJobKey(build.Name), &batchv1.Job{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("disabled Build created a Job: %v", err)
+	}
+}
+
+func TestBuildAlreadyStartedContinuesWhenUnsafeFeatureIsDisabled(t *testing.T) {
+	ctx := context.Background()
+	build := &orkanov1alpha1.Build{
+		ObjectMeta: metav1.ObjectMeta{Name: "bc-feature-disabled-running", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.BuildSpec{
+			AppName:  "generic-app",
+			Commit:   "0123456789abcdef0123456789abcdef01234567",
+			Source:   orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{URL: "https://git.example.com/acme/app.git"}},
+			Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+		Status: orkanov1alpha1.BuildStatus{
+			Phase: orkanov1alpha1.BuildRunning,
+		},
+	}
+	inv, err := buildjob.Compose(build, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := buildjob.Render(build, buildjob.Options{
+		ContextURL: inv.ContextURL, DockerfilePath: inv.DockerfilePath, ImageRef: inv.ImageRef,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Status.Active = 1
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := orkanov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	k8s := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&orkanov1alpha1.Build{}, &batchv1.Job{}).
+		WithObjects(build, job).Build()
+	reconciler := &BuildReconciler{Client: k8s, APIReader: k8s, ResolveDigest: stubResolveDigest}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(build)}); err != nil {
+		t.Fatalf("reconcile running Build: %v", err)
+	}
+	var got orkanov1alpha1.Build
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(build), &got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, orkanov1alpha1.ConditionCompleted)
+	if got.Status.Phase != orkanov1alpha1.BuildRunning || (cond != nil && cond.Reason == reasonFeatureDisabled) {
+		t.Fatalf("running Build was rejected after gate disable: phase=%s condition=%+v", got.Status.Phase, cond)
+	}
+}
+
 func TestBuildRunsThenSucceedsWithPinnedDigest(t *testing.T) {
 	var (
 		mu     sync.Mutex
@@ -251,7 +330,11 @@ func TestBuildRunsThenSucceedsWithPinnedDigest(t *testing.T) {
 
 	setBuildJobStatus(t, build.Name, func(job *batchv1.Job) { job.Status.Active = 0 })
 	markJobComplete(t, build.Name)
-	wantRef := buildjob.RegistryHost + "/bc-succeed-app:" + build.Spec.Commit
+	inv, err := buildjob.Compose(build, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRef := inv.ImageRef
 	done := waitForBuild(t, build.Name, "Succeeded", func(b *orkanov1alpha1.Build) bool {
 		return b.Status.Phase == orkanov1alpha1.BuildSucceeded
 	})
