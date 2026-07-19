@@ -210,7 +210,8 @@ func TestUpdateApp(t *testing.T) {
 	ck := authedSession(t, store)
 
 	newSpec := webAppSpec()
-	newSpec.Source.GitHub.Repo = "orkanoio/changed"
+	replicas := int32(3)
+	newSpec.Replicas = &replicas
 	rec := apiReq(t, s, http.MethodPut, "/api/apps/demo", appUpdateRequest{Spec: newSpec}, ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update = %d (%s)", rec.Code, rec.Body.String())
@@ -219,7 +220,7 @@ func TestUpdateApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after update: %v", err)
 	}
-	if got.Spec.Source.GitHub.Repo != "orkanoio/changed" {
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != replicas {
 		t.Fatalf("spec not updated: %+v", got.Spec)
 	}
 	// The spec-only update must not disturb the operator-owned status.
@@ -227,6 +228,48 @@ func TestUpdateApp(t *testing.T) {
 		t.Fatalf("update clobbered status: %+v", got.Status)
 	}
 	assertAudited(t, store, "app.update", "success")
+}
+
+func TestUpdateAppRejectsSourceChanges(t *testing.T) {
+	store := newFakeStore()
+	s := apiServer(t, store, seedApp("demo"))
+	ck := authedSession(t, store)
+	newSpec := webAppSpec()
+	newSpec.Source.GitHub.Repo = "orkanoio/changed"
+
+	rec := apiReq(t, s, http.MethodPut, "/api/apps/demo", appUpdateRequest{Spec: newSpec}, ck)
+	if rec.Code != http.StatusConflict || decodeBody(t, rec)["error"] != "source_update_required" {
+		t.Fatalf("source through runtime endpoint = %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAppSourceMergesLatestRuntimeSpec(t *testing.T) {
+	store := newFakeStore()
+	app := seedApp("demo")
+	replicas := int32(4)
+	app.Spec.Replicas = &replicas
+	app.Spec.Command = []string{"./serve"}
+	s := apiServer(t, store, app)
+	ck := authedSession(t, store)
+
+	req := appSourceUpdateRequest{
+		Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/changed"}},
+		Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyStatic, Static: &orkanov1alpha1.StaticBuild{Dir: "dist"}},
+	}
+	rec := apiReq(t, s, http.MethodPut, "/api/apps/demo/source", req, ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("source update = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got, err := getApp(t, s, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Source.GitHub.Repo != "orkanoio/changed" || got.Spec.Build.Strategy != orkanov1alpha1.StrategyStatic {
+		t.Fatalf("source/build not updated: %+v", got.Spec)
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != replicas || len(got.Spec.Command) != 1 || got.Spec.Command[0] != "./serve" {
+		t.Fatalf("source update clobbered live runtime spec: %+v", got.Spec)
+	}
 }
 
 func TestUpdateAppNotFoundAudited(t *testing.T) {

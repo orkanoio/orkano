@@ -29,6 +29,8 @@ import (
 	"github.com/orkanoio/orkano/dashboard/internal/oidc"
 	"github.com/orkanoio/orkano/dashboard/internal/server"
 	"github.com/orkanoio/orkano/dashboard/web"
+	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/sourcearchive"
 )
 
 var version = "dev"
@@ -41,11 +43,15 @@ const (
 	// GitHub App manifest flow config (M2.6). All optional: the webhook URL is
 	// required only to use the flow (the manifest needs a delivery endpoint), the
 	// rest default to public GitHub.
-	envWebhookURL    = "ORKANO_WEBHOOK_URL"
-	envPublicURL     = "ORKANO_PUBLIC_URL"
-	envGitHubBaseURL = "ORKANO_GITHUB_BASE_URL"     // github.com form host
-	envGitHubAPIBase = "ORKANO_GITHUB_API_BASE_URL" // api.github.com conversion host
-	defaultAddr      = ":8080"
+	envWebhookURL     = "ORKANO_WEBHOOK_URL"
+	envPublicURL      = "ORKANO_PUBLIC_URL"
+	envGitHubBaseURL  = "ORKANO_GITHUB_BASE_URL"     // github.com form host
+	envGitHubAPIBase  = "ORKANO_GITHUB_API_BASE_URL" // api.github.com conversion host
+	envUnsafeFeatures = "ORKANO_UNSAFE_FEATURES"
+	envRegistryURL    = "ORKANO_REGISTRY_URL"
+	envRegistryCAFile = "ORKANO_REGISTRY_CA_FILE"
+	defaultRegistryCA = "/orkano-registry-ca/ca.crt"
+	defaultAddr       = ":8080"
 )
 
 func main() {
@@ -57,6 +63,10 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
+	featureSet, err := features.ParseCSV(os.Getenv(envUnsafeFeatures))
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", envUnsafeFeatures, err)
+	}
 	dsn := os.Getenv(envDSN)
 	if dsn == "" {
 		return fmt.Errorf("%s is required", envDSN)
@@ -108,6 +118,22 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("create viewer log streamer: %w", err)
 	}
 
+	var archives server.ArchiveStore
+	if featureSet.Enabled(features.SourceZip) {
+		registryURL := os.Getenv(envRegistryURL)
+		if registryURL == "" {
+			registryURL = sourcearchive.DefaultRegistryURL
+		}
+		caFile := os.Getenv(envRegistryCAFile)
+		if caFile == "" {
+			caFile = defaultRegistryCA
+		}
+		archives, err = sourcearchive.NewTLSRegistry(registryURL, caFile)
+		if err != nil {
+			return fmt.Errorf("configure ZIP source registry: %w", err)
+		}
+	}
+
 	cfg := server.Config{
 		K8s:                k8s,
 		ViewerClient:       viewerClient,
@@ -121,6 +147,8 @@ func run(log *slog.Logger) error {
 		WebhookURL:         os.Getenv(envWebhookURL),
 		PublicURL:          os.Getenv(envPublicURL),
 		GitHubBaseURL:      os.Getenv(envGitHubBaseURL),
+		Features:           featureSet,
+		Archives:           archives,
 	}
 	// Override the manifest-conversion endpoint only for GitHub Enterprise; the
 	// default (api.github.com) is wired by server.New.

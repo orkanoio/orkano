@@ -60,6 +60,7 @@ describe("AppDetail", () => {
     );
     expect(screen.getByText(/web@sha256:abc/)).toBeInTheDocument();
     expect(screen.getByText("web-abcdef123456")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Source" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Edit" })).not.toBeInTheDocument();
   });
 
@@ -75,6 +76,47 @@ describe("AppDetail", () => {
       await screen.findByText(/There is no app named/),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to apps" })).toBeInTheDocument();
+  });
+
+  it("opens source management from the app menu", async () => {
+    stubFetchRoutes(
+      detailRoutes({
+        "GET /api/features": () =>
+          jsonResponse(200, {
+            features: [
+              {
+                id: "source.git",
+                label: "Generic Git",
+                description: "Unsafe generic Git source.",
+                unsafe: true,
+                enabled: false,
+              },
+              {
+                id: "source.zip",
+                label: "ZIP upload",
+                description: "Unsafe ZIP source.",
+                unsafe: true,
+                enabled: false,
+              },
+              {
+                id: "build.nixpacks",
+                label: "Nixpacks",
+                description: "Unsafe automatic build detection.",
+                unsafe: true,
+                enabled: false,
+              },
+            ],
+          }),
+      }),
+    );
+    renderWithSession(<AppDetail name="web" />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Source" }));
+    expect(
+      await screen.findByRole("heading", { name: "Source" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Source provider")).toHaveValue("github");
   });
 
   it("deletes after confirm, passing through the step-up gate", async () => {

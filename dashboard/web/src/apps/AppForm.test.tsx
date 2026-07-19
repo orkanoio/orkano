@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -7,13 +7,53 @@ import { makeApp } from "@/test/fixtures";
 import {
   jsonResponse,
   renderWithSession,
-  requestBody,
   stubFetchRoutes,
 } from "@/test/helpers";
+
+const allFeatures = {
+  features: [
+    {
+      id: "source.git",
+      label: "Generic Git",
+      description: "Bypasses the GitHub App trust boundary.",
+      unsafe: true,
+      enabled: true,
+    },
+    {
+      id: "source.zip",
+      label: "ZIP upload",
+      description: "Bypasses Git provenance.",
+      unsafe: true,
+      enabled: true,
+    },
+    {
+      id: "build.nixpacks",
+      label: "Nixpacks",
+      description: "Runs automatic build-plan detection.",
+      unsafe: true,
+      enabled: true,
+    },
+  ],
+};
+
+function mutationBody(
+  mock: ReturnType<typeof stubFetchRoutes>,
+  method: "POST" | "PUT" = "POST",
+): unknown {
+  const call = mock.mock.calls.find(
+    (candidate) =>
+      (candidate[1] as RequestInit | undefined)?.method === method,
+  );
+  if (typeof call?.[1]?.body !== "string") {
+    throw new Error(`${method} request was never made`);
+  }
+  return JSON.parse(call[1].body);
+}
 
 describe("AppForm create", () => {
   it("creates a Dockerfile web app and navigates to it", async () => {
     const mock = stubFetchRoutes({
+      "GET /api/features": () => jsonResponse(200, allFeatures),
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "web" })),
     });
     renderWithSession(<AppForm />);
@@ -28,7 +68,7 @@ describe("AppForm create", () => {
     await user.type(screen.getByLabelText("Health check path"), "/healthz");
     await user.click(screen.getByRole("button", { name: "Create app" }));
 
-    expect(await requestBody(mock)).toEqual({
+    expect(mutationBody(mock)).toEqual({
       name: "web",
       spec: {
         source: { github: { repo: "orkanoio/example" } },
@@ -44,6 +84,7 @@ describe("AppForm create", () => {
 
   it("creates a Static app with only the static build member", async () => {
     const mock = stubFetchRoutes({
+      "GET /api/features": () => jsonResponse(200, allFeatures),
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "site" })),
     });
     renderWithSession(<AppForm />);
@@ -55,7 +96,7 @@ describe("AppForm create", () => {
     await user.type(screen.getByLabelText("Directory to serve"), "public");
     await user.click(screen.getByRole("button", { name: "Create app" }));
 
-    const body = (await requestBody(mock)) as {
+    const body = mutationBody(mock) as {
       spec: { build: Record<string, unknown> };
     };
     expect(body.spec.build).toEqual({
@@ -65,8 +106,41 @@ describe("AppForm create", () => {
     expect(body.spec.build.dockerfile).toBeUndefined();
   });
 
+  it("creates an enabled public Git app with Nixpacks", async () => {
+    const mock = stubFetchRoutes({
+      "GET /api/features": () => jsonResponse(200, allFeatures),
+      "POST /api/apps": () => jsonResponse(201, makeApp({ name: "auto" })),
+    });
+    renderWithSession(<AppForm />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Name"), "auto");
+    const gitOption = await screen.findByRole("option", {
+      name: "Generic Git — unsafe",
+    });
+    await waitFor(() => {
+      expect(gitOption).not.toBeDisabled();
+    });
+    await user.selectOptions(screen.getByLabelText("Source provider"), "git");
+    await user.type(
+      screen.getByLabelText("Public Git URL"),
+      "https://git.example.com/team/auto.git",
+    );
+    await user.selectOptions(screen.getByLabelText("Build"), "Nixpacks");
+    await user.click(screen.getByRole("button", { name: "Create app" }));
+
+    const body = mutationBody(mock) as {
+      spec: Record<string, unknown>;
+    };
+    expect(body.spec.source).toEqual({
+      git: { url: "https://git.example.com/team/auto.git" },
+    });
+    expect(body.spec.build).toEqual({ strategy: "Nixpacks", nixpacks: {} });
+  });
+
   it("omits port and healthCheck for a Worker", async () => {
     const mock = stubFetchRoutes({
+      "GET /api/features": () => jsonResponse(200, allFeatures),
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "job" })),
     });
     renderWithSession(<AppForm />);
@@ -81,7 +155,7 @@ describe("AppForm create", () => {
     expect(screen.queryByLabelText("Port")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create app" }));
 
-    const body = (await requestBody(mock)) as { spec: Record<string, unknown> };
+    const body = mutationBody(mock) as { spec: Record<string, unknown> };
     expect(body.spec.type).toBe("Worker");
     expect(body.spec.port).toBeUndefined();
     expect(body.spec.healthCheck).toBeUndefined();
@@ -102,11 +176,16 @@ describe("AppForm create", () => {
     expect(
       screen.getByText(/owner\/repository form/),
     ).toBeInTheDocument();
-    expect(mock).not.toHaveBeenCalled();
+    expect(
+      mock.mock.calls.some(
+        (call) => (call[1] as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("maps an already_exists conflict onto readable copy", async () => {
     stubFetchRoutes({
+      "GET /api/features": () => jsonResponse(200, allFeatures),
       "POST /api/apps": () => jsonResponse(409, { error: "already_exists" }),
     });
     renderWithSession(<AppForm />);
@@ -148,6 +227,8 @@ describe("AppForm edit", () => {
     const user = userEvent.setup();
 
     const replicas = await screen.findByLabelText("Replicas");
+    expect(screen.queryByLabelText("GitHub repository")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Build")).not.toBeInTheDocument();
     await user.clear(replicas);
     await user.type(replicas, "3");
     await user.click(screen.getByRole("button", { name: "Save changes" }));

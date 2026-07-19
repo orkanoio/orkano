@@ -25,6 +25,7 @@ import (
 
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/dashboard/internal/oidc"
+	"github.com/orkanoio/orkano/internal/features"
 )
 
 // readyTimeout bounds the dependency checks /readyz performs so a wedged backend
@@ -36,6 +37,12 @@ const readyTimeout = 2 * time.Second
 // it works under the least-privilege orkano_dashboard role.
 type Pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// ArchiveStore writes a validated source ZIP into Orkano's content-addressed
+// internal registry. *sourcearchive.Registry satisfies it; tests use a fake.
+type ArchiveStore interface {
+	Upload(ctx context.Context, appName, filename string, source io.ReadSeeker, size int64, digest string) error
 }
 
 // Config wires the server's collaborators. K8s, DB, Store, Cipher, and
@@ -89,6 +96,13 @@ type Config struct {
 	// redirect (callback) URL. Empty derives it from the request (scheme + Host),
 	// which is trustworthy on the dashboard's private access paths (INV-05).
 	PublicURL string
+	// Features is the validated, explicit unsafe-feature set for this process.
+	// Its zero value is the secure default. Every mutation is checked here even
+	// when the UI has already hidden a disabled option.
+	Features features.Set
+	// Archives stores validated ZIP sources. It is required only when source.zip
+	// is enabled, so secure-default installations never gain a registry writer.
+	Archives ArchiveStore
 	// MongoExpressTransport carries requests from the authenticated dashboard
 	// proxy to an operator-owned ClusterIP Service. OPTIONAL: New installs a
 	// direct, timeout-bounded transport that ignores ambient HTTP proxy settings;
@@ -155,6 +169,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.BootstrapTokenHash == "" {
 		return nil, errors.New("server: BootstrapTokenHash is required")
+	}
+	if cfg.Features.Enabled(features.SourceZip) && cfg.Archives == nil {
+		return nil, errors.New("server: Archives is required when source.zip is enabled")
 	}
 	log := cfg.Logger
 	if log == nil {

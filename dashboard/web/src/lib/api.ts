@@ -186,15 +186,46 @@ export interface EnvVar {
   secretRef?: SecretKeyRef;
 }
 
-export interface AppSource {
-  github: { repo: string; ref?: string };
-  subPath?: string;
-}
+type SourceLocation = { subPath?: string };
+
+export type AppSource =
+  | (SourceLocation & {
+      github: { repo: string; ref?: string };
+    })
+  | (SourceLocation & {
+      git: { url: string; ref?: string };
+    })
+  | (SourceLocation & {
+      upload: { digest: string; fileName?: string };
+    });
 
 export interface BuildStrategy {
-  strategy: "Dockerfile" | "Static";
+  strategy: "Dockerfile" | "Static" | "Nixpacks";
   dockerfile?: { path?: string };
   static?: { dir: string };
+  nixpacks?: { configPath?: string };
+}
+
+export type SourceKind = "github" | "git" | "upload";
+
+export function sourceKind(source: AppSource): SourceKind {
+  if ("github" in source) {
+    return "github";
+  }
+  if ("git" in source) {
+    return "git";
+  }
+  return "upload";
+}
+
+export function sourceLabel(source: AppSource): string {
+  if ("github" in source) {
+    return source.github.repo;
+  }
+  if ("git" in source) {
+    return source.git.url;
+  }
+  return source.upload.fileName ?? source.upload.digest;
 }
 
 export interface AppSpec {
@@ -298,6 +329,19 @@ export interface MongoResponse {
   secretKeys: string[];
 }
 
+export interface FeatureStatus {
+  id: "source.git" | "source.zip" | "build.nixpacks";
+  label: string;
+  description: string;
+  unsafe: boolean;
+  enabled: boolean;
+}
+
+export interface SourceArchiveResponse {
+  digest: string;
+  fileName: string;
+}
+
 export interface DeployRow {
   occurredAt: string;
   buildName?: string;
@@ -310,6 +354,7 @@ export const appsKey = ["apps"] as const;
 export const appKey = (name: string) => ["apps", name] as const;
 export const appDeploysKey = (name: string) =>
   ["apps", name, "deploys"] as const;
+export const featuresKey = ["features"] as const;
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
 export const postgresKey = (name: string) => ["postgres", name] as const;
@@ -334,6 +379,45 @@ export function createApp(name: string, spec: AppSpec): Promise<AppResponse> {
 
 export function updateApp(name: string, spec: AppSpec): Promise<AppResponse> {
   return putJSON(`/api/apps/${encodeURIComponent(name)}`, { spec });
+}
+
+export function updateAppSource(
+  name: string,
+  source: AppSource,
+  build: BuildStrategy,
+): Promise<AppResponse> {
+  return putJSON(`/api/apps/${encodeURIComponent(name)}/source`, {
+    source,
+    build,
+  });
+}
+
+export function fetchFeatures(): Promise<FeatureStatus[]> {
+  return getJSON<{ features: FeatureStatus[] }>("/api/features").then(
+    ({ features }) => features,
+  );
+}
+
+export async function uploadSourceArchive(
+  name: string,
+  file: File,
+): Promise<SourceArchiveResponse> {
+  const res = await fetch(
+    `/api/apps/${encodeURIComponent(name)}/source/archive`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/zip",
+        "X-Orkano-Filename": file.name,
+      },
+      body: file,
+    },
+  );
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return (await res.json()) as SourceArchiveResponse;
 }
 
 export async function deleteApp(name: string): Promise<void> {

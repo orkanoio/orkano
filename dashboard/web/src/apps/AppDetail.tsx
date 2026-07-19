@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Code2,
   Globe2,
   KeyRound,
   LayoutDashboard,
@@ -30,6 +31,7 @@ import {
   appsKey,
   deleteApp,
   getApp,
+  sourceLabel,
 } from "@/lib/api";
 import { formatAge } from "@/lib/format";
 import { Link, navigate } from "@/lib/router";
@@ -38,9 +40,11 @@ import { DeploysCard } from "./DeploysCard";
 import { DomainsCard } from "./DomainsCard";
 import { SecretsCard, VarsCard } from "./EnvEditor";
 import { LogsCard } from "./LogsCard";
+import { SourceCard } from "./SourceCard";
 
 type AppSection =
   | "overview"
+  | "source"
   | "variables"
   | "secrets"
   | "domains"
@@ -49,6 +53,7 @@ type AppSection =
 
 const appSections: readonly DetailSection<AppSection>[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "source", label: "Source", icon: Code2 },
   { id: "variables", label: "Variables", icon: SlidersHorizontal },
   { id: "secrets", label: "Secrets", icon: KeyRound },
   { id: "domains", label: "Domains", icon: Globe2 },
@@ -97,7 +102,7 @@ export function AppDetail({ name }: { name: string }) {
             {app.name}
           </h1>
           <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
-            {app.spec.source.github.repo}
+            {sourceLabel(app.spec.source)}
           </p>
         </div>
         <StatusBadge conditions={app.status.conditions} />
@@ -120,6 +125,7 @@ export function AppDetail({ name }: { name: string }) {
         onSelect={setSection}
       >
         {section === "overview" ? <OverviewCard app={app} /> : null}
+        {section === "source" ? <SourceCard app={app} /> : null}
         {section === "variables" ? <VarsCard app={app} /> : null}
         {section === "secrets" ? <SecretsCard app={app} /> : null}
         {section === "domains" ? <DomainsCard appName={app.name} /> : null}
