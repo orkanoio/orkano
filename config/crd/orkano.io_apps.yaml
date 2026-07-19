@@ -79,6 +79,23 @@ spec:
                         - message: path must not contain '..'
                           rule: '!self.contains(''..'')'
                     type: object
+                  nixpacks:
+                    description: |-
+                      NixpacksBuild configures Dockerfile generation by Nixpacks before the
+                      existing rootless BuildKit build. Nixpacks never receives a Docker socket.
+                      An empty block uses Nixpacks' conventional repository configuration.
+                    properties:
+                      configPath:
+                        description: |-
+                          ConfigPath optionally selects a Nixpacks TOML file relative to
+                          source.subPath.
+                        maxLength: 512
+                        pattern: ^[A-Za-z0-9_./-]+$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: configPath must not contain '..'
+                          rule: '!self.contains(''..'')'
+                    type: object
                   static:
                     properties:
                       dir:
@@ -101,14 +118,17 @@ spec:
                     enum:
                     - Dockerfile
                     - Static
+                    - Nixpacks
                     type: string
                 required:
                 - strategy
                 type: object
                 x-kubernetes-validations:
                 - message: build members must match the chosen strategy
-                  rule: 'self.strategy == ''Dockerfile'' ? !has(self.static) : (has(self.static)
-                    && !has(self.dockerfile))'
+                  rule: 'self.strategy == ''Dockerfile'' ? (!has(self.static) && !has(self.nixpacks))
+                    : (self.strategy == ''Static'' ? (has(self.static) && !has(self.dockerfile)
+                    && !has(self.nixpacks)) : (has(self.nixpacks) && !has(self.dockerfile)
+                    && !has(self.static)))'
               command:
                 description: Command overrides the image entrypoint.
                 items:
@@ -198,6 +218,33 @@ spec:
                 type: object
               source:
                 properties:
+                  git:
+                    description: |-
+                      GitSource describes an unauthenticated HTTPS Git repository. Generic Git is
+                      manual-deploy-only: automatic push delivery remains a GitHub App capability.
+                      The feature gate and public-address checks are enforced by every component
+                      before it performs network I/O; the CRD schema rejects credentials, query
+                      parameters, fragments, and non-HTTPS URLs at the API boundary.
+                    properties:
+                      ref:
+                        description: |-
+                          Ref is a branch, tag, or commit-like name. Unset means the repository's
+                          advertised HEAD. It is resolved to an immutable commit before a Build is
+                          created.
+                        maxLength: 250
+                        pattern: ^[A-Za-z0-9_./-]+$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: ref must not contain '..'
+                          rule: '!self.contains(''..'')'
+                      url:
+                        maxLength: 2048
+                        minLength: 9
+                        pattern: ^https://[A-Za-z0-9.-]+(:443)?/[A-Za-z0-9._~!$&'()*+,;=:%/-]+$
+                        type: string
+                    required:
+                    - url
+                    type: object
                   github:
                     properties:
                       ref:
@@ -228,9 +275,27 @@ spec:
                     x-kubernetes-validations:
                     - message: subPath must not contain '..'
                       rule: '!self.contains(''..'')'
-                required:
-                - github
+                  upload:
+                    description: |-
+                      UploadSource identifies an immutable ZIP artifact stored in Orkano's
+                      in-cluster OCI registry. FileName is display-only and never a filesystem
+                      destination.
+                    properties:
+                      digest:
+                        pattern: ^sha256:[0-9a-f]{64}$
+                        type: string
+                      fileName:
+                        maxLength: 255
+                        pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,250}[.]zip$
+                        type: string
+                    required:
+                    - digest
+                    type: object
                 type: object
+                x-kubernetes-validations:
+                - message: exactly one of github, git, or upload must be set
+                  rule: 'has(self.github) ? (!has(self.git) && !has(self.upload))
+                    : (has(self.git) != has(self.upload))'
               type:
                 default: Web
                 enum:

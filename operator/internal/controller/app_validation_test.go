@@ -23,7 +23,7 @@ func dryRunDockerfilePath(name, path string) error {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appsNamespace},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "alice/app"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "alice/app"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{
 				Strategy:   orkanov1alpha1.StrategyDockerfile,

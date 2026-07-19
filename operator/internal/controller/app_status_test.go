@@ -32,7 +32,7 @@ func createBuild(t *testing.T, name, appName string) *orkanov1alpha1.Build {
 			AppName: appName,
 			Commit:  "0123456789abcdef0123456789abcdef01234567",
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Strategy: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 		},

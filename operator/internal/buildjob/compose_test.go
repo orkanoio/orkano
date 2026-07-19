@@ -31,7 +31,6 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 		wantContextURL          string
 		wantDockerfilePath      string
 		wantGeneratedDockerfile string
-		wantImageRef            string
 	}{
 		{
 			// Static strategy (static.dir: public): no DockerfilePath, but a
@@ -39,7 +38,6 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			file:                    "01-static-site.yaml",
 			wantContextURL:          "https://github.com/alice/blog.git#" + composeCommit,
 			wantGeneratedDockerfile: "FROM " + StaticServerImage + "\nCOPY public/ " + staticServeRoot + "\n",
-			wantImageRef:            RegistryHost + "/blog:" + composeCommit,
 		},
 		{
 			// Dockerfile strategy with no dockerfile block (the valid CEL
@@ -47,7 +45,6 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			file:               "02-web-service-postgres.yaml",
 			wantContextURL:     "https://github.com/alice/api.git#" + composeCommit,
 			wantDockerfilePath: DefaultDockerfile,
-			wantImageRef:       RegistryHost + "/api:" + composeCommit,
 		},
 		{
 			// Same source as 02 but a different App, so the image repository
@@ -55,7 +52,6 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			file:               "03-background-worker.yaml",
 			wantContextURL:     "https://github.com/alice/api.git#" + composeCommit,
 			wantDockerfilePath: DefaultDockerfile,
-			wantImageRef:       RegistryHost + "/mailer:" + composeCommit,
 		},
 		{
 			// subPath scopes the git context; the default Dockerfile is then
@@ -63,21 +59,19 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			file:               "04-monorepo-subpath.yaml",
 			wantContextURL:     "https://github.com/acme/platform.git#" + composeCommit + ":services/billing",
 			wantDockerfilePath: DefaultDockerfile,
-			wantImageRef:       RegistryHost + "/billing:" + composeCommit,
 		},
 		{
 			// Explicit non-default Dockerfile path passes through verbatim.
 			file:               "05-dockerfile.yaml",
 			wantContextURL:     "https://github.com/alice/imageproc.git#" + composeCommit,
 			wantDockerfilePath: "deploy/prod.Dockerfile",
-			wantImageRef:       RegistryHost + "/imageproc:" + composeCommit,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
 			build := snapshotBuild(t, tc.file)
-			inv := Compose(build, DefaultGitBaseURL)
+			inv := mustCompose(t, build, DefaultGitBaseURL)
 			if inv.ContextURL != tc.wantContextURL {
 				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
 			}
@@ -87,8 +81,9 @@ func TestComposeOverExamplePermutations(t *testing.T) {
 			if inv.GeneratedDockerfile != tc.wantGeneratedDockerfile {
 				t.Errorf("GeneratedDockerfile = %q, want %q", inv.GeneratedDockerfile, tc.wantGeneratedDockerfile)
 			}
-			if inv.ImageRef != tc.wantImageRef {
-				t.Errorf("ImageRef = %q, want %q", inv.ImageRef, tc.wantImageRef)
+			wantImageRef := RegistryHost + "/" + build.Spec.AppName + ":" + buildImageTag(build)
+			if inv.ImageRef != wantImageRef {
+				t.Errorf("ImageRef = %q, want %q", inv.ImageRef, wantImageRef)
 			}
 		})
 	}
@@ -140,7 +135,7 @@ func TestComposeNormalizesSubPath(t *testing.T) {
 					AppName: "billing",
 					Commit:  composeCommit,
 					Source: orkanov1alpha1.Source{
-						GitHub:  orkanov1alpha1.GitHubSource{Repo: "acme/platform"},
+						GitHub:  &orkanov1alpha1.GitHubSource{Repo: "acme/platform"},
 						SubPath: tc.subPath,
 					},
 					Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
@@ -149,7 +144,7 @@ func TestComposeNormalizesSubPath(t *testing.T) {
 			if tc.dockerfilePath != "" {
 				build.Spec.Strategy.Dockerfile = &orkanov1alpha1.DockerfileBuild{Path: tc.dockerfilePath}
 			}
-			inv := Compose(build, DefaultGitBaseURL)
+			inv := mustCompose(t, build, DefaultGitBaseURL)
 			if inv.ContextURL != tc.wantContextURL {
 				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
 			}
@@ -170,7 +165,7 @@ func TestComposeHonorsGitBaseURL(t *testing.T) {
 			AppName: "blog",
 			Commit:  composeCommit,
 			Source: orkanov1alpha1.Source{
-				GitHub:  orkanov1alpha1.GitHubSource{Repo: "alice/blog"},
+				GitHub:  &orkanov1alpha1.GitHubSource{Repo: "alice/blog"},
 				SubPath: "site",
 			},
 			Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
@@ -193,14 +188,115 @@ func TestComposeHonorsGitBaseURL(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			inv := Compose(build, tc.gitBaseURL)
+			inv := mustCompose(t, build, tc.gitBaseURL)
 			if inv.ContextURL != tc.wantContextURL {
 				t.Errorf("ContextURL = %q, want %q", inv.ContextURL, tc.wantContextURL)
 			}
-			if want := RegistryHost + "/blog:" + composeCommit; inv.ImageRef != want {
+			if want := RegistryHost + "/blog:" + buildImageTag(build); inv.ImageRef != want {
 				t.Errorf("ImageRef = %q, want %q (base must not affect the push target)", inv.ImageRef, want)
 			}
 		})
+	}
+}
+
+func TestComposeUsesPerBuildPushTag(t *testing.T) {
+	base := orkanov1alpha1.Build{
+		Spec: orkanov1alpha1.BuildSpec{
+			AppName: "api", Commit: composeCommit,
+			Source:   orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "acme/api"}},
+			Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+	}
+	first := base.DeepCopy()
+	first.Namespace, first.Name = "orkano-apps", "api-manual-first"
+	second := base.DeepCopy()
+	second.Namespace, second.Name = "orkano-apps", "api-manual-second"
+
+	firstRef := mustCompose(t, first, "").ImageRef
+	secondRef := mustCompose(t, second, "").ImageRef
+	if firstRef == secondRef {
+		t.Fatalf("same-revision manual Builds share push target %q", firstRef)
+	}
+	wantPrefix := RegistryHost + "/api:" + composeCommit[:12] + "-"
+	if !strings.HasPrefix(firstRef, wantPrefix) || !strings.HasPrefix(secondRef, wantPrefix) {
+		t.Fatalf("push refs = %q, %q, want prefix %q", firstRef, secondRef, wantPrefix)
+	}
+}
+
+func mustCompose(t *testing.T, build *orkanov1alpha1.Build, gitBaseURL string) Invocation {
+	t.Helper()
+	inv, err := Compose(build, gitBaseURL)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	return inv
+}
+
+func TestComposeUnsafeSourceAndStrategyPermutations(t *testing.T) {
+	zipHex := strings.Repeat("a", 64)
+	tests := []struct {
+		name  string
+		build *orkanov1alpha1.Build
+		check func(*testing.T, Invocation)
+	}{
+		{
+			name: "generic git remote Dockerfile",
+			build: &orkanov1alpha1.Build{Spec: orkanov1alpha1.BuildSpec{
+				AppName: "git-app", Commit: composeCommit,
+				Source:   orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{URL: "https://git.example.com/acme/app.git"}},
+				Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+			}},
+			check: func(t *testing.T, inv Invocation) {
+				if inv.ContextURL != "https://git.example.com/acme/app.git#"+composeCommit || inv.LocalSource != nil {
+					t.Fatalf("invocation = %+v", inv)
+				}
+			},
+		},
+		{
+			name: "ZIP local Dockerfile",
+			build: &orkanov1alpha1.Build{Spec: orkanov1alpha1.BuildSpec{
+				AppName: "zip-app", Commit: zipHex,
+				Source:   orkanov1alpha1.Source{Upload: &orkanov1alpha1.UploadSource{Digest: "sha256:" + zipHex}},
+				Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+			}},
+			check: func(t *testing.T, inv Invocation) {
+				if inv.ContextURL != "" || inv.LocalSource == nil || inv.LocalSource.ArchiveDigest != "sha256:"+zipHex {
+					t.Fatalf("invocation = %+v", inv)
+				}
+			},
+		},
+		{
+			name: "Nixpacks materializes Git",
+			build: &orkanov1alpha1.Build{Spec: orkanov1alpha1.BuildSpec{
+				AppName: "nix-app", Commit: composeCommit,
+				Source:   orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "acme/nix"}, SubPath: "server"},
+				Strategy: orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyNixpacks, Nixpacks: &orkanov1alpha1.NixpacksBuild{ConfigPath: "nixpacks.toml"}},
+			}},
+			check: func(t *testing.T, inv Invocation) {
+				if !inv.Nixpacks || inv.LocalSource == nil || inv.LocalSource.GitURL != "https://github.com/acme/nix.git" || inv.DockerfilePath != ".nixpacks/Dockerfile" {
+					t.Fatalf("invocation = %+v", inv)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) { tc.check(t, mustCompose(t, tc.build, DefaultGitBaseURL)) })
+	}
+}
+
+func TestComposeRejectsUnknownStrategyAndMismatchedUpload(t *testing.T) {
+	base := &orkanov1alpha1.Build{Spec: orkanov1alpha1.BuildSpec{
+		AppName: "demo", Commit: composeCommit,
+		Source:   orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "acme/demo"}},
+		Strategy: orkanov1alpha1.BuildStrategy{Strategy: "Mystery"},
+	}}
+	if _, err := Compose(base, ""); err == nil || !strings.Contains(err.Error(), "unsupported strategy") {
+		t.Fatalf("unknown strategy error = %v", err)
+	}
+	base.Spec.Source = orkanov1alpha1.Source{Upload: &orkanov1alpha1.UploadSource{Digest: "sha256:" + strings.Repeat("a", 64)}}
+	base.Spec.Strategy = orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile}
+	if _, err := Compose(base, ""); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("upload mismatch error = %v", err)
 	}
 }
 
@@ -369,6 +465,81 @@ func TestRenderStaticMode(t *testing.T) {
 		if strings.HasPrefix(a, "--local=") || strings.HasPrefix(a, "--opt=dockerfilekey=") {
 			t.Errorf("Dockerfile build emitted a static-only flag: %q", a)
 		}
+	}
+}
+
+func TestRenderLocalSourcePipelines(t *testing.T) {
+	build, opts := goldenInputs()
+	opts.ContextURL = ""
+	opts.LocalSource = &LocalSource{
+		ArchiveDigest: "sha256:" + strings.Repeat("a", 64),
+		AppName:       "demo",
+		SubPath:       "server",
+	}
+	opts.SourceFetcherImage = "ghcr.io/orkanoio/orkano-operator:test"
+	job, err := Render(build, opts)
+	if err != nil {
+		t.Fatalf("Render ZIP: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "fetch-source-archive" {
+		t.Fatalf("ZIP init containers = %+v", pod.InitContainers)
+	}
+	args := pod.Containers[0].Args
+	if !slices.Contains(args, "--local=context="+sourceMountPath+"/server") ||
+		!slices.Contains(args, "--local=dockerfile="+sourceMountPath+"/server") {
+		t.Fatalf("ZIP build args = %v", args)
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--opt=context=") {
+			t.Fatalf("ZIP build retained remote context: %q", arg)
+		}
+	}
+	if !hasReadOnlyMount(pod.Containers[0].VolumeMounts, "source", sourceMountPath) {
+		t.Fatalf("BuildKit source mounts = %+v", pod.Containers[0].VolumeMounts)
+	}
+	assertRestrictedInit(t, pod.InitContainers[0])
+
+	build, opts = goldenInputs()
+	opts.ContextURL = ""
+	opts.LocalSource = &LocalSource{GitURL: "https://git.example.com/acme/app.git", Commit: composeCommit}
+	opts.Nixpacks = true
+	opts.NixpacksConfigPath = "nixpacks.toml"
+	opts.DockerfilePath = ".nixpacks/Dockerfile"
+	job, err = Render(build, opts)
+	if err != nil {
+		t.Fatalf("Render Nixpacks: %v", err)
+	}
+	pod = job.Spec.Template.Spec
+	if len(pod.InitContainers) != 2 || pod.InitContainers[0].Name != "checkout-source" || pod.InitContainers[1].Name != "generate-nixpacks" {
+		t.Fatalf("Nixpacks init order = %+v", pod.InitContainers)
+	}
+	if pod.InitContainers[0].Image != DefaultGitImage || pod.InitContainers[1].Image != DefaultNixpacksImage {
+		t.Fatalf("Nixpacks images = %q, %q", pod.InitContainers[0].Image, pod.InitContainers[1].Image)
+	}
+	checkoutScript := pod.InitContainers[0].Args[0]
+	verifyFetched := strings.Index(checkoutScript, "rev-parse FETCH_HEAD")
+	checkout := strings.Index(checkoutScript, "checkout --detach FETCH_HEAD")
+	verifyCheckedOut := strings.Index(checkoutScript, "rev-parse HEAD")
+	if verifyFetched < 0 || checkout <= verifyFetched || verifyCheckedOut <= checkout {
+		t.Fatalf("checkout script does not verify FETCH_HEAD before checkout and HEAD after it: %s", checkoutScript)
+	}
+	if script := pod.InitContainers[1].Args[0]; !strings.Contains(script, "sha256sum -c -") || strings.Contains(strings.ToLower(script), "docker.sock") {
+		t.Fatalf("Nixpacks generator script did not verify its binary or mentioned a Docker socket: %s", script)
+	}
+	for _, init := range pod.InitContainers {
+		assertRestrictedInit(t, init)
+	}
+}
+
+func assertRestrictedInit(t *testing.T, container corev1.Container) {
+	t.Helper()
+	sc := container.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation ||
+		sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem || sc.SeccompProfile == nil ||
+		sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault || sc.Capabilities == nil ||
+		!slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) {
+		t.Fatalf("init %q is not restricted-grade: %+v", container.Name, sc)
 	}
 }
 

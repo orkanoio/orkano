@@ -36,7 +36,7 @@ func createApp(t *testing.T, name string, mutate func(*orkanov1alpha1.App)) *ork
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appsNamespace},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 		},

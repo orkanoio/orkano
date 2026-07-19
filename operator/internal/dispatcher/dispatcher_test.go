@@ -43,7 +43,7 @@ func makeApp(name, repo, ref string) *orkanov1alpha1.App {
 	return &orkanov1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
 		Spec: orkanov1alpha1.AppSpec{
-			Source: orkanov1alpha1.Source{GitHub: orkanov1alpha1.GitHubSource{Repo: repo, Ref: ref}},
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: repo, Ref: ref}},
 			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
 		},
 	}

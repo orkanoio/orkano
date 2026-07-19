@@ -30,7 +30,13 @@ func TestProductImagePinsAreMultiArch(t *testing.T) {
 	if err := exec.Command("docker", "buildx", "version").Run(); err != nil {
 		t.Skipf("docker buildx not available, skipping live image-pin check: %v", err)
 	}
-	refs := append([]string{buildjob.DefaultImage, buildjob.StaticServerImage, doctor.CanaryImage}, controller.PinnedPostgresImages()...)
+	refs := append([]string{
+		buildjob.DefaultImage,
+		buildjob.DefaultGitImage,
+		buildjob.DefaultNixpacksImage,
+		buildjob.StaticServerImage,
+		doctor.CanaryImage,
+	}, controller.PinnedPostgresImages()...)
 	refs = append(refs, controller.PinnedMongoImages()...)
 	for _, ref := range refs {
 		t.Run(ref, func(t *testing.T) {

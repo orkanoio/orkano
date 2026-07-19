@@ -36,7 +36,7 @@ func TestCacheScopedPerType(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: probe, Namespace: appsNamespace},
 		Spec: orkanov1alpha1.AppSpec{
 			Type:   orkanov1alpha1.WorkloadWorker,
-			Source: orkanov1alpha1.Source{GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"}},
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"}},
 			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
 		},
 	}

@@ -35,7 +35,9 @@ type BuildSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	AppName string `json:"appName"`
 
-	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	// Git commits are 40 lowercase hex characters; uploaded source artifacts
+	// use the 64-character hex payload of their sha256 digest.
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
 	Commit string `json:"commit"`
 
 	Source Source `json:"source"`
