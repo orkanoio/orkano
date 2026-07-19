@@ -9,11 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/internal/k3s"
 	"github.com/orkanoio/orkano/internal/ssh"
 	"github.com/orkanoio/orkano/internal/ssh/sshtest"
@@ -317,6 +319,54 @@ func TestInitSecretsVaultFlagDefaultOff(t *testing.T) {
 	}
 	if f.DefValue != "false" {
 		t.Fatalf("--secrets-vault must default off (ADR-0018 opt-in), got %q", f.DefValue)
+	}
+}
+
+func TestInitUnsafeFeatureFlagDefaultOff(t *testing.T) {
+	cmd := newInitCommand("test")
+	f := cmd.Flags().Lookup("enable-unsafe-feature")
+	if f == nil {
+		t.Fatal("--enable-unsafe-feature flag not registered")
+	}
+	if f.DefValue != "[]" {
+		t.Fatalf("--enable-unsafe-feature must default off, got %q", f.DefValue)
+	}
+	if !strings.Contains(f.Usage, "UNSAFE") {
+		t.Fatalf("--enable-unsafe-feature help must mark the opt-in unsafe, got %q", f.Usage)
+	}
+}
+
+func TestInitRejectsUnknownUnsafeFeatureBeforeMutation(t *testing.T) {
+	var out, errw bytes.Buffer
+	err := runInit(context.Background(), &out, &errw, &initOptions{
+		unsafeFeatures: []string{"source.unknown"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "source.unknown") {
+		t.Fatalf("want unknown unsafe-feature error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "--node is required") {
+		t.Fatalf("unsafe features were not validated before install setup: %v", err)
+	}
+}
+
+func TestInitUnsafeFeaturesThreading(t *testing.T) {
+	srv := sshtest.New(healthyNode(""))
+	defer srv.Close()
+	deploy := stubDeploy(t, "")
+	stubWireRegistry(t)
+
+	opt := baseOptions(t, srv)
+	opt.unsafeFeatures = []string{string(features.SourceZip), string(features.SourceGit), string(features.SourceZip), string(features.BuildNixpacks)}
+	var out, errw bytes.Buffer
+	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
+		t.Fatalf("runInit: %v\nstderr:\n%s", err, errw.String())
+	}
+	want := []string{string(features.BuildNixpacks), string(features.SourceGit), string(features.SourceZip)}
+	if !deploy.called || !slices.Equal(deploy.opt.unsafeFeatures, want) {
+		t.Fatalf("component deploy unsafe features = %v, want canonical %v", deploy.opt.unsafeFeatures, want)
+	}
+	if !strings.Contains(out.String(), "UNSAFE features:    build.nixpacks, source.git, source.zip") {
+		t.Errorf("summary missing unsafe-feature warning:\n%s", out.String())
 	}
 }
 

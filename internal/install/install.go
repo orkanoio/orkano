@@ -73,6 +73,10 @@ type Config struct {
 	ACMEProd bool
 	// RepoAllowlist seeds the receiver's ORKANO_REPO_ALLOWLIST (owner/name).
 	RepoAllowlist []string
+	// UnsafeFeatures is the explicit allowlist of security-sensitive source and
+	// build capabilities enabled for this installation. Empty is fail-closed.
+	// Unknown IDs are rejected before any manifests are written.
+	UnsafeFeatures []string
 	// ReceiverHost is the public hostname for the webhook receiver's Ingress.
 	// Empty renders no Ingress — the receiver stays ClusterIP-only (INV-05).
 	ReceiverHost string

@@ -6,9 +6,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/orkanoio/orkano/internal/checks"
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/internal/install"
 	"github.com/orkanoio/orkano/internal/k3s"
 	"github.com/orkanoio/orkano/internal/localexec"
@@ -19,23 +21,24 @@ import (
 )
 
 type initOptions struct {
-	version       string
-	local         bool
-	nodes         []string
-	sshUser       string
-	sshPort       int
-	sshKeyPath    string
-	hostKeyPaths  []string
-	acceptNewKey  bool
-	k3sVersion    string
-	kubeconfig    string
-	readyTimeout  time.Duration
-	skipPreflight bool
-	acmeEmail     string
-	acmeProd      bool
-	allowRepos    []string
-	receiverHost  string
-	secretsVault  bool
+	version        string
+	local          bool
+	nodes          []string
+	sshUser        string
+	sshPort        int
+	sshKeyPath     string
+	hostKeyPaths   []string
+	acceptNewKey   bool
+	k3sVersion     string
+	kubeconfig     string
+	readyTimeout   time.Duration
+	skipPreflight  bool
+	acmeEmail      string
+	acmeProd       bool
+	allowRepos     []string
+	unsafeFeatures []string
+	receiverHost   string
+	secretsVault   bool
 }
 
 func newInitCommand(version string) *cobra.Command {
@@ -71,6 +74,8 @@ func newInitCommand(version string) *cobra.Command {
 	f.StringVar(&opt.acmeEmail, "acme-email", "", "email to register the Let's Encrypt account with (optional)")
 	f.BoolVar(&opt.acmeProd, "acme-prod", false, "use Let's Encrypt production instead of staging (staging is the safe default)")
 	f.StringArrayVar(&opt.allowRepos, "allow-repo", nil, "owner/repo allowed to trigger builds; repeat to allow several (the webhook receiver's allowlist)")
+	f.StringArrayVar(&opt.unsafeFeatures, "enable-unsafe-feature", nil,
+		fmt.Sprintf("UNSAFE: enable a security-sensitive capability; repeat for %s, %s, or %s", features.SourceGit, features.SourceZip, features.BuildNixpacks))
 	f.StringVar(&opt.receiverHost, "receiver-host", "", "public hostname to expose the webhook receiver on over HTTPS (optional; without it the receiver stays cluster-internal)")
 	f.BoolVar(&opt.secretsVault, "secrets-vault", false, "install the External Secrets Operator for external secret stores (Vault etc.); opt-in — re-run init with this flag to add it later")
 
@@ -78,6 +83,9 @@ func newInitCommand(version string) *cobra.Command {
 }
 
 func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
+	if err := normalizeUnsafeFeatures(opt); err != nil {
+		return err
+	}
 	if opt.local {
 		return runInitLocal(ctx, out, errw, opt)
 	}
@@ -171,6 +179,22 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	}
 
 	printSummary(out, opt, first, anyFresh, anyChanged, bootstrapToken)
+	return nil
+}
+
+// normalizeUnsafeFeatures validates the explicit opt-ins before init performs
+// preflight, SSH, bootstrap, or any other node mutation. It also rewrites the
+// slice into canonical order so every downstream install.Config receives the
+// same stable value regardless of flag order.
+func normalizeUnsafeFeatures(opt *initOptions) error {
+	enabled, err := features.Parse(opt.unsafeFeatures)
+	if err != nil {
+		return fmt.Errorf("--enable-unsafe-feature: %w", err)
+	}
+	opt.unsafeFeatures = nil
+	if csv := enabled.CSV(); csv != "" {
+		opt.unsafeFeatures = strings.Split(csv, ",")
+	}
 	return nil
 }
 
@@ -301,6 +325,7 @@ func deployComponentsLocal(ctx context.Context, errw io.Writer, opt *initOptions
 		ACMEEmail:        opt.acmeEmail,
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
+		UnsafeFeatures:   opt.unsafeFeatures,
 		ReceiverHost:     opt.receiverHost,
 		SecretsVault:     opt.secretsVault,
 		ReadinessTargets: readinessTargets(opt),
@@ -375,6 +400,7 @@ func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, pri
 		ACMEEmail:        opt.acmeEmail,
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
+		UnsafeFeatures:   opt.unsafeFeatures,
 		ReceiverHost:     opt.receiverHost,
 		SecretsVault:     opt.secretsVault,
 		ReadinessTargets: readinessTargets(opt),
@@ -611,6 +637,9 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	if opt.secretsVault {
 		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
 	}
+	if len(opt.unsafeFeatures) > 0 {
+		writef(out, "  UNSAFE features:    %s (enabled by explicit opt-in)\n", strings.Join(opt.unsafeFeatures, ", "))
+	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
 	} else {
@@ -667,6 +696,9 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	writef(out, "  registry:           wired\n")
 	if opt.secretsVault {
 		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
+	}
+	if len(opt.unsafeFeatures) > 0 {
+		writef(out, "  UNSAFE features:    %s (enabled by explicit opt-in)\n", strings.Join(opt.unsafeFeatures, ", "))
 	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)

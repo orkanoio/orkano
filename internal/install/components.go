@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+
+	"github.com/orkanoio/orkano/internal/features"
 )
 
 //go:embed templates/*.yaml.tmpl
@@ -41,13 +43,15 @@ const receiverIngressTemplate = "receiver-ingress.yaml.tmpl"
 
 // templateData feeds the component templates.
 type templateData struct {
-	OperatorImage  string
-	ReceiverImage  string
-	DashboardImage string
-	ACMEServer     string
-	ACMEEmail      string
-	RepoAllowlist  string // comma-joined owner/repo list
-	ReceiverHost   string // public hostname for the receiver Ingress (may be empty)
+	OperatorImage    string
+	ReceiverImage    string
+	DashboardImage   string
+	ACMEServer       string
+	ACMEEmail        string
+	RepoAllowlist    string // comma-joined owner/repo list
+	UnsafeFeatures   string // canonical, comma-joined explicit unsafe-feature IDs
+	SourceZipEnabled bool   // pod label that opens dashboard-to-registry ingress
+	ReceiverHost     string // public hostname for the receiver Ingress (may be empty)
 }
 
 // renderComponents renders the per-install component manifests (operator,
@@ -56,6 +60,10 @@ type templateData struct {
 // component images are version-tagged, so there is nothing to render without a
 // version (the static-manifest-only path the engine-core tests exercise).
 func renderComponents(cfg Config) ([]manifestFile, error) {
+	enabledUnsafe, err := features.Parse(cfg.UnsafeFeatures)
+	if err != nil {
+		return nil, fmt.Errorf("install: unsafe features: %w", err)
+	}
 	if cfg.Version == "" {
 		return nil, nil
 	}
@@ -74,13 +82,15 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 	}
 
 	data := templateData{
-		OperatorImage:  imageRepo + "/orkano-operator:" + cfg.Version,
-		ReceiverImage:  imageRepo + "/orkano-receiver:" + cfg.Version,
-		DashboardImage: imageRepo + "/orkano-dashboard:" + cfg.Version,
-		ACMEServer:     acmeServer(cfg.ACMEProd),
-		ACMEEmail:      cfg.ACMEEmail,
-		RepoAllowlist:  allowlist,
-		ReceiverHost:   cfg.ReceiverHost,
+		OperatorImage:    imageRepo + "/orkano-operator:" + cfg.Version,
+		ReceiverImage:    imageRepo + "/orkano-receiver:" + cfg.Version,
+		DashboardImage:   imageRepo + "/orkano-dashboard:" + cfg.Version,
+		ACMEServer:       acmeServer(cfg.ACMEProd),
+		ACMEEmail:        cfg.ACMEEmail,
+		RepoAllowlist:    allowlist,
+		UnsafeFeatures:   enabledUnsafe.CSV(),
+		SourceZipEnabled: enabledUnsafe.Enabled(features.SourceZip),
+		ReceiverHost:     cfg.ReceiverHost,
 	}
 
 	entries, err := componentTemplates.ReadDir("templates")

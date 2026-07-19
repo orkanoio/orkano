@@ -68,12 +68,6 @@ func (f *fakePodStreamer) StreamPodLog(ctx context.Context, namespace, pod strin
 	return &scriptedReader{data: []byte(f.content[pod]), block: f.block, ctx: ctx, closed: make(chan struct{})}, nil
 }
 
-func (f *fakePodStreamer) lastStreamNamespace() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.streamNS
-}
-
 func (f *fakePodStreamer) recordedOpts() []PodLogOptions {
 	f.mu.Lock()
 	defer f.mu.Unlock()

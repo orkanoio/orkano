@@ -70,6 +70,7 @@ func Checks(opt Options) []check.Check {
 		etcdSnapshotAgeCheck(opt),
 		networkPolicyEnforcedCheck(opt),
 		secretsStoreHealthCheck(opt),
+		unsafeFeaturesDisabledCheck(opt),
 	}
 }
 

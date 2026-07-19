@@ -43,6 +43,7 @@ you learn about a gap, not whether: the same probes resurface as
 | `acme.production` | `false` | `false` = Let's Encrypt staging (safe default), `true` = production certificates. |
 | `receiver.host` | `""` | Public hostname for the webhook receiver's Ingress. Empty = ClusterIP-only, no Ingress (INV-05); upgrade with a host to expose it later. |
 | `repoAllowlist` | `[]` | GitHub repos (`owner/name`) the receiver accepts webhooks from. Empty = deny-all. |
+| `features.unsafe` | `[]` | Explicit unsafe-feature opt-ins: `source.git`, `source.zip`, and/or `build.nixpacks`. Disabled by default; the enabled set is passed to both the dashboard and operator and changing it rolls both pods. |
 | `ingress.className` | `traefik` | IngressClass for the receiver Ingress and the ACME HTTP-01 solver. |
 | `certManager.install` | `true` | Install the vendored cert-manager. Set `false` when the cluster already runs cert-manager (the preflight detects this). |
 | `secretsVault.install` | `false` | Install the vendored, namespace-scoped External Secrets Operator (ADR-0018, opt-in). |
@@ -50,7 +51,9 @@ you learn about a gap, not whether: the same probes resurface as
 `values.schema.json` bounds every value that lands in a rendered YAML scalar
 (the same fail-closed patterns `orkano init` enforces on its flags), so a
 malformed value fails at `helm install` instead of producing a broken
-manifest. A `storageClassName` value is deliberately absent: both install
+manifest. Unsafe features are an enum and duplicate entries are rejected;
+Helm's install notes print a prominent warning when any are enabled. A
+`storageClassName` value is deliberately absent: both install
 paths pin PVCs to the cluster's **default** StorageClass — the
 `cluster.storageclass-default` preflight check requires one. The remaining
 component-values work (node prep) lands as the chart grows toward parity

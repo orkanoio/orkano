@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "$comment": "Mirrors internal/install/components.go's input validation (versionRe/emailRe/repoNameRe/hostRe): the same fail-closed bounds on every value that lands in a rendered YAML scalar, so a value can never break the YAML or inject into it. Keep the patterns in sync with the Go regexes.",
+  "$comment": "Mirrors internal/install/components.go's input validation (versionRe/emailRe/repoNameRe/hostRe plus internal/features' stable IDs): the same fail-closed bounds on every value that lands in a rendered YAML scalar, so a value can never break the YAML, inject into it, or silently select an unknown feature. Keep the patterns and enum in sync with Go.",
   "type": "object",
   "properties": {
     "images": {
@@ -42,6 +42,23 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+      }
+    },
+    "features": {
+      "type": "object",
+      "properties": {
+        "unsafe": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "source.git",
+              "source.zip",
+              "build.nixpacks"
+            ]
+          }
+        }
       }
     },
     "ingress": {

@@ -277,6 +277,7 @@ func TestChecksContract(t *testing.T) {
 		{"backup.etcd-snapshot-age", check.SeverityWarning},
 		{"net.networkpolicy-enforced", check.SeverityCritical},
 		{"secrets.store-health", check.SeverityWarning},
+		{"features.unsafe-disabled", check.SeverityWarning},
 	}
 	cs := doctor.Checks(doctor.Options{})
 	if len(cs) != len(want) {

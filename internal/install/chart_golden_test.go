@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/orkanoio/orkano/internal/features"
 )
 
 // The golden-render half of the ADR-0019 fork-b drift guard: for equivalent
@@ -59,12 +61,18 @@ func TestChartComponentGoldenRender(t *testing.T) {
 				ACMEEmail:     "ops@example.com",
 				ACMEProd:      true,
 				RepoAllowlist: []string{"orkanoio/orkano", "acme/widgets"},
-				ReceiverHost:  "hooks.example.com",
+				UnsafeFeatures: []string{
+					string(features.SourceZip),
+					string(features.BuildNixpacks),
+					string(features.SourceGit),
+				},
+				ReceiverHost: "hooks.example.com",
 			},
 			args: []string{
 				"--set", "acme.email=ops@example.com",
 				"--set", "acme.production=true",
 				"--set", "repoAllowlist={orkanoio/orkano,acme/widgets}",
+				"--set", "features.unsafe={source.zip,build.nixpacks,source.git}",
 				"--set", "receiver.host=hooks.example.com",
 			},
 		},
@@ -93,6 +101,34 @@ func TestChartComponentGoldenRender(t *testing.T) {
 
 			assertSameDocSet(t, chartDocs, goDocs)
 		})
+	}
+}
+
+func TestValuesSchemaUnsafeFeatureEnum(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(chartRoot, "values.schema.json"))
+	if err != nil {
+		t.Fatalf("read values.schema.json: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse values.schema.json: %v", err)
+	}
+	props := schema["properties"].(map[string]any)
+	featureProps := props["features"].(map[string]any)["properties"].(map[string]any)
+	unsafe := featureProps["unsafe"].(map[string]any)
+	if unique, _ := unsafe["uniqueItems"].(bool); !unique {
+		t.Error("features.unsafe must reject duplicate opt-ins")
+	}
+	items := unsafe["items"].(map[string]any)
+	got := items["enum"].([]any)
+	want := []string{string(features.SourceGit), string(features.SourceZip), string(features.BuildNixpacks)}
+	if len(got) != len(want) {
+		t.Fatalf("features.unsafe enum has %d entries, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("features.unsafe enum[%d] = %v, want %q", i, got[i], want[i])
+		}
 	}
 }
 
