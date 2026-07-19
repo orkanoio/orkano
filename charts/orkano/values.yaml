@@ -36,6 +36,12 @@ receiver:
 # Empty = deny-all (fail closed).
 repoAllowlist: []
 
+# Security-sensitive capabilities that are disabled by default. Enabling one
+# expands Orkano's source/build trust surface; use only after reviewing the
+# warning shown by `helm install` and `orkano doctor`.
+features:
+  unsafe: []
+
 ingress:
   # IngressClass for the receiver Ingress and the ACME HTTP-01 solver.
   # Domain-rendered app Ingresses follow the cluster default until the

@@ -1,5 +1,14 @@
 Orkano {{ .Chart.AppVersion }} is installing.
 
+{{- if .Values.features.unsafe }}
+
+WARNING: unsafe Orkano features are ENABLED:
+  {{ join ", " (sortAlpha .Values.features.unsafe) }}
+
+These opt-ins expand the source/build trust surface. Run `orkano doctor`
+after installation and disable any feature you do not need.
+{{- end }}
+
 NOTE (M4.2, under construction): this chart does not yet run the
 bootstrap-secrets Job — the components it deploys (operator, receiver,
 dashboard, migration Job, platform Postgres) stay unready until the

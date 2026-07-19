@@ -41,6 +41,14 @@ spec:
                 secretKeyRef:
                   name: orkano-operator-db
                   key: dsn
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the operator.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ .UnsafeFeatures }}"
+            # ZIP extraction reuses this exact, version-matched binary in a
+            # restricted build-pod init container.
+            - name: ORKANO_SOURCE_FETCHER_IMAGE
+              value: "{{ .OperatorImage }}"
           ports:
             - name: health
               containerPort: 8081

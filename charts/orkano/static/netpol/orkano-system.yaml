@@ -1,9 +1,10 @@
 # Registry ingress lockdown (M1.2): the registry has no auth yet (per-build
 # credentials land with the Build controller task group), so until then this
 # policy is the only thing keeping arbitrary in-cluster pods — including
-# user code in orkano-apps — from pushing to or pulling from it. Two peers
-# may reach it: build pods (push/pull) and the operator (digest resolution
-# via registry manifest HEAD, INV-06). The operator peer is a label
+# user code in orkano-apps — from pushing to or pulling from it. Three peers
+# may reach it: build pods (push/pull), the operator (digest resolution
+# via registry manifest HEAD, INV-06), and the dashboard (ZIP source uploads,
+# but only when source.zip is explicitly enabled). The same label
 # contract like the build-pod one: M1.5's component deploy MUST label the
 # operator pods app.kubernetes.io/name: orkano-operator or digest
 # resolution fails closed. Capability-probed by the substrate smoke
@@ -46,6 +47,13 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: orkano-operator
+        # The dashboard receives no registry credential and mounts only ca.crt.
+        # Its second label is rendered true only when source.zip is explicitly
+        # enabled, so the default installation has no dashboard-to-registry path.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orkano-dashboard
+              orkano.io/source-zip-enabled: "true"
       ports:
         - port: 5000
           protocol: TCP

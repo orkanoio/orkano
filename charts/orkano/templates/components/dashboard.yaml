@@ -20,6 +20,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: orkano-dashboard
+        orkano.io/source-zip-enabled: {{ has "source.zip" .Values.features.unsafe | quote }}
     spec:
       serviceAccountName: orkano-dashboard
       # Explicit (the default): the dashboard needs its SA token to reach the
@@ -60,6 +61,14 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the dashboard.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ include "orkano.unsafeFeaturesCSV" . }}"
+            - name: ORKANO_REGISTRY_URL
+              value: "https://orkano-registry.orkano-system.svc.cluster.local"
+            - name: ORKANO_REGISTRY_CA_FILE
+              value: "/orkano-registry-ca/ca.crt"
 {{- if .Values.receiver.host }}
             # The receiver's public webhook endpoint (init's --receiver-host /
             # the chart's receiver.host), baked into the GitHub App manifest
@@ -166,10 +175,21 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # Project only the public CA certificate. The registry TLS private key
+            # remains inaccessible to the dashboard process.
+            - name: registry-ca
+              mountPath: /orkano-registry-ca
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem (ADR-0007) with a writable /tmp for scratch.
         - name: tmp
           emptyDir: {}
+        - name: registry-ca
+          secret:
+            secretName: orkano-registry-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
 ---
 # ClusterIP only: the dashboard is never internet-reachable by default (INV-05).
 # Access is the onboarding wizard's job (orkano proxy / Tailscale / IAP); there
