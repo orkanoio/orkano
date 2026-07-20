@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -47,6 +48,14 @@ const (
 	// buildNameSHALen is how much of the commit goes in the Build name — enough
 	// to stay unique per App across commits while keeping the name readable.
 	buildNameSHALen = 12
+	manualEventType = "manual"
+	pushEventType   = "push"
+	manualHashLen   = 8
+)
+
+var (
+	manualDeliveryIDPattern = regexp.MustCompile(`^manual-[0-9a-f]{32}$`)
+	manualAppNamePattern    = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 )
 
 // CommitResolver re-fetches the authoritative HEAD commit for a repo + ref.
@@ -187,7 +196,10 @@ func (d *Dispatcher) processOne(ctx context.Context) (bool, error) {
 // when a transient failure means the row should be retried. err carries the
 // reason for logging.
 func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, err error) {
-	apps, err := d.appsForRepo(ctx, delivery.Repo)
+	if err := validateDelivery(delivery); err != nil {
+		return true, err
+	}
+	apps, err := d.appsForDelivery(ctx, delivery)
 	if err != nil {
 		return false, fmt.Errorf("listing Apps for repo %s: %w", delivery.Repo, err)
 	}
@@ -217,7 +229,7 @@ func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, 
 		case resolveErr != nil:
 			return false, fmt.Errorf("resolving commit for App %s/%s: %w", app.Namespace, app.Name, resolveErr)
 		}
-		if err := d.createBuild(ctx, app, sha); err != nil {
+		if err := d.createBuild(ctx, app, sha, delivery); err != nil {
 			return false, fmt.Errorf("creating Build for App %s/%s: %w", app.Namespace, app.Name, err)
 		}
 	}
@@ -226,6 +238,28 @@ func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, 
 		return true, fmt.Errorf("every App for repo %s was unresolvable", delivery.Repo)
 	}
 	return true, nil
+}
+
+func validateDelivery(delivery *Delivery) error {
+	if delivery == nil {
+		return errors.New("delivery is nil")
+	}
+	if delivery.Repo == "" {
+		return fmt.Errorf("delivery %q has an empty source pointer", delivery.DeliveryID)
+	}
+	switch delivery.EventType {
+	case pushEventType:
+		if delivery.DeliveryID == "" || delivery.AppName != "" {
+			return fmt.Errorf("push delivery %q has an invalid app scope", delivery.DeliveryID)
+		}
+	case manualEventType:
+		if !manualDeliveryIDPattern.MatchString(delivery.DeliveryID) || !manualAppNamePattern.MatchString(delivery.AppName) || len(delivery.AppName) > 253 {
+			return fmt.Errorf("manual delivery %q has an invalid app scope", delivery.DeliveryID)
+		}
+	default:
+		return fmt.Errorf("delivery %q has unsupported event type %q", delivery.DeliveryID, delivery.EventType)
+	}
+	return nil
 }
 
 func (d *Dispatcher) resolveCommit(ctx context.Context, app *orkanov1alpha1.App) (string, error) {
@@ -246,6 +280,22 @@ func (d *Dispatcher) resolveCommit(ctx context.Context, app *orkanov1alpha1.App)
 	default:
 		return "", fmt.Errorf("app %s has no source: %w", app.Name, gitresolver.ErrUnresolvable)
 	}
+}
+
+func (d *Dispatcher) appsForDelivery(ctx context.Context, delivery *Delivery) ([]orkanov1alpha1.App, error) {
+	if delivery.AppName == "" {
+		return d.appsForRepo(ctx, delivery.Repo)
+	}
+	var apps orkanov1alpha1.AppList
+	if err := d.Client.List(ctx, &apps); err != nil {
+		return nil, err
+	}
+	for i := range apps.Items {
+		if apps.Items[i].Name == delivery.AppName {
+			return []orkanov1alpha1.App{apps.Items[i]}, nil
+		}
+	}
+	return nil, nil
 }
 
 // appsForRepo returns every App whose source repo matches, case-insensitively
@@ -270,11 +320,11 @@ func (d *Dispatcher) appsForRepo(ctx context.Context, repo string) ([]orkanov1al
 	return matched, nil
 }
 
-// createBuild creates the snapshot Build, treating AlreadyExists as success —
-// a duplicate delivery, a re-resolve to the same HEAD, and a re-processed row
-// all converge on one deterministically named Build (idempotency).
-func (d *Dispatcher) createBuild(ctx context.Context, app *orkanov1alpha1.App, sha string) error {
-	build := buildFromApp(app, sha, buildName(app.Name, sha))
+// createBuild creates the snapshot Build, treating AlreadyExists as success.
+// Pushes converge by commit; a manual request gets one deterministic name for
+// that queue row, so retrying it is idempotent while a later click is a new attempt.
+func (d *Dispatcher) createBuild(ctx context.Context, app *orkanov1alpha1.App, sha string, delivery *Delivery) error {
+	build := buildFromApp(app, sha, buildNameForDelivery(app.Name, sha, delivery))
 	err := d.Client.Create(ctx, build)
 	if apierrors.IsAlreadyExists(err) {
 		return nil
@@ -314,6 +364,15 @@ func buildFromApp(app *orkanov1alpha1.App, sha, name string) *orkanov1alpha1.Bui
 // commit is lowercase hex, so the result is a valid object name.
 func buildName(appName, sha string) string {
 	return buildNameWithSuffix(appName, sha, "")
+}
+
+func buildNameForDelivery(appName, sha string, delivery *Delivery) string {
+	if delivery.EventType != manualEventType {
+		return buildName(appName, sha)
+	}
+	sum := sha256.Sum256([]byte(delivery.DeliveryID))
+	suffix := "r" + hex.EncodeToString(sum[:])[:manualHashLen]
+	return buildNameWithSuffix(appName, sha, suffix)
 }
 
 func buildNameWithSuffix(appName, sha, suffix string) string {

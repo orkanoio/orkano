@@ -8,15 +8,22 @@ INSERT INTO webhook_deliveries (delivery_id, repo, event_type)
 VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING;
 
+-- name: EnqueueManualDelivery :execrows
+-- The authenticated dashboard rings the same doorbell, scoped to exactly one
+-- App. The dispatcher still re-fetches the authoritative repository HEAD.
+INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name)
+VALUES ($1, $2, 'manual', $3)
+ON CONFLICT DO NOTHING;
+
 -- name: ClaimDelivery :one
 -- The dispatcher's consume half: claim the oldest doorbell, skipping any row a
 -- concurrent claim already holds. FOR UPDATE locks the row until the surrounding
 -- transaction ends, so the dispatcher can act on the delivery (re-fetch the
 -- commit, create the Build) and only then DELETE + COMMIT — at-least-once
--- delivery, made exactly-once by the Build's deterministic name. SKIP LOCKED
+-- delivery, made idempotent by the Build's deterministic per-row name. SKIP LOCKED
 -- keeps a single stuck delivery from blocking the rest (and is correct if a
 -- second consumer ever appears). No rows -> pgx.ErrNoRows = queue drained.
-SELECT id, delivery_id, repo, event_type
+SELECT id, delivery_id, repo, event_type, app_name
 FROM webhook_deliveries
 ORDER BY id
 FOR UPDATE SKIP LOCKED

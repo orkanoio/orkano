@@ -591,12 +591,19 @@ func TestDashboardRoleBlastRadius(t *testing.T) {
 	_, err = dash.Exec(ctx, "TRUNCATE settings")
 	assertDenied(t, "dashboard TRUNCATE settings", err)
 
-	// The dashboard role holds nothing on the webhook queue — it can neither read
-	// nor ring the doorbell (cross-component blast-radius).
+	// Manual deploy recovery grants the dashboard exactly one queue capability:
+	// insert an app-scoped doorbell. It still cannot inspect or drain the queue.
 	_, err = dash.Exec(ctx, "SELECT delivery_id FROM webhook_deliveries")
 	assertDenied(t, "dashboard SELECT webhook_deliveries", err)
-	_, err = dash.Exec(ctx, "INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ('x','y','push')")
-	assertDenied(t, "dashboard INSERT webhook_deliveries", err)
+	if _, err := dash.Exec(ctx, "INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name) VALUES ('manual-11111111111111111111111111111111','orkanoio/demo','manual','demo')"); err != nil {
+		t.Fatalf("dashboard INSERT manual webhook_deliveries should succeed: %v", err)
+	}
+	_, err = dash.Exec(ctx, "UPDATE webhook_deliveries SET repo = 'x'")
+	assertDenied(t, "dashboard UPDATE webhook_deliveries", err)
+	_, err = dash.Exec(ctx, "DELETE FROM webhook_deliveries")
+	assertDenied(t, "dashboard DELETE webhook_deliveries", err)
+	_, err = dash.Exec(ctx, "TRUNCATE webhook_deliveries")
+	assertDenied(t, "dashboard TRUNCATE webhook_deliveries", err)
 
 	// The reverse direction: the internet-facing receiver and the dispatcher hold
 	// nothing on the dashboard's account store — a DB compromise of the doorbell
