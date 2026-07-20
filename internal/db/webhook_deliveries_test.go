@@ -131,6 +131,24 @@ func TestWebhookQueue(t *testing.T) {
 		}
 	})
 
+	t.Run("event and app scope combinations are constrained", func(t *testing.T) {
+		reset(t)
+		for _, tc := range []struct {
+			name string
+			sql  string
+		}{
+			{name: "push cannot target app", sql: "INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name) VALUES ('push-scoped', 'orkanoio/demo', 'push', 'demo')"},
+			{name: "manual requires app", sql: "INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ('manual-11111111111111111111111111111111', 'orkanoio/demo', 'manual')"},
+			{name: "manual id is typed", sql: "INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name) VALUES ('forged', 'orkanoio/demo', 'manual', 'demo')"},
+			{name: "unknown event", sql: "INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ('unknown', 'orkanoio/demo', 'other')"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := pool.Exec(ctx, tc.sql)
+				assertSQLState(t, tc.name, err, "23514")
+			})
+		}
+	})
+
 	t.Run("schema carries no payload column", func(t *testing.T) {
 		rows, err := pool.Query(ctx, `
 			SELECT column_name FROM information_schema.columns
@@ -145,7 +163,7 @@ func TestWebhookQueue(t *testing.T) {
 		}
 		// The webhook is a doorbell: only pointer fields exist, so no later code
 		// can read a stored payload it was never meant to trust (INV-03/INV-04).
-		want := []string{"delivery_id", "event_type", "id", "received_at", "repo"}
+		want := []string{"app_name", "delivery_id", "event_type", "id", "received_at", "repo"}
 		if !slices.Equal(cols, want) {
 			t.Fatalf("columns = %v, want %v", cols, want)
 		}

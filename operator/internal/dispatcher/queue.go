@@ -16,7 +16,7 @@ import (
 // Nack leaves it for a later poll (a transient failure). The implementation
 // holds a row lock from claim until finalize, so the dispatcher can act on a
 // delivery and only then commit its removal — at-least-once delivery, made
-// exactly-once by the Build's deterministic name.
+// idempotent by the Build's deterministic push or per-request name.
 type Queue interface {
 	// ClaimNext claims the oldest unprocessed delivery and locks its row until
 	// the returned Delivery is Ack'd or Nack'd. It returns (nil, nil) when the
@@ -30,9 +30,12 @@ type Delivery struct {
 	ID         int64
 	DeliveryID string
 	Repo       string
-	// EventType is the queue row's event_type; the receiver pins it to "push"
-	// before enqueue. Carried for completeness and logging — routing keys on Repo.
+	// EventType is "push" for receiver doorbells and "manual" for an authenticated
+	// dashboard request.
 	EventType string
+	// AppName narrows a manual request to exactly one App. Empty push doorbells
+	// retain repo-wide monorepo fan-out.
+	AppName string
 
 	ack  func(context.Context) error
 	nack func(context.Context) error
@@ -91,6 +94,7 @@ func (q *PgxQueue) ClaimNext(ctx context.Context) (*Delivery, error) {
 		DeliveryID: row.DeliveryID,
 		Repo:       row.Repo,
 		EventType:  row.EventType,
+		AppName:    row.AppName.String,
 		ack: func(ctx context.Context) error {
 			if err := db.New(tx).DeleteDelivery(ctx, id); err != nil {
 				_ = tx.Rollback(ctx)
