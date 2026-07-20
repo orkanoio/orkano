@@ -61,6 +61,10 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
+            # Non-secret mirror of the receiver policy: the dashboard uses it
+            # only to explain whether automatic push deploys are enabled.
+            - name: ORKANO_REPO_ALLOWLIST
+              value: "{{ .RepoAllowlist }}"
             # Explicit unsafe-feature opt-ins. This lives directly in the pod
             # template (not a ConfigMap) so a value change rolls the dashboard.
             - name: ORKANO_UNSAFE_FEATURES

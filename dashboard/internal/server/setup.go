@@ -112,6 +112,7 @@ type setupStatusResponse struct {
 	// command either way.
 	OIDCPendingRestart bool             `json:"oidcPendingRestart"`
 	GitHub             setupGitHubState `json:"github"`
+	RepoAllowlist      []string         `json:"repoAllowlist"`
 }
 
 type setupGitHubState struct {
@@ -157,6 +158,7 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		OIDCRedirectURL:      s.pinnedOIDCRedirectURL(),
 		OIDCEnabled:          s.cfg.OIDC != nil,
 		OIDCPendingRestart:   oidcPending,
+		RepoAllowlist:        append([]string{}, s.cfg.RepoAllowlist...),
 		GitHub: setupGitHubState{
 			Connected:   settings[settingGitHubConnectedAt] != "",
 			AppSlug:     settings[settingGitHubAppSlug],

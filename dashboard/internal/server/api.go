@@ -60,8 +60,11 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
 		ar.Get("/{name}/deploys", s.handleListDeploys)
+		ar.Get("/{name}/builds", s.handleListBuilds)
+		ar.Post("/{name}/deploy", s.handleDeployApp)
 		ar.Post("/{name}/source/archive", s.handleUploadSourceArchive)
 		ar.Put("/{name}/source", s.handleUpdateAppSource)
+		ar.Get("/{name}/builds/{build}/logs", s.handleBuildLogs)
 		// Live logs (Server-Sent Events) — a read view, streamed through the viewer
 		// impersonation like the other reads.
 		ar.Get("/{name}/logs", s.handleAppLogs)

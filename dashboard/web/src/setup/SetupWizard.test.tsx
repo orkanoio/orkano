@@ -65,6 +65,7 @@ function makeStatus(over: Partial<SetupStatus> = {}): SetupStatus {
     oidcEnabled: false,
     oidcPendingRestart: false,
     github: { connected: false },
+    repoAllowlist: [],
     ...over,
   };
 }

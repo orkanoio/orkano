@@ -35,6 +35,7 @@ type Store interface {
 	MarkSessionReauth(ctx context.Context, tokenHash string) error
 	ConsumeRecoveryCode(ctx context.Context, arg db.ConsumeRecoveryCodeParams) (int64, error)
 	AppendAuditEntry(ctx context.Context, arg db.AppendAuditEntryParams) error
+	EnqueueManualDelivery(ctx context.Context, arg db.EnqueueManualDeliveryParams) (int64, error)
 
 	// The M2.4 read/write views: the deploy timeline an App detail page shows
 	// (Build CRs get GC'd, so this is the durable record) and the audit log

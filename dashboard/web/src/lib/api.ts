@@ -329,6 +329,42 @@ export interface MongoResponse {
   secretKeys: string[];
 }
 
+export interface DeployRow {
+  occurredAt: string;
+  buildName?: string;
+  image?: string;
+  status: string;
+}
+
+export type BuildPhase = "Pending" | "Running" | "Succeeded" | "Failed";
+
+export interface BuildResponse {
+  name: string;
+  creationTimestamp: string | null;
+  spec: {
+    appName: string;
+    commit: string;
+    source: AppSource;
+    strategy: BuildStrategy;
+    timeoutSeconds?: number;
+  };
+  status: {
+    observedGeneration?: number;
+    phase?: BuildPhase;
+    image?: string;
+    jobRef?: { namespace: string; name: string };
+    startedAt?: string;
+    completedAt?: string;
+    conditions?: Condition[];
+  };
+}
+
+export interface BuildListResponse {
+  items: BuildResponse[];
+  repo: string;
+  automaticDeploys: boolean;
+}
+
 export interface FeatureStatus {
   id: "source.git" | "source.zip" | "build.nixpacks";
   label: string;
@@ -342,18 +378,13 @@ export interface SourceArchiveResponse {
   fileName: string;
 }
 
-export interface DeployRow {
-  occurredAt: string;
-  buildName?: string;
-  image?: string;
-  status: string;
-}
-
 // Query keys, hierarchical so invalidating ["apps"] also drops every detail.
 export const appsKey = ["apps"] as const;
 export const appKey = (name: string) => ["apps", name] as const;
 export const appDeploysKey = (name: string) =>
   ["apps", name, "deploys"] as const;
+export const appBuildsKey = (name: string) =>
+  ["apps", name, "builds"] as const;
 export const featuresKey = ["features"] as const;
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
@@ -438,6 +469,14 @@ export function listAppDeploys(name: string): Promise<DeployRow[]> {
   return listItems(`/api/apps/${encodeURIComponent(name)}/deploys`);
 }
 
+export function listAppBuilds(name: string): Promise<BuildListResponse> {
+  return getJSON(`/api/apps/${encodeURIComponent(name)}/builds`);
+}
+
+export async function deployApp(name: string): Promise<void> {
+  await post(`/api/apps/${encodeURIComponent(name)}/deploy`);
+}
+
 function resourceLogsPath(
   basePath: string,
   name: string,
@@ -457,12 +496,28 @@ function resourceLogsPath(
   return `${basePath}/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
 }
 
-// appLogsPath builds the SSE stream URL for lib/sse.ts (not a JSON endpoint).
+// Log paths build SSE stream URLs for lib/sse.ts (not JSON endpoints).
 export function appLogsPath(
   name: string,
   opts?: { pod?: string; follow?: boolean; tail?: number },
 ): string {
   return resourceLogsPath("/api/apps", name, opts);
+}
+
+export function buildLogsPath(
+  appName: string,
+  buildName: string,
+  opts?: { follow?: boolean; tail?: number },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.follow !== undefined) {
+    params.set("follow", String(opts.follow));
+  }
+  if (opts?.tail !== undefined) {
+    params.set("tail", opts.tail.toString());
+  }
+  const query = params.toString();
+  return `/api/apps/${encodeURIComponent(appName)}/builds/${encodeURIComponent(buildName)}/logs${query ? `?${query}` : ""}`;
 }
 
 export function postgresLogsPath(name: string): string {
@@ -516,6 +571,7 @@ export interface SetupStatus {
   // loaded (initial connect, or a rotation) — prompt the rollout restart.
   oidcPendingRestart: boolean;
   github: SetupGitHubState;
+  repoAllowlist: string[];
 }
 
 export function fetchSetupStatus(): Promise<SetupStatus> {
