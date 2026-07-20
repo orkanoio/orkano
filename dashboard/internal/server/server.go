@@ -96,6 +96,10 @@ type Config struct {
 	// redirect (callback) URL. Empty derives it from the request (scheme + Host),
 	// which is trustworthy on the dashboard's private access paths (INV-05).
 	PublicURL string
+	// RepoAllowlist mirrors the receiver's non-secret repository allowlist so the
+	// UI can explain whether GitHub pushes for an App will be accepted. Manual
+	// deploys remain authenticated and work independently of this list.
+	RepoAllowlist []string
 	// Features is the validated, explicit unsafe-feature set for this process.
 	// Its zero value is the secure default. Every mutation is checked here even
 	// when the UI has already hidden a disabled option.
@@ -195,7 +199,6 @@ func New(cfg Config) (*Server, error) {
 			return err
 		}
 	}
-
 	if cfg.MongoExpressTransport == nil {
 		cfg.MongoExpressTransport = &http.Transport{
 			Proxy:                 nil,

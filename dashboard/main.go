@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +48,7 @@ const (
 	envPublicURL      = "ORKANO_PUBLIC_URL"
 	envGitHubBaseURL  = "ORKANO_GITHUB_BASE_URL"     // github.com form host
 	envGitHubAPIBase  = "ORKANO_GITHUB_API_BASE_URL" // api.github.com conversion host
+	envRepoAllowlist  = "ORKANO_REPO_ALLOWLIST"
 	envUnsafeFeatures = "ORKANO_UNSAFE_FEATURES"
 	envRegistryURL    = "ORKANO_REGISTRY_URL"
 	envRegistryCAFile = "ORKANO_REGISTRY_CA_FILE"
@@ -147,6 +149,7 @@ func run(log *slog.Logger) error {
 		WebhookURL:         os.Getenv(envWebhookURL),
 		PublicURL:          os.Getenv(envPublicURL),
 		GitHubBaseURL:      os.Getenv(envGitHubBaseURL),
+		RepoAllowlist:      splitCommaList(os.Getenv(envRepoAllowlist)),
 		Features:           featureSet,
 		Archives:           archives,
 	}
@@ -205,6 +208,16 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+func splitCommaList(raw string) []string {
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // newK8sClient builds the controller-runtime client the dashboard uses to write

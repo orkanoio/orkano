@@ -18,6 +18,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 )
 
 // These labels and container names MUST match the operator's immutable pod
@@ -29,6 +32,9 @@ const (
 	postgresContainerName = "postgres"
 	mongoPodLabel         = "app.orkano.io/mongo"
 	mongoContainerName    = "mongo"
+	buildJobPodLabel      = "batch.kubernetes.io/job-name"
+	buildContainerName    = "buildkit"
+	buildsNamespace       = "orkano-builds"
 )
 
 const (
@@ -135,6 +141,31 @@ func (s *Server) handlePostgresLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMongoLogs(w http.ResponseWriter, r *http.Request) {
 	s.handleResourceLogs(w, r, mongoPodLabel, mongoContainerName, "mongo.logs.list_pods")
+}
+
+func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
+	appName := chi.URLParam(r, "name")
+	buildName := chi.URLParam(r, "build")
+	if !validResourceName(appName) || !validResourceName(buildName) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var build orkanov1alpha1.Build
+	key := client.ObjectKey{Namespace: appsNamespace, Name: buildName}
+	if err := s.cfg.ViewerClient.Get(r.Context(), key, &build); err != nil {
+		s.writeK8sError(w, "builds.logs.get", err)
+		return
+	}
+	if build.Spec.AppName != appName {
+		writeJSONError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if build.Status.JobRef == nil || build.Status.JobRef.Namespace != buildsNamespace ||
+		len(validation.IsDNS1123Subdomain(build.Status.JobRef.Name)) != 0 {
+		writeJSONError(w, http.StatusConflict, "logs_not_ready")
+		return
+	}
+	s.handleLabeledLogs(w, r, buildsNamespace, buildJobPodLabel, build.Status.JobRef.Name, buildContainerName, "builds.logs.list_pods")
 }
 
 func (s *Server) handleResourceLogs(w http.ResponseWriter, r *http.Request, podLabel, container, action string) {

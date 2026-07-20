@@ -703,24 +703,31 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		}
 	}
 
-	// Human roles ship unbound; bind a probe user per role so the authorizer
-	// can be asked about them.
+	// Human roles may span namespaces; bind a probe user to each namespaced Role
+	// named by the matrix so the authorizer can be asked about every tuple.
 	humanRoles := map[string]bool{}
+	humanRoleNamespaces := map[string]map[string]bool{}
 	for tu := range docTuples {
 		if name, ok := strings.CutPrefix(tu.identity, humanIdentityPrefix); ok {
 			humanRoles[name] = true
+			if humanRoleNamespaces[name] == nil {
+				humanRoleNamespaces[name] = map[string]bool{}
+			}
+			humanRoleNamespaces[name][tu.namespace] = true
 		}
 	}
-	for name := range humanRoles {
-		rb := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "sar-probe-" + name, Namespace: appsNamespace},
-			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
-			Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: "sar-probe:" + name}},
+	for name, namespaces := range humanRoleNamespaces {
+		for namespace := range namespaces {
+			rb := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "sar-probe-" + name, Namespace: namespace},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
+				Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: "sar-probe:" + name}},
+			}
+			if err := k8sClient.Create(ctx, rb); err != nil {
+				t.Fatalf("failed to bind probe user for role %s in %s: %v", name, namespace, err)
+			}
+			t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), rb) })
 		}
-		if err := k8sClient.Create(ctx, rb); err != nil {
-			t.Fatalf("failed to bind probe user for role %s: %v", name, err)
-		}
-		t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), rb) })
 	}
 
 	// The authorizer reads RBAC through informers; wait for one canary tuple

@@ -117,6 +117,12 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordDeploy(r.Context(), req.Name, deployStatusCreated)
+	if _, deployErr := s.enqueueManualDeploy(r.Context(), req.Name, sourceQueueKey(req.Spec.Source)); deployErr != nil {
+		s.log.Error("queue initial App build failed", "app", req.Name, "err", deployErr)
+		s.auditResult(r, user, "app.deploy", req.Name, deployErr)
+	} else {
+		s.auditResult(r, user, "app.deploy", req.Name, nil)
+	}
 	writeJSON(w, http.StatusCreated, appToResponse(app))
 }
 
@@ -194,6 +200,12 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 	s.auditResult(r, user, "app.source.update", name, nil)
 	if changed {
 		s.recordDeploy(r.Context(), name, deployStatusUpdated)
+		if _, deployErr := s.enqueueManualDeploy(r.Context(), name, sourceQueueKey(req.Source)); deployErr != nil {
+			s.log.Error("queue App build after source update failed", "app", name, "err", deployErr)
+			s.auditResult(r, user, "app.deploy", name, deployErr)
+		} else {
+			s.auditResult(r, user, "app.deploy", name, nil)
+		}
 	}
 	writeJSON(w, http.StatusOK, appToResponse(&app))
 }

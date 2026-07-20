@@ -9,7 +9,6 @@ Namespaces (ADR-0005): user apps live in `orkano-apps`, builds run in `orkano-bu
 | Resource (API group) | Verbs | Scope |
 |---|---|---|
 | apps, domains, postgreses, mongoes (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
-| builds (orkano.io) | get, list, watch, create, delete | `orkano-apps` — create is the manual-redeploy button; delete is cancel/cleanup |
 | secretstores, externalsecrets (external-secrets.io) | get, list, watch, create, update, patch, delete | `orkano-apps` — the external-vault connect (SecretStore) and per-key sync (ExternalSecret) objects the UI writes (ADR-0018); configuration pointers, never secret values (the store credential lives in a Secret under the value-blind row below); every write is step-up gated. Granted unconditionally — RBAC is name-based, so the rule is inert until the opt-in secrets-vault install adds the ESO CRDs |
 | secrets (core) | **create, update — no get, list, watch, patch, or delete** | `orkano-apps` |
 | secrets[orkano-github-app] (core) | update | `orkano-system` — the GitHub App credential the manifest flow writes for the operator to read (INV-07); value-blind update, resourceNames-pinned, no get/create/delete |
@@ -58,5 +57,6 @@ No Kubernetes permissions and no token mounted (`automountServiceAccountToken: f
 | orkano-admin | apps, builds, domains, postgreses, mongoes (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
 | orkano-viewer | apps, builds, domains, postgreses, mongoes (orkano.io); pods, pods/log (core); secretstores, externalsecrets (external-secrets.io) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group; the ESO kinds back the vault status views (ADR-0018) and hold configuration, never values |
+| | pods, pods/log (core) | get, list, watch | `orkano-builds` — historical and live BuildKit output for Build attempts selected in the dashboard; no Jobs or Secrets access |
 
 Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.

@@ -12,6 +12,21 @@ import (
 
 // --- fakeStore methods for the M2.4 read/write views ---
 
+func (f *fakeStore) EnqueueManualDelivery(_ context.Context, arg db.EnqueueManualDeliveryParams) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.enqueueErr != nil {
+		return 0, f.enqueueErr
+	}
+	for _, row := range f.deliveries {
+		if row.DeliveryID == arg.DeliveryID {
+			return 0, nil
+		}
+	}
+	f.deliveries = append(f.deliveries, arg)
+	return 1, nil
+}
+
 func (f *fakeStore) RecordDeploy(_ context.Context, arg db.RecordDeployParams) (db.DeployHistory, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -159,8 +174,8 @@ func TestListAuditDescending(t *testing.T) {
 		t.Fatal("audit list empty after an audited action")
 	}
 	first, _ := items[0].(map[string]any)
-	if first["action"] != "app.create" {
-		t.Fatalf("first audit action = %v, want app.create (most-recent-first)", first["action"])
+	if first["action"] != "app.deploy" {
+		t.Fatalf("first audit action = %v, want app.deploy (the initial build request)", first["action"])
 	}
 	// INV-03: the detail surfaced to the UI carries the client IP, never a value.
 	detail, _ := first["detail"].(map[string]any)

@@ -18,9 +18,6 @@ rules:
   - apiGroups: ["orkano.io"]
     resources: ["apps", "domains", "postgreses", "mongoes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["orkano.io"]
-    resources: ["builds"]
-    verbs: ["get", "list", "watch", "create", "delete"]
   # ESO connect + sync objects (ADR-0018): configuration pointers, never
   # values — the store credential rides the value-blind secrets rule below.
   # Inert until `--secrets-vault` installs the ESO CRDs.

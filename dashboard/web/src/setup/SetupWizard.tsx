@@ -510,6 +510,7 @@ function OIDCConnectForm({ status }: { status: SetupStatus }) {
 
 function GitHubStep({ status }: { status: SetupStatus }) {
   const check = checkById(status, "github.app-connected");
+  const allowlist = status.repoAllowlist ?? [];
 
   return (
     <StepCard
@@ -525,6 +526,31 @@ function GitHubStep({ status }: { status: SetupStatus }) {
             Install the App on the repositories you want to deploy, and add
             them to the receiver allowlist.
           </p>
+          <div className="flex flex-col gap-2 rounded-lg border px-4 py-3">
+            <p className="overline-label">Receiver allowlist</p>
+            {allowlist.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {allowlist.map((repo) => (
+                  <Badge key={repo} variant="secondary">
+                    {repo}
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Empty — automatic deploys are deny-all until a repository is added.
+              </p>
+            )}
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              CLI: re-run your original install command with{" "}
+              <code className="font-mono text-foreground">
+                --allow-repo owner/repository
+              </code>
+              . Helm: add the repository under{" "}
+              <code className="font-mono text-foreground">repoAllowlist</code>{" "}
+              and upgrade the release.
+            </p>
+          </div>
           {isRecentConnect(status.github.connectedAt) ? (
             <>
               <p className="text-sm">
