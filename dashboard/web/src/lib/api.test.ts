@@ -12,6 +12,7 @@ import {
   mongoExpressPath,
   redeemInstallToken,
   setAppEnv,
+  sourceLabel,
   updateMongoExpress,
   updateApp,
 } from "@/lib/api";
@@ -44,6 +45,21 @@ describe("api client", () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 401, code: "invalid_token" });
+  });
+
+  it("labels every source kind without assuming a repository", () => {
+    expect(sourceLabel({ github: { repo: "o/r" } })).toBe("o/r");
+    expect(
+      sourceLabel({ git: { url: "https://git.example.com/team/mirror.git" } }),
+    ).toBe("https://git.example.com/team/mirror.git");
+    expect(
+      sourceLabel({
+        upload: { digest: `sha256:${"a".repeat(64)}`, fileName: "release.zip" },
+      }),
+    ).toBe("release.zip");
+    expect(
+      sourceLabel({ upload: { digest: `sha256:${"a".repeat(64)}` } }),
+    ).toBe(`sha256:${"a".repeat(64)}`);
   });
 
   it("preserves the existing kind on a cross-kind name collision", async () => {
