@@ -58,5 +58,6 @@ No Kubernetes permissions and no token mounted (`automountServiceAccountToken: f
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
 | orkano-viewer | apps, builds, domains, postgreses, mongoes (orkano.io); pods, pods/log (core); secretstores, externalsecrets (external-secrets.io) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group; the ESO kinds back the vault status views (ADR-0018) and hold configuration, never values |
 | | pods, pods/log (core) | get, list, watch | `orkano-builds` — historical and live BuildKit output for Build attempts selected in the dashboard; no Jobs or Secrets access |
+| | nodes (core) | get, list | cluster-scoped — read-only node inventory for the dashboard's Settings page and the setup wizard's cluster step; no watch (the views poll), and no other cluster-scoped access joins it |
 
 Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.

@@ -18,6 +18,12 @@ import {
 // GitHub blocked behind the missing webhook URL, domains not applicable.
 const freshChecks: SetupCheck[] = [
   {
+    id: "cluster.nodes-ready",
+    severity: "warning",
+    outcome: "pass",
+    message: "1 node(s) Ready",
+  },
+  {
     id: "setup.access-mode-chosen",
     severity: "warning",
     outcome: "fail",
@@ -53,6 +59,12 @@ const freshChecks: SetupCheck[] = [
     outcome: "skip",
     message: "no Domains yet — not applicable until an app has a custom domain",
   },
+  {
+    id: "apps.first-app-deployed",
+    severity: "info",
+    outcome: "fail",
+    message: "no apps yet — create your first app",
+  },
 ];
 
 function makeStatus(over: Partial<SetupStatus> = {}): SetupStatus {
@@ -75,22 +87,32 @@ function statusRoute(status: SetupStatus) {
 }
 
 describe("SetupWizard", () => {
-  it("renders the six steps with the fresh-install outcomes", async () => {
+  it("renders the eight steps with the fresh-install outcomes", async () => {
     stubFetchRoutes(statusRoute(makeStatus()));
     renderWithSession(<SetupWizard />);
 
     expect(
-      await screen.findByRole("heading", { name: "1. Access mode" }),
+      await screen.findByRole("heading", { name: "1. Cluster" }),
     ).toBeInTheDocument();
     for (const name of [
-      "2. Sign-in",
-      "3. GitHub",
-      "4. Secrets",
-      "5. Domains & TLS",
-      "6. Registry",
+      "2. Access mode",
+      "3. Sign-in",
+      "4. GitHub",
+      "5. Secrets",
+      "6. Domains & TLS",
+      "7. Registry",
+      "8. First app",
     ]) {
       expect(screen.getByRole("heading", { name })).toBeInTheDocument();
     }
+    // The cluster step links the Settings node inventory; the first-app step
+    // links the create form.
+    expect(
+      screen.getByRole("link", { name: /View nodes and the add-node recipe/ }),
+    ).toHaveAttribute("href", "#/settings");
+    expect(
+      screen.getByRole("link", { name: "Create your first app." }),
+    ).toHaveAttribute("href", "#/apps/new");
     // The blocked GitHub step names its prerequisite as human copy (never the
     // raw check ID), and the webhook-URL guidance shows in its body.
     expect(

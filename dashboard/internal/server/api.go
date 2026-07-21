@@ -54,6 +54,9 @@ func parsePage(r *http.Request) (limit, offset int32) {
 // destructive actions" (delete an app, rotate secrets), not for provisioning.
 func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.With(s.RequireSession).Get("/api/features", s.handleFeatures)
+	// Cluster node inventory for the Settings page — a read view like the rest,
+	// through the impersonated viewer's cluster-scoped nodes grant.
+	r.With(s.RequireSession).Get("/api/nodes", s.handleListNodes)
 	r.Route("/api/apps", func(ar chi.Router) {
 		ar.Use(s.RequireSession)
 		ar.Get("/", s.handleListApps)

@@ -146,7 +146,7 @@ func validOIDCBody() map[string]string {
 func TestSetupStatusFresh(t *testing.T) {
 	store := newFakeStore()
 	ck := authedSession(t, store)
-	s, _ := setupServer(t, store, nil)
+	s, _ := setupServer(t, store, nil, readyNode("node-a", nil))
 
 	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 	if rec.Code != http.StatusOK {
@@ -156,9 +156,9 @@ func TestSetupStatusFresh(t *testing.T) {
 
 	// Dependency (registration) order is the wizard's walk order.
 	wantOrder := []string{
-		checkAccessModeChosen, checkAdminBootstrapped, checkOIDCConfigured,
+		checkNodesReady, checkAccessModeChosen, checkAdminBootstrapped, checkOIDCConfigured,
 		checkWebhookURLConfigured, checkGitHubAppConnected, checkVaultConnected,
-		checkDomainTLSReady,
+		checkDomainTLSReady, checkFirstAppDeployed,
 	}
 	if len(resp.Checks) != len(wantOrder) {
 		t.Fatalf("got %d checks, want %d", len(resp.Checks), len(wantOrder))
@@ -170,12 +170,14 @@ func TestSetupStatusFresh(t *testing.T) {
 	}
 
 	for id, outcome := range map[string]string{
+		checkNodesReady:           "pass", // the cluster under a fresh install has its node
 		checkAccessModeChosen:     "fail",
 		checkAdminBootstrapped:    "pass", // the authed session implies a confirmed admin
 		checkOIDCConfigured:       "fail",
 		checkWebhookURLConfigured: "fail",
 		checkGitHubAppConnected:   "blocked",
 		checkDomainTLSReady:       "skip",
+		checkFirstAppDeployed:     "fail",
 		// The fake client's scheme knows the ESO kinds, so the list answers
 		// empty rather than NoMatch: "installed, nothing connected" = fail.
 		// The dedicated vault-check test covers the real NoMatch skip.
@@ -251,10 +253,23 @@ func TestSetupStatusConfigured(t *testing.T) {
 			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
 		},
 	}}
+	runningApp := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/web"}},
+			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+		Status: orkanov1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type: orkanov1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+				Reason: "Available", LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
 	s, _ := setupServer(t, store, func(cfg *Config) {
 		cfg.WebhookURL = "https://hooks.example.com/webhook"
 		cfg.OIDC = &fakeOIDC{}
-	}, domain, vaultStore)
+	}, domain, vaultStore, readyNode("node-a", nil), runningApp)
 
 	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 	if rec.Code != http.StatusOK {
@@ -274,6 +289,49 @@ func TestSetupStatusConfigured(t *testing.T) {
 	}
 	if !resp.GitHub.Connected || resp.GitHub.AppSlug != "orkano-test" || resp.GitHub.AppID != "42" {
 		t.Errorf("github state drifted: %+v", resp.GitHub)
+	}
+}
+
+// TestSetupStatusClusterDegraded: a NotReady node fails cluster.nodes-ready
+// with honest counts, and created-but-unready apps fail apps.first-app-deployed
+// without claiming an empty install.
+func TestSetupStatusClusterDegraded(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	stuckApp := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/web"}},
+			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+	}
+	s, _ := setupServer(t, store, nil, readyNode("node-a", nil), notReadyNode("node-b"), stuckApp)
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	nodes := checkByID(t, resp, checkNodesReady)
+	if nodes.Outcome != "fail" || !strings.Contains(nodes.Message, "1 of 2") {
+		t.Fatalf("nodes-ready = %+v, want fail with 1-of-2 counts", nodes)
+	}
+	firstApp := checkByID(t, resp, checkFirstAppDeployed)
+	if firstApp.Outcome != "fail" || !strings.Contains(firstApp.Message, "none Ready yet") {
+		t.Fatalf("first-app = %+v, want fail naming unready apps", firstApp)
+	}
+}
+
+// TestSetupStatusNodesUnreadable: an empty node list can only mean the read
+// itself is broken (a cluster always has its own node), so the check reports a
+// probe ERROR — unknown never counts as healthy OR unhealthy.
+func TestSetupStatusNodesUnreadable(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	s, _ := setupServer(t, store, nil)
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	nodes := checkByID(t, resp, checkNodesReady)
+	if nodes.Outcome != "error" {
+		t.Fatalf("nodes-ready with no readable nodes = %+v, want a probe error", nodes)
 	}
 }
 

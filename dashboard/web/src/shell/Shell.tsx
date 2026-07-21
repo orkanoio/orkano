@@ -3,6 +3,7 @@ import {
   Database,
   KeyRound,
   LayoutGrid,
+  Settings,
   SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { authStatusKey, logout, type AuthStatus } from "@/lib/api";
 import { Link, routeSegments, useRoute } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { SettingsPage } from "@/settings/SettingsPage";
 import { SetupWizard } from "@/setup/SetupWizard";
 
 import { SessionContext } from "./session";
@@ -89,6 +91,13 @@ export function Shell({
               icon={SlidersHorizontal}
             >
               Setup
+            </NavLink>
+            <NavLink
+              to="/settings"
+              active={isSection(route, "settings")}
+              icon={Settings}
+            >
+              Settings
             </NavLink>
           </nav>
           <SessionControls username={status.username} oidc={status.oidc} />
@@ -184,6 +193,9 @@ function routeContent(segments: string[]): ReactNode {
   }
   if (head === "setup") {
     return <SetupWizard />;
+  }
+  if (head === "settings") {
+    return <SettingsPage />;
   }
   return (
     <p className="text-muted-foreground text-sm">
