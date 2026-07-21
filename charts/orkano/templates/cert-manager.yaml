@@ -1,0 +1,3 @@
+{{- if .Values.certManager.install }}
+{{ .Files.Get "static/cert-manager/cert-manager.yaml" }}
+{{- end }}

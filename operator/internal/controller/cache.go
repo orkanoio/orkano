@@ -38,15 +38,15 @@ type cacheScope struct {
 
 // cacheScopes is the single source of truth for what the manager cache watches
 // and where, mirroring every For/Owns/Watches across the controllers:
-//   - App/Build/Domain/Postgres and their owned Service/Ingress/StatefulSet
-//     live in orkano-apps.
+//   - App/Build/Domain/Postgres/Mongo and their owned
+//     Service/Ingress/NetworkPolicy/Deployment/StatefulSet live in orkano-apps.
 //   - Build Jobs live in orkano-builds.
 //   - Deployments span app workloads (orkano-apps) and the registry the
 //     RegistryCert controller rolls (orkano-system).
 //   - Certificates span Domain TLS (orkano-apps) and registry TLS
 //     (orkano-system); watched as unstructured (no cert-manager Go dep).
 //
-// The Postgres connection Secret and the data PVC are owned (GC cascades) but
+// The database connection Secrets and data PVCs are owned (GC cascades) but
 // NOT watched — the operator holds no secrets/PVC list+watch, so they are read
 // uncached via APIReader and never appear here.
 func cacheScopes() []cacheScope {
@@ -61,8 +61,10 @@ func cacheScopes() []cacheScope {
 		{&orkanov1alpha1.Build{}, "orkano.io", "builds", apps},
 		{&orkanov1alpha1.Domain{}, "orkano.io", "domains", apps},
 		{&orkanov1alpha1.Postgres{}, "orkano.io", "postgreses", apps},
+		{&orkanov1alpha1.Mongo{}, "orkano.io", "mongoes", apps},
 		{&corev1.Service{}, "", "services", apps},
 		{&networkingv1.Ingress{}, "networking.k8s.io", "ingresses", apps},
+		{&networkingv1.NetworkPolicy{}, "networking.k8s.io", "networkpolicies", apps},
 		{&batchv1.Job{}, "batch", "jobs", []string{buildNamespace}},
 		{&appsv1.Deployment{}, "apps", "deployments", appsAndSystem},
 		{&appsv1.StatefulSet{}, "apps", "statefulsets", apps},

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { EnvEditor } from "@/apps/EnvEditor";
 import type { EnvVar } from "@/lib/api";
-import { makeApp } from "@/test/fixtures";
+import { makeApp, makeMongo, makePostgres } from "@/test/fixtures";
 import {
   emptyResponse,
   jsonResponse,
@@ -29,9 +29,41 @@ function appWithEnv() {
   });
 }
 
+function stubEnvFetchRoutes(
+  routes: Record<
+    string,
+    (init?: RequestInit) => Response | Promise<Response>
+  > = {},
+) {
+  return stubFetchRoutes({
+    "GET /api/postgres": () =>
+      jsonResponse(200, {
+        items: [
+          makePostgres({ name: "api-db", status: { secretName: "api-db" } }),
+        ],
+      }),
+    "GET /api/mongo": () =>
+      jsonResponse(200, {
+        items: [
+          makeMongo({
+            name: "documents",
+            status: { secretName: "documents" },
+          }),
+        ],
+      }),
+    ...routes,
+  });
+}
+
+function writeCalls(mock: ReturnType<typeof stubFetchRoutes>) {
+  return mock.mock.calls.filter(
+    (call) => (call[1] as RequestInit | undefined)?.method !== undefined,
+  );
+}
+
 describe("EnvEditor variables", () => {
-  it("shows plain and foreign-ref rows but not managed secrets", () => {
-    stubFetchRoutes({});
+  it("shows plain and foreign-ref rows but not managed secrets", async () => {
+    stubEnvFetchRoutes();
     renderWithSession(<EnvEditor app={appWithEnv()} />);
 
     const names = screen.getAllByLabelText("Variable name");
@@ -40,8 +72,13 @@ describe("EnvEditor variables", () => {
       "DATABASE_URL",
     ]);
     expect(screen.getByDisplayValue("prod")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("api-db")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("uri")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("option", { name: "api-db" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Catalog database")).toHaveValue(
+      "postgres:api-db",
+    );
+    expect(screen.getByLabelText("Database Secret key")).toHaveValue("uri");
     // The managed key appears only in the secrets section, without a value.
     expect(
       (screen.getByLabelText("Secret variable name") as HTMLInputElement).value,
@@ -54,7 +91,7 @@ describe("EnvEditor variables", () => {
 
   it("saves variables through the spec, preserving managed refs", async () => {
     const app = appWithEnv();
-    const mock = stubFetchRoutes({
+    const mock = stubEnvFetchRoutes({
       "PUT /api/apps/web": (init) =>
         jsonResponse(200, {
           ...app,
@@ -87,8 +124,27 @@ describe("EnvEditor variables", () => {
     ]);
   });
 
+  it("keeps save progress perceptible and announces success", async () => {
+    const app = appWithEnv();
+    stubEnvFetchRoutes({
+      "PUT /api/apps/web": () => jsonResponse(200, app),
+    });
+    renderWithSession(<EnvEditor app={app} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save variables" }),
+    );
+
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(screen.queryByText("Variables saved")).not.toBeInTheDocument();
+    expect(await screen.findByText("Variables saved")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Save variables" }),
+    ).toBeEnabled();
+  });
+
   it("rejects an invalid variable name client-side", async () => {
-    const mock = stubFetchRoutes({});
+    const mock = stubEnvFetchRoutes();
     renderWithSession(<EnvEditor app={appWithEnv()} />);
     const user = userEvent.setup();
 
@@ -100,11 +156,11 @@ describe("EnvEditor variables", () => {
     expect(
       await screen.findByText(/must start with a letter or underscore/),
     ).toBeInTheDocument();
-    expect(mock).not.toHaveBeenCalled();
+    expect(writeCalls(mock)).toHaveLength(0);
   });
 
   it("rejects an empty value, an incomplete reference, a reference to the app's own env Secret, and a managed-name collision", async () => {
-    const mock = stubFetchRoutes({});
+    const mock = stubEnvFetchRoutes();
     renderWithSession(<EnvEditor app={appWithEnv()} />);
     const user = userEvent.setup();
     const lastRow = () => {
@@ -163,7 +219,49 @@ describe("EnvEditor variables", () => {
       await screen.findByText(/API_KEY is managed in the secret values section/),
     ).toBeInTheDocument();
 
-    expect(mock).not.toHaveBeenCalled();
+    expect(writeCalls(mock)).toHaveLength(0);
+  });
+
+  it("picks a catalog database and one of its advertised Secret keys", async () => {
+    const app = makeApp({ name: "web" });
+    const mock = stubEnvFetchRoutes({
+      "PUT /api/apps/web": (init) =>
+        jsonResponse(200, {
+          ...app,
+          spec: (JSON.parse(init?.body as string) as { spec: object }).spec,
+        }),
+    });
+    renderWithSession(<EnvEditor app={app} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Add variable" }));
+    await user.type(screen.getByLabelText("Variable name"), "DB_PASSWORD");
+    await user.selectOptions(screen.getByLabelText("Variable kind"), "ref");
+    await user.selectOptions(
+      await screen.findByLabelText("Catalog database"),
+      "postgres:api-db",
+    );
+
+    expect(screen.getByLabelText("Database Secret key")).toHaveValue("uri");
+    await user.selectOptions(
+      screen.getByLabelText("Database Secret key"),
+      "password",
+    );
+    await user.click(screen.getByRole("button", { name: "Save variables" }));
+
+    await waitFor(() => {
+      expect(writeCalls(mock)).toHaveLength(1);
+    });
+    const request = writeCalls(mock)[0];
+    const body = JSON.parse((request?.[1] as RequestInit).body as string) as {
+      spec: { env: unknown };
+    };
+    expect(body.spec.env).toEqual([
+      {
+        name: "DB_PASSWORD",
+        secretRef: { name: "api-db", key: "password" },
+      },
+    ]);
   });
 
   it("enforces the 64-variable cap exactly", async () => {
@@ -179,7 +277,7 @@ describe("EnvEditor variables", () => {
     });
     const app = makeApp({ name: "web", spec: { env } });
     let puts = 0;
-    stubFetchRoutes({
+    stubEnvFetchRoutes({
       "PUT /api/apps/web": () => {
         puts++;
         return jsonResponse(200, app);
@@ -198,6 +296,7 @@ describe("EnvEditor variables", () => {
     await waitFor(() => {
       expect(puts).toBe(1);
     });
+    await screen.findByRole("button", { name: "Save variables" });
 
     await user.click(screen.getByRole("button", { name: "Add variable" }));
     names = screen.getAllByLabelText("Variable name");
@@ -215,7 +314,7 @@ describe("EnvEditor variables", () => {
 describe("EnvEditor secrets", () => {
   it("replaces the whole secret set value-blind", async () => {
     const app = appWithEnv();
-    const mock = stubFetchRoutes({
+    const mock = stubEnvFetchRoutes({
       "PUT /api/apps/web/env": () => jsonResponse(200, app),
     });
     renderWithSession(<EnvEditor app={app} />);
@@ -246,7 +345,7 @@ describe("EnvEditor secrets", () => {
   it("opens the step-up gate on 403 and retries after confirmation", async () => {
     const app = appWithEnv();
     let envPuts = 0;
-    stubFetchRoutes({
+    stubEnvFetchRoutes({
       "PUT /api/apps/web/env": () =>
         ++envPuts === 1
           ? jsonResponse(403, { error: "step_up_required" })

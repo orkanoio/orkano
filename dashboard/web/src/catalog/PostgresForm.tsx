@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { Field } from "@/components/Field";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { createPostgres, postgresKey, postgresListKey } from "@/lib/api";
@@ -61,65 +62,71 @@ export function PostgresForm() {
   };
 
   return (
-    <section className="flex max-w-xl flex-col gap-4">
-      <h1 className="text-xl font-semibold">New database</h1>
-      <p className="text-muted-foreground text-sm">
+    <section className="flex max-w-xl flex-col gap-6">
+      <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+        New database
+      </h1>
+      <p className="text-muted-foreground text-sm leading-relaxed">
         A PostgreSQL instance with persistent storage. Its connection details
         land in a Kubernetes Secret named after the database, ready to
         reference from an app's environment.
       </p>
-      <form className="flex flex-col gap-4" onSubmit={submit}>
+      <form className="flex flex-col gap-6" onSubmit={submit}>
         <ApiErrorAlert error={create.error} />
-        <Field
-          id="pg-name"
-          label="Name"
-          error={errors.name}
-          hint="Also names the connection Secret and the database itself."
-        >
-          <Input
-            id="pg-name"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-            }}
-            autoFocus
-            required
-          />
-        </Field>
-        <Field
-          id="pg-version"
-          label="Version"
-          hint="The major version cannot be changed later."
-        >
-          <Select
-            id="pg-version"
-            value={version}
-            onChange={(e) => {
-              setVersion(e.target.value);
-            }}
-          >
-            {postgresVersions.map((v) => (
-              <option key={v} value={v}>
-                PostgreSQL {v}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field
-          id="pg-storage"
-          label="Storage"
-          error={errors.storage}
-          hint="Can grow later, never shrink."
-        >
-          <Input
-            id="pg-storage"
-            value={storage}
-            onChange={(e) => {
-              setStorage(e.target.value);
-            }}
-            required
-          />
-        </Field>
+        <Card>
+          <CardContent className="flex flex-col gap-4">
+            <Field
+              id="pg-name"
+              label="Name"
+              error={errors.name}
+              hint="Also names the connection Secret and the database itself."
+            >
+              <Input
+                id="pg-name"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                }}
+                autoFocus
+                required
+              />
+            </Field>
+            <Field
+              id="pg-version"
+              label="Version"
+              hint="The major version cannot be changed later."
+            >
+              <Select
+                id="pg-version"
+                value={version}
+                onChange={(e) => {
+                  setVersion(e.target.value);
+                }}
+              >
+                {postgresVersions.map((v) => (
+                  <option key={v} value={v}>
+                    PostgreSQL {v}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              id="pg-storage"
+              label="Storage"
+              error={errors.storage}
+              hint="Can grow later, never shrink."
+            >
+              <Input
+                id="pg-storage"
+                value={storage}
+                onChange={(e) => {
+                  setStorage(e.target.value);
+                }}
+                required
+              />
+            </Field>
+          </CardContent>
+        </Card>
         <div className="flex gap-3">
           <Button type="submit" disabled={create.isPending}>
             {create.isPending ? "Creating…" : "Create database"}

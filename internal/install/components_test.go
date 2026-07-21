@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orkanoio/orkano/internal/features"
 	"sigs.k8s.io/yaml"
 )
 
@@ -167,6 +168,33 @@ func TestRenderComponentsAllowlist(t *testing.T) {
 	}
 }
 
+func TestRenderComponentsUnsafeFeatures(t *testing.T) {
+	const want = `value: "build.nixpacks,source.git,source.zip"`
+	m := renderByName(t, Config{
+		Version:        "1.0.0",
+		UnsafeFeatures: []string{string(features.SourceZip), string(features.BuildNixpacks), string(features.SourceGit), string(features.SourceZip)},
+	})
+	for _, name := range []string{"operator-deployment.yaml", "dashboard.yaml"} {
+		if !strings.Contains(m[name], "name: ORKANO_UNSAFE_FEATURES") || !strings.Contains(m[name], want) {
+			t.Errorf("%s should carry the canonical unsafe-feature opt-ins", name)
+		}
+	}
+	if !strings.Contains(m["dashboard.yaml"], `orkano.io/source-zip-enabled: "true"`) {
+		t.Error("source.zip should open the dashboard's registry NetworkPolicy peer")
+	}
+
+	without := renderByName(t, Config{Version: "1.0.0"})
+	for _, name := range []string{"operator-deployment.yaml", "dashboard.yaml"} {
+		if !strings.Contains(without[name], "name: ORKANO_UNSAFE_FEATURES") ||
+			!strings.Contains(without[name], `value: ""`) {
+			t.Errorf("%s should render an explicit empty unsafe-feature set", name)
+		}
+	}
+	if !strings.Contains(without["dashboard.yaml"], `orkano.io/source-zip-enabled: "false"`) {
+		t.Error("the secure default should keep the dashboard's registry NetworkPolicy peer closed")
+	}
+}
+
 func TestRenderComponentsReceiverIngressOptional(t *testing.T) {
 	// Without --receiver-host the Ingress is skipped entirely (an empty host would
 	// render an invalid Ingress); the receiver stays ClusterIP-only.
@@ -181,11 +209,11 @@ func TestRenderComponentsReceiverIngressOptional(t *testing.T) {
 		t.Fatal("receiver Ingress should render with --receiver-host")
 	}
 	for _, want := range []string{
-		"host: hooks.example.com",
-		"- hooks.example.com",
+		`host: "hooks.example.com"`,
+		`- "hooks.example.com"`,
 		"cert-manager.io/cluster-issuer: orkano-platform",
 		"secretName: orkano-receiver-tls",
-		"ingressClassName: traefik",
+		`ingressClassName: "traefik"`,
 		"name: orkano-receiver",
 	} {
 		if !strings.Contains(ing, want) {
@@ -205,12 +233,24 @@ func TestRenderComponentsValidation(t *testing.T) {
 		{"repo without slash", Config{Version: "1.0.0", RepoAllowlist: []string{"noslash"}}},
 		{"bad receiver host", Config{Version: "1.0.0", ReceiverHost: "bad host\ninjected: true"}},
 		{"receiver host with scheme", Config{Version: "1.0.0", ReceiverHost: "https://hooks.example.com"}},
+		{"unknown unsafe feature", Config{Version: "1.0.0", UnsafeFeatures: []string{"source.unknown"}}},
+		{"unknown unsafe feature without version", Config{UnsafeFeatures: []string{"source.unknown"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := renderComponents(tc.cfg); err == nil {
 				t.Fatal("expected a validation error")
 			}
 		})
+	}
+}
+
+func TestApplyRejectsUnknownUnsafeFeatureBeforeWriting(t *testing.T) {
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{UnsafeFeatures: []string{"source.unknown"}}); err == nil {
+		t.Fatal("expected unknown unsafe feature to be rejected")
+	}
+	if len(n.files) != 0 {
+		t.Fatalf("Apply wrote %d files before rejecting the unsafe feature", len(n.files))
 	}
 }
 
@@ -248,7 +288,7 @@ func TestApplyWritesReceiverIngressWhenHostSet(t *testing.T) {
 	if !ok {
 		t.Fatal("receiver Ingress was not deployed with a receiver host")
 	}
-	if !strings.Contains(ing, "host: hooks.example.com") {
+	if !strings.Contains(ing, `host: "hooks.example.com"`) {
 		t.Errorf("deployed receiver Ingress missing the host:\n%s", ing)
 	}
 }

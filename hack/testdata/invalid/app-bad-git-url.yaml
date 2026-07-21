@@ -1,0 +1,12 @@
+# Violates: generic Git sources are anonymous HTTPS URLs without a query.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-git-url
+  namespace: orkano-apps
+spec:
+  source:
+    git:
+      url: https://git.example.com/alice/app.git?token=secret
+  build:
+    strategy: Dockerfile

@@ -1,0 +1,84 @@
+# Orkano operator (M1.5 component deploy, rendered per install). Runs in
+# orkano-system under restricted PSA on the distroless-nonroot image; uses its
+# orkano-operator ServiceAccount (the only component that talks to the API) and
+# the dispatcher-role DSN from the orkano-operator-db Secret. The image tag
+# matches the installing release: the CLI's own version on `orkano init`, the
+# chart's appVersion (or images.tag) on Helm installs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-operator
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-operator
+  template:
+    metadata:
+      labels:
+        # The netpol contract: the registry ingress policy admits the operator's
+        # digest-resolution HEADs by this label.
+        app.kubernetes.io/name: orkano-operator
+    spec:
+      serviceAccountName: orkano-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: {{ .Values.images.repository }}/orkano-operator:{{ include "orkano.imageTag" . }}
+          env:
+            # The dispatcher consumes the queue as the least-privilege
+            # orkano_dispatcher role (INV-03: only the DSN, by reference).
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-operator-db
+                  key: dsn
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the operator.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ include "orkano.unsafeFeaturesCSV" . }}"
+            # ZIP extraction reuses this exact, version-matched binary in a
+            # restricted build-pod init container.
+            - name: ORKANO_SOURCE_FETCHER_IMAGE
+              value: "{{ .Values.images.repository }}/orkano-operator:{{ include "orkano.imageTag" . }}"
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem (ADR-0007) with a writable /tmp for any scratch.
+        - name: tmp
+          emptyDir: {}

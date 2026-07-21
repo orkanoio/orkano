@@ -1,5 +1,6 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, LoaderCircle } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { StepUpGate } from "@/components/StepUpGate";
@@ -16,6 +17,10 @@ import { Select } from "@/components/ui/select";
 import {
   appKey,
   appsKey,
+  listMongo,
+  listPostgres,
+  mongoListKey,
+  postgresListKey,
   setAppEnv,
   updateApp,
   type AppResponse,
@@ -54,6 +59,14 @@ interface VarRow {
   refKey: string;
 }
 
+interface CatalogDatabase {
+  id: string;
+  engine: "MongoDB" | "PostgreSQL";
+  name: string;
+  secretName: string;
+  secretKeys: string[];
+}
+
 function isManagedRef(e: EnvVar, secretName: string): boolean {
   return e.secretRef?.name === secretName;
 }
@@ -80,13 +93,44 @@ function managedRefs(app: AppResponse): EnvVar[] {
   return (app.spec.env ?? []).filter((e) => isManagedRef(e, secretName));
 }
 
-function VarsCard({ app }: { app: AppResponse }) {
+export function VarsCard({ app }: { app: AppResponse }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<VarRow[]>(() => varRowsFromSpec(app));
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const postgres = useQuery({
+    queryKey: postgresListKey,
+    queryFn: listPostgres,
+    refetchInterval: 10_000,
+  });
+  const mongo = useQuery({
+    queryKey: mongoListKey,
+    queryFn: listMongo,
+    refetchInterval: 10_000,
+  });
+  const databases: CatalogDatabase[] = [
+    ...(postgres.data ?? [])
+      .filter((database) => (database.status.secretName ?? "") !== "")
+      .map((database) => ({
+        id: `postgres:${database.name}`,
+        engine: "PostgreSQL" as const,
+        name: database.name,
+        secretName: database.status.secretName ?? database.name,
+        secretKeys: database.secretKeys,
+      })),
+    ...(mongo.data ?? [])
+      .filter((database) => (database.status.secretName ?? "") !== "")
+      .map((database) => ({
+        id: `mongo:${database.name}`,
+        engine: "MongoDB" as const,
+        name: database.name,
+        secretName: database.status.secretName ?? database.name,
+        secretKeys: database.secretKeys,
+      })),
+  ].sort((a, b) => a.name.localeCompare(b.name));
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const env: EnvVar[] = [
         ...rows.map((r) =>
           r.kind === "value"
@@ -98,17 +142,36 @@ function VarsCard({ app }: { app: AppResponse }) {
         ),
         ...managedRefs(app),
       ];
-      return updateApp(app.name, { ...app.spec, env });
+      return withMinimumDuration(
+        updateApp(app.name, { ...app.spec, env }),
+      );
+    },
+    onMutate: () => {
+      setSaved(false);
     },
     onSuccess: (updated) => {
       queryClient.setQueryData(appKey(app.name), updated);
       void queryClient.invalidateQueries({ queryKey: appsKey });
+      setSaved(true);
     },
   });
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+    }, 2_500);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [saved]);
 
   const submit = () => {
     const err = validateVarRows(rows, app);
     setError(err);
+    setSaved(false);
     if (err === "") {
       save.mutate();
     }
@@ -123,16 +186,19 @@ function VarsCard({ app }: { app: AppResponse }) {
       <CardHeader>
         <CardTitle>Environment variables</CardTitle>
         <CardDescription>
-          Plain values and references to Kubernetes Secrets (a database's
-          connection Secret, for example). Secret values themselves live in the
-          section below.
+          Plain values and references to Kubernetes Secrets — a database's
+          connection Secret, or a vault sync's Secret by the sync's name.
+          Secret values themselves live in the section below.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {error !== "" && <p className="text-destructive text-sm">{error}</p>}
         <ApiErrorAlert error={save.error} />
+        <ApiErrorAlert error={postgres.error ?? mongo.error} />
         {rows.length === 0 && (
-          <p className="text-muted-foreground text-sm">No variables.</p>
+          <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
+            No variables.
+          </p>
         )}
         {rows.map((row, i) => (
           <div key={i.toString()} className="flex flex-wrap items-center gap-2">
@@ -166,26 +232,14 @@ function VarsCard({ app }: { app: AppResponse }) {
                 }}
               />
             ) : (
-              <>
-                <Input
-                  aria-label="Secret name"
-                  className="w-44 font-mono"
-                  placeholder="secret name"
-                  value={row.refName}
-                  onChange={(e) => {
-                    update(i, { refName: e.target.value });
-                  }}
-                />
-                <Input
-                  aria-label="Secret key"
-                  className="w-32 font-mono"
-                  placeholder="key"
-                  value={row.refKey}
-                  onChange={(e) => {
-                    update(i, { refKey: e.target.value });
-                  }}
-                />
-              </>
+              <SecretRefFields
+                row={row}
+                databases={databases}
+                loading={postgres.isPending || mongo.isPending}
+                onChange={(patch) => {
+                  update(i, patch);
+                }}
+              />
             )}
             <Button
               type="button"
@@ -220,11 +274,141 @@ function VarsCard({ app }: { app: AppResponse }) {
             disabled={save.isPending}
             size="sm"
           >
-            {save.isPending ? "Saving…" : "Save variables"}
+            {save.isPending ? (
+              <>
+                <LoaderCircle
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+                Saving…
+              </>
+            ) : (
+              "Save variables"
+            )}
           </Button>
+          {saved ? (
+            <span
+              role="status"
+              className="flex items-center gap-1.5 font-mono text-xs text-success"
+            >
+              <Check className="size-4" aria-hidden="true" />
+              Variables saved
+            </span>
+          ) : null}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function SecretRefFields({
+  row,
+  databases,
+  loading,
+  onChange,
+}: {
+  row: VarRow;
+  databases: CatalogDatabase[];
+  loading: boolean;
+  onChange: (patch: Partial<VarRow>) => void;
+}) {
+  const selected = databases.find(
+    (database) =>
+      database.secretName === row.refName &&
+      (row.refKey === "" || database.secretKeys.includes(row.refKey)),
+  );
+  const postgres = databases.filter(
+    (database) => database.engine === "PostgreSQL",
+  );
+  const mongo = databases.filter((database) => database.engine === "MongoDB");
+
+  return (
+    <>
+      <Select
+        aria-label="Catalog database"
+        className="w-48"
+        value={selected?.id ?? ""}
+        onChange={(event) => {
+          const database = databases.find(
+            (candidate) => candidate.id === event.target.value,
+          );
+          if (!database) {
+            onChange({ refName: "", refKey: "" });
+            return;
+          }
+          onChange({
+            refName: database.secretName,
+            refKey: database.secretKeys.includes(row.refKey)
+              ? row.refKey
+              : (database.secretKeys[0] ?? ""),
+          });
+        }}
+      >
+        <option value="">
+          {loading
+            ? "Loading databases…"
+            : databases.length === 0
+              ? "No available databases"
+              : "Manual Secret reference"}
+        </option>
+        {postgres.length > 0 ? (
+          <optgroup label="PostgreSQL">
+            {postgres.map((database) => (
+              <option key={database.id} value={database.id}>
+                {database.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+        {mongo.length > 0 ? (
+          <optgroup label="MongoDB">
+            {mongo.map((database) => (
+              <option key={database.id} value={database.id}>
+                {database.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+      </Select>
+      {selected ? (
+        <Select
+          aria-label="Database Secret key"
+          className="w-40"
+          value={row.refKey}
+          onChange={(event) => {
+            onChange({ refKey: event.target.value });
+          }}
+        >
+          {selected.secretKeys.map((key) => (
+            <option key={key} value={key}>
+              {key}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <>
+          <Input
+            aria-label="Secret name"
+            className="w-44 font-mono"
+            placeholder="secret name"
+            value={row.refName}
+            onChange={(event) => {
+              onChange({ refName: event.target.value });
+            }}
+          />
+          <Input
+            aria-label="Secret key"
+            className="w-32 font-mono"
+            placeholder="key"
+            value={row.refKey}
+            onChange={(event) => {
+              onChange({ refKey: event.target.value });
+            }}
+          />
+        </>
+      )}
+    </>
   );
 }
 
@@ -271,25 +455,43 @@ interface SecretRow {
   value: string;
 }
 
-function SecretsCard({ app }: { app: AppResponse }) {
+export function SecretsCard({ app }: { app: AppResponse }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<SecretRow[]>(() =>
     managedRefs(app).map((e) => ({ key: e.name, value: "" })),
   );
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
 
   const save = useMutation({
     mutationFn: (secrets: Record<string, string>) =>
-      setAppEnv(app.name, secrets),
+      withMinimumDuration(setAppEnv(app.name, secrets)),
+    onMutate: () => {
+      setSaved(false);
+    },
     onSuccess: (updated) => {
       queryClient.setQueryData(appKey(app.name), updated);
       void queryClient.invalidateQueries({ queryKey: appsKey });
+      setSaved(true);
     },
   });
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+    }, 2_500);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [saved]);
 
   const submit = () => {
     const err = validateSecretRows(rows, app);
     setError(err);
+    setSaved(false);
     if (err === "") {
       save.mutate(Object.fromEntries(rows.map((r) => [r.key.trim(), r.value])));
     }
@@ -305,7 +507,10 @@ function SecretsCard({ app }: { app: AppResponse }) {
         <CardTitle>Secret values</CardTitle>
         <CardDescription>
           Stored only in the Kubernetes Secret{" "}
-          <span className="font-mono">{envSecretName(app.name)}</span>. Values
+          <span className="text-foreground font-mono text-[13px]">
+            {envSecretName(app.name)}
+          </span>
+          . Values
           are write-only — the dashboard cannot read them back, and saving
           replaces the whole set with what is entered here.
         </CardDescription>
@@ -314,7 +519,9 @@ function SecretsCard({ app }: { app: AppResponse }) {
         {error !== "" && <p className="text-destructive text-sm">{error}</p>}
         <ApiErrorAlert error={save.error} />
         {rows.length === 0 && (
-          <p className="text-muted-foreground text-sm">No secret values.</p>
+          <p className="border-primary/50 text-primary rounded-lg border border-dashed px-5 py-4 font-mono text-[13px] leading-relaxed">
+            No secret values.
+          </p>
         )}
         {rows.map((row, i) => (
           <div key={i.toString()} className="flex flex-wrap items-center gap-2">
@@ -367,8 +574,28 @@ function SecretsCard({ app }: { app: AppResponse }) {
             disabled={save.isPending}
             size="sm"
           >
-            {save.isPending ? "Saving…" : "Save secrets"}
+            {save.isPending ? (
+              <>
+                <LoaderCircle
+                  data-icon="inline-start"
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+                Saving…
+              </>
+            ) : (
+              "Save secrets"
+            )}
           </Button>
+          {saved ? (
+            <span
+              role="status"
+              className="flex items-center gap-1.5 font-mono text-xs text-success"
+            >
+              <Check className="size-4" aria-hidden="true" />
+              Secrets saved
+            </span>
+          ) : null}
         </div>
         <StepUpGate
           error={save.error}
@@ -408,4 +635,14 @@ function validateSecretRows(rows: SecretRow[], app: AppResponse): string {
     return "An app can have at most 64 environment variables.";
   }
   return "";
+}
+
+async function withMinimumDuration<T>(request: Promise<T>): Promise<T> {
+  const [result] = await Promise.all([
+    request,
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 300);
+    }),
+  ]);
+  return result;
 }

@@ -1,9 +1,9 @@
 # Orkano dashboard (M2.2 component deploy, rendered per install). The
 # operator-facing control panel: serves the embedded SPA and writes Orkano
 # custom resources through its narrow-RBAC orkano-dashboard ServiceAccount
-# (INV-01: never cluster-admin). Image tag = the CLI's own version. Unlike the
-# receiver it MOUNTS its SA token — it is the one component besides the operator
-# that talks to the Kubernetes API.
+# (INV-01: never cluster-admin). Image tag = the installing release's. Unlike
+# the receiver it MOUNTS its SA token — it is the one component besides the
+# operator that talks to the Kubernetes API.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +20,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: orkano-dashboard
+        orkano.io/source-zip-enabled: "{{ .SourceZipEnabled }}"
     spec:
       serviceAccountName: orkano-dashboard
       # Explicit (the default): the dashboard needs its SA token to reach the
@@ -60,10 +61,23 @@ spec:
                 secretKeyRef:
                   name: orkano-bootstrap-token
                   key: token-sha256
+            # Non-secret mirror of the receiver policy: the dashboard uses it
+            # only to explain whether automatic push deploys are enabled.
+            - name: ORKANO_REPO_ALLOWLIST
+              value: "{{ .RepoAllowlist }}"
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the dashboard.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ .UnsafeFeatures }}"
+            - name: ORKANO_REGISTRY_URL
+              value: "https://orkano-registry.orkano-system.svc.cluster.local"
+            - name: ORKANO_REGISTRY_CA_FILE
+              value: "/orkano-registry-ca/ca.crt"
 {{- if .ReceiverHost }}
-            # The receiver's public webhook endpoint (init's --receiver-host),
-            # baked into the GitHub App manifest the wizard generates; without
-            # it the manifest flow refuses (webhook_url_not_configured).
+            # The receiver's public webhook endpoint (init's --receiver-host /
+            # the chart's receiver.host), baked into the GitHub App manifest
+            # the wizard generates; without it the manifest flow refuses
+            # (webhook_url_not_configured).
             # ORKANO_PUBLIC_URL stays deliberately un-templated: no dashboard
             # host exists at init time (ClusterIP-only, INV-05) and the
             # request-derived origin is correct on the private access paths —
@@ -165,10 +179,21 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # Project only the public CA certificate. The registry TLS private key
+            # remains inaccessible to the dashboard process.
+            - name: registry-ca
+              mountPath: /orkano-registry-ca
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem (ADR-0007) with a writable /tmp for scratch.
         - name: tmp
           emptyDir: {}
+        - name: registry-ca
+          secret:
+            secretName: orkano-registry-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
 ---
 # ClusterIP only: the dashboard is never internet-reachable by default (INV-05).
 # Access is the onboarding wizard's job (orkano proxy / Tailscale / IAP); there

@@ -6,7 +6,7 @@
 # only Postgres, never the Kubernetes API: no SA token, restricted PSA.
 #
 # Runs once at install. Re-applying a completed Job is a no-op; applying new
-# migrations on upgrade is `orkano upgrade`'s job (Phase 5), not init's.
+# migrations on upgrade is `orkano upgrade`'s job (Phase 5), not the install's.
 apiVersion: batch/v1
 kind: Job
 metadata:

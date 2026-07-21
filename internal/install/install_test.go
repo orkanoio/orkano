@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
 
@@ -16,10 +17,13 @@ import (
 // command, decodes base64 writes into a files map, answers `cat`, and answers
 // the readiness `kubectl get … jsonpath` polls from a scriptable state.
 type fakeNode struct {
-	files   map[string]string
-	cmds    []string
-	secrets map[string]string // applied secret name -> rendered manifest
-	noNS    bool              // when true, `get namespace` reports not-found
+	files       map[string]string
+	cmds        []string
+	secrets     map[string]string // applied secret name -> rendered manifest
+	appliedCRDs []string
+	noNS        bool // when true, `get namespace` reports not-found
+	crdWaitFail bool
+	failSecret  string // secret name whose `kubectl apply` fails
 
 	// readiness scripting, keyed by "ns/kind/name".
 	readyAfter map[string]int  // polls before the workload reports ready
@@ -44,7 +48,20 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 	switch {
 	case strings.Contains(cmd, "| base64 -d |") && strings.Contains(cmd, "kubectl apply -f -"):
 		name, manifest := parseSecretApply(cmd)
+		if name != "" && name == f.failSecret {
+			return ssh.Result{Stderr: "apply refused", ExitStatus: 1}, nil
+		}
 		f.secrets[name] = manifest
+		return ssh.Result{}, nil
+
+	case strings.Contains(cmd, "kubectl apply -f "):
+		f.appliedCRDs = append(f.appliedCRDs, kubectlApplyPath(cmd))
+		return ssh.Result{}, nil
+
+	case strings.Contains(cmd, "kubectl wait --for=condition=Established"):
+		if f.crdWaitFail {
+			return ssh.Result{Stderr: "timed out waiting for the condition", ExitStatus: 1}, nil
+		}
 		return ssh.Result{}, nil
 
 	case strings.Contains(cmd, "kubectl get namespace "):
@@ -145,6 +162,16 @@ func secretNameArg(cmd string) string {
 	return ""
 }
 
+func kubectlApplyPath(cmd string) string {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		if f == "-f" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
 // readinessKey parses "ns/kind/name" from a `kubectl -n NS get KIND NAME …`.
 func readinessKey(cmd string) string {
 	fields := strings.Fields(cmd)
@@ -167,6 +194,15 @@ func wrote(cmds []string) bool {
 		}
 	}
 	return false
+}
+
+func cmdIndex(cmds []string, pred func(string) bool) int {
+	for i, c := range cmds {
+		if pred(c) {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestApplyWritesAllStaticManifests(t *testing.T) {
@@ -218,6 +254,128 @@ func TestApplyWritesAllStaticManifests(t *testing.T) {
 	}
 }
 
+func TestApplyAppliesCRDsBeforeComponents(t *testing.T) {
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{Version: "2.0.0"}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	for _, name := range []string{
+		"crd-orkano.io_apps.yaml",
+		"crd-orkano.io_builds.yaml",
+		"crd-orkano.io_domains.yaml",
+		"crd-orkano.io_mongoes.yaml",
+		"crd-orkano.io_postgreses.yaml",
+	} {
+		want := path.Join(base, name)
+		found := false
+		for _, got := range n.appliedCRDs {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("CRD manifest %s was not explicitly applied; got %v", want, n.appliedCRDs)
+		}
+	}
+
+	waitIdx := cmdIndex(n.cmds, func(c string) bool {
+		return strings.Contains(c, "kubectl wait --for=condition=Established") &&
+			strings.Contains(c, "crd/apps.orkano.io") &&
+			strings.Contains(c, "crd/mongoes.orkano.io") &&
+			strings.Contains(c, "crd/postgreses.orkano.io")
+	})
+	operatorWriteIdx := cmdIndex(n.cmds, func(c string) bool {
+		return strings.Contains(c, "operator-deployment.yaml") && strings.Contains(c, "| base64 -d |")
+	})
+	if waitIdx < 0 {
+		t.Fatal("expected a CRD Established wait")
+	}
+	if operatorWriteIdx < 0 {
+		t.Fatal("expected the operator manifest to be written")
+	}
+	if waitIdx > operatorWriteIdx {
+		t.Fatalf("operator manifest was written before CRDs were established (wait cmd %d, operator write %d)", waitIdx, operatorWriteIdx)
+	}
+}
+
+func TestApplyFailsWhenCRDsDoNotEstablish(t *testing.T) {
+	n := newFakeNode()
+	n.crdWaitFail = true
+	_, err := Apply(context.Background(), n, Config{Version: "2.0.0"})
+	if err == nil {
+		t.Fatal("expected Apply to fail when CRDs do not establish")
+	}
+	if !strings.Contains(err.Error(), "wait for CRDs to be established") {
+		t.Fatalf("expected CRD wait error, got %v", err)
+	}
+	if _, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "operator-deployment.yaml")]; ok {
+		t.Fatal("operator manifest should not be written before CRDs are established")
+	}
+}
+
+func TestApplySecretsVaultOptIn(t *testing.T) {
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	esoPath := path.Join(base, "external-secrets-external-secrets.yaml")
+
+	// Off by default: the vendored ESO set must never join the base write set
+	// (ADR-0018 decision 2).
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, ok := n.files[esoPath]; ok {
+		t.Fatal("external-secrets manifest written without --secrets-vault")
+	}
+
+	// Opted in: written byte-identically (the ~1MB file rides the chunked
+	// write path).
+	n = newFakeNode()
+	res, err := Apply(context.Background(), n, Config{SecretsVault: true})
+	if err != nil {
+		t.Fatalf("Apply with SecretsVault: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true")
+	}
+	want, err := config.ExternalSecretsManifest.ReadFile("external-secrets/external-secrets.yaml")
+	if err != nil {
+		t.Fatalf("read embedded external-secrets: %v", err)
+	}
+	got, ok := n.files[esoPath]
+	if !ok {
+		t.Fatalf("external-secrets manifest not written to %s", esoPath)
+	}
+	if got != string(want) {
+		t.Fatal("external-secrets manifest written with wrong content")
+	}
+}
+
+func TestSecretsVaultReadinessTargets(t *testing.T) {
+	targets := SecretsVaultReadinessTargets()
+	if err := validateTargets(targets); err != nil {
+		t.Fatalf("SecretsVaultReadinessTargets must validate: %v", err)
+	}
+	want := map[string]bool{
+		"external-secrets":                 false,
+		"external-secrets-webhook":         false,
+		"external-secrets-cert-controller": false,
+	}
+	for _, w := range targets {
+		if w.Namespace != "external-secrets" || w.Kind != "deployment" {
+			t.Errorf("unexpected target %+v", w)
+		}
+		want[w.Name] = true
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("missing readiness target %s", name)
+		}
+	}
+}
+
 func TestDefaultReadinessTargetsIncludesDashboard(t *testing.T) {
 	want := Workload{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-dashboard"}
 	for _, w := range DefaultReadinessTargets() {
@@ -249,6 +407,12 @@ func TestApplyIdempotent(t *testing.T) {
 	}
 	if wrote(n.cmds) {
 		t.Error("expected no write commands on an idempotent re-run")
+	}
+	// The CRD apply + Established wait deliberately still run: the gate is about
+	// cluster state, which unchanged files cannot prove (a crashed earlier run or
+	// a still-converging server). Both are idempotent no-ops on a healthy node.
+	if len(n.appliedCRDs) == 0 {
+		t.Error("expected the CRD apply to converge even on a no-op re-run")
 	}
 }
 
@@ -288,6 +452,65 @@ func TestApplyReadinessTimeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "orkano-operator") {
 		t.Errorf("timeout error should name the pending workload, got: %v", err)
+	}
+}
+
+func TestApplyReadinessTimeoutReturnsGeneratedBootstrapToken(t *testing.T) {
+	defer swapPollInterval(time.Millisecond)()
+
+	n := newFakeNode()
+	target := Workload{Namespace: "orkano-system", Kind: "deployment", Name: "orkano-operator"}
+	n.notFound["orkano-system/deployment/orkano-operator"] = true
+
+	res, err := Apply(context.Background(), n, Config{
+		Version:          "2.0.0",
+		ReadinessTargets: []Workload{target},
+		WaitTimeout:      30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if res == nil || res.BootstrapToken == "" {
+		t.Fatalf("expected partial result with bootstrap token, got %#v", res)
+	}
+	if !res.Changed {
+		t.Error("a fresh install that wrote manifests and secrets must report Changed even on a partial result")
+	}
+	if !strings.Contains(err.Error(), "orkano-operator") {
+		t.Errorf("timeout error should name the pending workload, got: %v", err)
+	}
+}
+
+func TestApplySecretFailureAfterTokenStillReturnsToken(t *testing.T) {
+	// The bootstrap-token secret is created before the two M2.6 placeholders
+	// (orkano-github-app, orkano-oidc); a failure on one of THOSE must still
+	// surface the freshly-created plaintext, or the admin is locked out exactly
+	// as in the original live-v0.0.2 incident.
+	n := newFakeNode()
+	n.failSecret = "orkano-oidc"
+	res, err := Apply(context.Background(), n, Config{Version: "2.0.0"})
+	if err == nil {
+		t.Fatal("expected the failed secret apply to error")
+	}
+	if res == nil || res.BootstrapToken == "" {
+		t.Fatalf("expected partial result carrying the bootstrap token, got %#v", res)
+	}
+	if !res.Changed {
+		t.Error("secrets were created before the failure; Changed must be true on the partial result")
+	}
+}
+
+func TestApplySecretFailureBeforeTokenReturnsNoToken(t *testing.T) {
+	// A failure before the bootstrap-token secret exists must NOT invent a
+	// token: nothing was created, so there is nothing to print or lose.
+	n := newFakeNode()
+	n.failSecret = "orkano-postgres-superuser"
+	res, err := Apply(context.Background(), n, Config{Version: "2.0.0"})
+	if err == nil {
+		t.Fatal("expected the failed secret apply to error")
+	}
+	if res != nil && res.BootstrapToken != "" {
+		t.Fatalf("no bootstrap-token secret was created; token must be empty, got %q", res.BootstrapToken)
 	}
 }
 

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/orkanoio/orkano/api/check"
@@ -46,6 +49,9 @@ const (
 	checkGitHubAppConnected   = "github.app-connected"
 	checkDomainTLSReady       = "domains.tls-ready"
 	checkAccessModeChosen     = "setup.access-mode-chosen"
+	checkVaultConnected       = "secrets.vault-connected"
+	checkNodesReady           = "cluster.nodes-ready"
+	checkFirstAppDeployed     = "apps.first-app-deployed"
 )
 
 // accessModes is the fixed vocabulary of ADR-0004's exposure paths. The wizard
@@ -109,6 +115,7 @@ type setupStatusResponse struct {
 	// command either way.
 	OIDCPendingRestart bool             `json:"oidcPendingRestart"`
 	GitHub             setupGitHubState `json:"github"`
+	RepoAllowlist      []string         `json:"repoAllowlist"`
 }
 
 type setupGitHubState struct {
@@ -154,6 +161,7 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		OIDCRedirectURL:      s.pinnedOIDCRedirectURL(),
 		OIDCEnabled:          s.cfg.OIDC != nil,
 		OIDCPendingRestart:   oidcPending,
+		RepoAllowlist:        append([]string{}, s.cfg.RepoAllowlist...),
 		GitHub: setupGitHubState{
 			Connected:   settings[settingGitHubConnectedAt] != "",
 			AppSlug:     settings[settingGitHubAppSlug],
@@ -220,6 +228,38 @@ func (s *Server) oidcRestartPending(settings map[string]string) bool {
 // the wizard's step order; Requires edges express real dependencies.
 func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []check.Check {
 	return []check.Check{
+		{
+			ID:       checkNodesReady,
+			Severity: check.SeverityWarning,
+			Summary:  "every cluster node is Ready",
+			Remediation: "inspect the node on the Settings page and on the host; a NotReady node " +
+				"stops scheduling new workloads until the kubelet recovers",
+			Probe: func(ctx context.Context) (check.Result, error) {
+				var nodes corev1.NodeList
+				if err := s.cfg.ViewerClient.List(ctx, &nodes); err != nil {
+					return check.Result{}, fmt.Errorf("listing nodes: %w", err)
+				}
+				if len(nodes.Items) == 0 {
+					return check.Result{}, fmt.Errorf("the node list came back empty — the cluster state is unreadable")
+				}
+				ready := 0
+				for i := range nodes.Items {
+					for _, cond := range nodes.Items[i].Status.Conditions {
+						if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+							ready++
+							break
+						}
+					}
+				}
+				if ready == len(nodes.Items) {
+					return check.Result{Status: check.StatusPass, Message: fmt.Sprintf("%d node(s) Ready", ready)}, nil
+				}
+				return check.Result{
+					Status:  check.StatusFail,
+					Message: fmt.Sprintf("%d of %d node(s) Ready", ready, len(nodes.Items)),
+				}, nil
+			},
+		},
 		{
 			ID:       checkAccessModeChosen,
 			Severity: check.SeverityWarning,
@@ -303,6 +343,59 @@ func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []che
 			},
 		},
 		{
+			ID:       checkVaultConnected,
+			Severity: check.SeverityInfo,
+			Summary:  "an external secret store is connected and Ready",
+			Remediation: "connect your vault from the dashboard's Vault page; if the External Secrets " +
+				"Operator is not installed, add it any time by re-running `orkano init --secrets-vault`",
+			Probe: func(ctx context.Context) (check.Result, error) {
+				stores := &unstructured.UnstructuredList{}
+				stores.SetGroupVersionKind(secretStoreListGVK)
+				err := s.cfg.ViewerClient.List(ctx, stores, client.InNamespace(appsNamespace))
+				switch {
+				case meta.IsNoMatchError(err):
+					// ESO absent = the install never opted in: external vaults
+					// are optional, so this is inapplicable, not unmet.
+					return check.Result{
+						Status:  check.StatusSkip,
+						Message: "External Secrets Operator not installed — optional; add it with `orkano init --secrets-vault`",
+					}, nil
+				case err != nil:
+					return check.Result{}, fmt.Errorf("listing secret stores: %w", err)
+				}
+				// Installed-but-empty is a FAIL, deliberately diverging from
+				// domains.tls-ready's skip-on-empty: passing --secrets-vault
+				// was an explicit ask, so an unconnected store is unfinished
+				// setup, not inapplicability. (The doctor's sibling
+				// secrets.store-health answers a different question —
+				// "currently healthy" — and skips this state.)
+				if len(stores.Items) == 0 {
+					return check.Result{
+						Status:  check.StatusFail,
+						Message: "the External Secrets Operator is installed but no store is connected yet",
+					}, nil
+				}
+				ready := 0
+				for i := range stores.Items {
+					if status, _, _ := readyCondition(&stores.Items[i]); status == "True" {
+						ready++
+					}
+				}
+				// Every connected store must be Ready — a "Done" badge over a
+				// half-broken pair would hide the expired credential.
+				if ready < len(stores.Items) {
+					return check.Result{
+						Status:  check.StatusFail,
+						Message: fmt.Sprintf("%d of %d store(s) Ready — check the others' credentials and server addresses", ready, len(stores.Items)),
+					}, nil
+				}
+				return check.Result{
+					Status:  check.StatusPass,
+					Message: fmt.Sprintf("%d store(s) connected and Ready", len(stores.Items)),
+				}, nil
+			},
+		},
+		{
 			ID:       checkDomainTLSReady,
 			Severity: check.SeverityInfo,
 			Summary:  "at least one Domain has a ready TLS certificate",
@@ -338,6 +431,41 @@ func (s *Server) setupChecks(settings map[string]string, oidcPending bool) []che
 				return check.Result{
 					Status:  check.StatusFail,
 					Message: fmt.Sprintf("%d domain(s), none with a ready certificate yet", len(list.Items)),
+				}, nil
+			},
+		},
+		{
+			ID:       checkFirstAppDeployed,
+			Severity: check.SeverityInfo,
+			Summary:  "a first application is deployed and running",
+			Remediation: "create an app from the Apps page — a build queues automatically, " +
+				"and GitHub pushes redeploy it once the App is connected",
+			Probe: func(ctx context.Context) (check.Result, error) {
+				var apps orkanov1alpha1.AppList
+				if err := s.cfg.ViewerClient.List(ctx, &apps, client.InNamespace(appsNamespace)); err != nil {
+					return check.Result{}, fmt.Errorf("listing apps: %w", err)
+				}
+				if len(apps.Items) == 0 {
+					return check.Result{Status: check.StatusFail, Message: "no apps yet — create your first app"}, nil
+				}
+				running := 0
+				for i := range apps.Items {
+					for _, c := range apps.Items[i].Status.Conditions {
+						if c.Type == orkanov1alpha1.ConditionReady && c.Status == "True" {
+							running++
+							break
+						}
+					}
+				}
+				if running > 0 {
+					return check.Result{
+						Status:  check.StatusPass,
+						Message: fmt.Sprintf("%d app(s), %d running", len(apps.Items), running),
+					}, nil
+				}
+				return check.Result{
+					Status:  check.StatusFail,
+					Message: fmt.Sprintf("%d app(s) created, none Ready yet — check their build and deploy status", len(apps.Items)),
 				}, nil
 			},
 		},

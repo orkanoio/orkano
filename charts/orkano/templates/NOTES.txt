@@ -1,0 +1,27 @@
+Orkano {{ .Chart.AppVersion }} is installing.
+
+{{- if .Values.features.unsafe }}
+
+WARNING: unsafe Orkano features are ENABLED:
+  {{ join ", " (sortAlpha .Values.features.unsafe) }}
+
+These opt-ins expand the source/build trust surface. Run `orkano doctor`
+after installation and disable any feature you do not need.
+{{- end }}
+
+NOTE (M4.2, under construction): this chart does not yet run the
+bootstrap-secrets Job — the components it deploys (operator, receiver,
+dashboard, migration Job, platform Postgres) stay unready until the
+generate-once Secrets exist (orkano-postgres-superuser, the role DSNs, the
+webhook secret, the bootstrap token). Until that sub-commit lands, a
+`helm install` does not produce a working PaaS. See the chart README.
+
+If you have not already, run the capability-probing preflight against this
+cluster — it is the documented gate for bring-your-own-cluster installs, and
+the same probes resurface as `orkano doctor` checks after install:
+
+  orkano preflight --kubeconfig <kubeconfig>
+
+Check the install's health and hardening once components are up:
+
+  orkano doctor --kubeconfig <kubeconfig>

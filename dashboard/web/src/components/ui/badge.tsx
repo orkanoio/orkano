@@ -3,18 +3,23 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-// Vendored shadcn/ui badge (new-york style, Tailwind v4), minus the asChild
-// slot the dashboard doesn't use.
+// Vendored shadcn/ui badge, restyled onto the landing design system: mono
+// pill chips with a tinted fill + border (the landing's "healthy" /
+// "type: database" chips). success/warning join the stock variants so status
+// UI can speak the landing's green/amber/red without raw hex.
 
 const badgeVariants = cva(
-  "inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 gap-1 [&>svg]:size-3 [&>svg]:pointer-events-none transition-[color,box-shadow] overflow-hidden",
+  "inline-flex items-center justify-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-4 w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 [&>svg]:pointer-events-none overflow-hidden",
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
-        secondary: "border-transparent bg-secondary text-secondary-foreground",
-        destructive: "border-transparent bg-destructive text-white",
-        outline: "text-foreground",
+        default: "border-primary/25 bg-primary/8 text-primary",
+        success: "border-success/25 bg-success/8 text-success",
+        warning: "border-warning/25 bg-warning/8 text-warning",
+        destructive:
+          "border-destructive/25 bg-destructive/8 text-destructive",
+        secondary: "border-white/15 bg-white/4 text-muted-foreground",
+        outline: "border-white/15 text-foreground",
       },
     },
     defaultVariants: {

@@ -35,8 +35,10 @@ describe("PostgresDetail", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ProvisionFailed")).toBeInTheDocument();
     expect(screen.getByText("cannot shrink")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Connection" }));
     // The connect hint names the Secret and the load-bearing uri key.
-    expect(screen.getByText(/uri, host, port, database, username, password/)).toBeInTheDocument();
+    expect(screen.getAllByText("uri")).not.toHaveLength(0);
+    expect(screen.getByText("password")).toBeInTheDocument();
   });
 
   it("grows storage carrying the immutable version along", async () => {
@@ -55,6 +57,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
     const grow = await screen.findByLabelText("Grow storage");
     await user.clear(grow);
     await user.type(grow, "20Gi");
@@ -85,6 +88,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
     const grow = await screen.findByLabelText("Grow storage");
     await user.clear(grow);
     await user.type(grow, "5Gi");
@@ -101,6 +105,75 @@ describe("PostgresDetail", () => {
     expect(puts).toHaveLength(0);
   });
 
+  it("enables Pgweb through its dedicated endpoint", async () => {
+    const pg = makePostgres({ name: "api-db" });
+    const mock = stubFetchRoutes({
+      "GET /api/postgres/api-db": () => jsonResponse(200, pg),
+      "PUT /api/postgres/api-db/pgweb": () =>
+        jsonResponse(200, {
+          ...pg,
+          spec: { ...pg.spec, pgweb: { enabled: true } },
+        }),
+    });
+    renderWithSession(<PostgresDetail name="api-db" />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Pgweb" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Enable Pgweb" }),
+    );
+
+    await waitFor(() => {
+      const put = mock.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(put?.[0]).toBe("/api/postgres/api-db/pgweb");
+      expect(JSON.parse((put?.[1] as RequestInit).body as string)).toEqual({
+        enabled: true,
+      });
+    });
+  });
+
+  it("opens a ready Pgweb with the current session and can disable it", async () => {
+    const pg = makePostgres({
+      name: "api-db",
+      spec: { pgweb: { enabled: true } },
+      status: {
+        secretName: "api-db",
+        pgwebServiceName: "api-db-pgweb",
+        conditions: [
+          readyCondition("True", "Available"),
+          { type: "PgwebReady", status: "True", reason: "Available" },
+        ],
+      },
+    });
+    const mock = stubFetchRoutes({
+      "GET /api/postgres/api-db": () => jsonResponse(200, pg),
+      "PUT /api/postgres/api-db/pgweb": () =>
+        jsonResponse(200, {
+          ...pg,
+          spec: { ...pg.spec, pgweb: undefined },
+        }),
+    });
+    renderWithSession(<PostgresDetail name="api-db" />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Pgweb" }));
+    const open = await screen.findByRole("link", { name: "Open Pgweb" });
+    expect(open).toHaveAttribute("href", "/api/postgres/api-db/pgweb/");
+    expect(open).toHaveAttribute("target", "_blank");
+    await user.click(screen.getByRole("button", { name: "Disable Pgweb" }));
+
+    await waitFor(() => {
+      const put = mock.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(JSON.parse((put?.[1] as RequestInit).body as string)).toEqual({
+        enabled: false,
+      });
+    });
+  });
+
   it("deletes after an explicit data-loss confirm", async () => {
     stubFetchRoutes({
       "GET /api/postgres/api-db": () =>
@@ -110,6 +183,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Danger" }));
     await user.click(
       await screen.findByRole("button", { name: "Delete database" }),
     );
@@ -137,6 +211,7 @@ describe("PostgresDetail", () => {
     renderWithSession(<PostgresDetail name="api-db" />);
     const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("button", { name: "Danger" }));
     await user.click(
       await screen.findByRole("button", { name: "Delete database" }),
     );

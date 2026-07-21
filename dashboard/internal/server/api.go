@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -52,12 +53,21 @@ func parsePage(r *http.Request) (limit, offset int32) {
 // non-destructive updates need only a session, matching ADR-0003's "step-up for
 // destructive actions" (delete an app, rotate secrets), not for provisioning.
 func (s *Server) mountAPIRoutes(r chi.Router) {
+	r.With(s.RequireSession).Get("/api/features", s.handleFeatures)
+	// Cluster node inventory for the Settings page — a read view like the rest,
+	// through the impersonated viewer's cluster-scoped nodes grant.
+	r.With(s.RequireSession).Get("/api/nodes", s.handleListNodes)
 	r.Route("/api/apps", func(ar chi.Router) {
 		ar.Use(s.RequireSession)
 		ar.Get("/", s.handleListApps)
 		ar.Post("/", s.handleCreateApp)
 		ar.Get("/{name}", s.handleGetApp)
 		ar.Get("/{name}/deploys", s.handleListDeploys)
+		ar.Get("/{name}/builds", s.handleListBuilds)
+		ar.Post("/{name}/deploy", s.handleDeployApp)
+		ar.Post("/{name}/source/archive", s.handleUploadSourceArchive)
+		ar.Put("/{name}/source", s.handleUpdateAppSource)
+		ar.Get("/{name}/builds/{build}/logs", s.handleBuildLogs)
 		// Live logs (Server-Sent Events) — a read view, streamed through the viewer
 		// impersonation like the other reads.
 		ar.Get("/{name}/logs", s.handleAppLogs)
@@ -88,11 +98,52 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 		pr.Use(s.RequireSession)
 		pr.Get("/", s.handleListPostgres)
 		pr.Post("/", s.handleCreatePostgres)
+		pr.With(s.RequireStepUp).Put("/{name}/pgweb", s.handleUpdatePgweb)
+		pr.Get("/{name}/pgweb", s.handlePgwebRedirect)
+		pr.Handle("/{name}/pgweb/*", http.HandlerFunc(s.handlePgwebProxy))
+		pr.Get("/{name}/logs", s.handlePostgresLogs)
 		pr.Get("/{name}", s.handleGetPostgres)
 		pr.Put("/{name}", s.handleUpdatePostgres)
 		// Deleting a database destroys its data (delete-and-recreate is the only
 		// way to change the immutable version, ADR-0014), so it gates on step-up.
 		pr.With(s.RequireStepUp).Delete("/{name}", s.handleDeletePostgres)
+	})
+
+	r.Route("/api/mongo", func(mr chi.Router) {
+		mr.Use(s.RequireSession)
+		mr.Get("/", s.handleListMongo)
+		mr.Post("/", s.handleCreateMongo)
+		mr.With(s.RequireStepUp).Put("/{name}/express", s.handleUpdateMongoExpress)
+		mr.Get("/{name}/express", s.handleMongoExpressRedirect)
+		mr.Handle("/{name}/express/*", http.HandlerFunc(s.handleMongoExpressProxy))
+		mr.Get("/{name}/logs", s.handleMongoLogs)
+		mr.Get("/{name}", s.handleGetMongo)
+		mr.Put("/{name}", s.handleUpdateMongo)
+		mr.With(s.RequireStepUp).Delete("/{name}", s.handleDeleteMongo)
+	})
+
+	// External-vault sync (ADR-0018): ESO's own kinds written directly, no
+	// wrapper CR. Unlike the catalog routes, EVERY write here gates on step-up
+	// (ADR-0018 decision 4 tightens the creates-need-only-a-session rule):
+	// each one rewires what lands in app env, and they are rare operations.
+	r.Route("/api/secretstores", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListSecretStores)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateSecretStore)
+			wr.Put("/{name}", s.handleUpdateSecretStore)
+			wr.Delete("/{name}", s.handleDeleteSecretStore)
+		})
+	})
+	r.Route("/api/externalsecrets", func(vr chi.Router) {
+		vr.Use(s.RequireSession)
+		vr.Get("/", s.handleListExternalSecrets)
+		vr.Group(func(wr chi.Router) {
+			wr.Use(s.RequireStepUp)
+			wr.Post("/", s.handleCreateExternalSecret)
+			wr.Delete("/{name}", s.handleDeleteExternalSecret)
+		})
 	})
 
 	// The append-only audit log (INV-08), readable by any authenticated session.
@@ -204,6 +255,13 @@ func (s *Server) writeK8sError(w http.ResponseWriter, action string, err error) 
 		// Transient cluster unavailability — log so intermittent 503s leave a trace.
 		s.log.Warn("kubernetes api call unavailable", "action", action, "err", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
+	case meta.IsNoMatchError(err):
+		// The dashboard binary knows Orkano's Go types, but discovery still needs
+		// the CRDs installed in the cluster. A missing REST mapping means init has
+		// not finished (or an install repaired itself only partially), not a bug in
+		// the user's request.
+		s.log.Warn("orkano CRDs are not established", "action", action, "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "cluster_not_ready")
 	default:
 		s.log.Error("kubernetes api call failed", "action", action, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")

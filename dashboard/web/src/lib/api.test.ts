@@ -9,8 +9,11 @@ import {
   listApps,
   loginTotp,
   logout,
+  mongoExpressPath,
   redeemInstallToken,
   setAppEnv,
+  sourceLabel,
+  updateMongoExpress,
   updateApp,
 } from "@/lib/api";
 import { emptyResponse, jsonResponse, requestBody, stubFetch } from "@/test/helpers";
@@ -42,6 +45,39 @@ describe("api client", () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 401, code: "invalid_token" });
+  });
+
+  it("labels every source kind without assuming a repository", () => {
+    expect(sourceLabel({ github: { repo: "o/r" } })).toBe("o/r");
+    expect(
+      sourceLabel({ git: { url: "https://git.example.com/team/mirror.git" } }),
+    ).toBe("https://git.example.com/team/mirror.git");
+    expect(
+      sourceLabel({
+        upload: { digest: `sha256:${"a".repeat(64)}`, fileName: "release.zip" },
+      }),
+    ).toBe("release.zip");
+    expect(
+      sourceLabel({ upload: { digest: `sha256:${"a".repeat(64)}` } }),
+    ).toBe(`sha256:${"a".repeat(64)}`);
+  });
+
+  it("preserves the existing kind on a cross-kind name collision", async () => {
+    const mock = stubFetch();
+    mock.mockResolvedValueOnce(
+      jsonResponse(409, { error: "name_in_use", existingKind: "Postgres" }),
+    );
+
+    const err = await createApp("api-db", {
+      source: { github: { repo: "o/r" } },
+      build: { strategy: "Dockerfile" },
+    }).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({
+      status: 409,
+      code: "name_in_use",
+      existingKind: "Postgres",
+    });
   });
 
   it("falls back to a status-only code on a non-JSON error body", async () => {
@@ -149,6 +185,22 @@ describe("app/catalog client", () => {
     expect(appLogsPath("web")).toBe("/api/apps/web/logs");
     expect(appLogsPath("web", { pod: "web-1", follow: false, tail: 50 })).toBe(
       "/api/apps/web/logs?pod=web-1&follow=false&tail=50",
+    );
+  });
+
+  it("updates Mongo Express through the step-up endpoint", async () => {
+    const mock = stubFetch();
+    mock.mockResolvedValueOnce(jsonResponse(200, { name: "document db" }));
+
+    await updateMongoExpress("document db", true);
+
+    expect(mock).toHaveBeenCalledWith(
+      "/api/mongo/document%20db/express",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(await requestBody(mock)).toEqual({ enabled: true });
+    expect(mongoExpressPath("document db")).toBe(
+      "/api/mongo/document%20db/express/",
     );
   });
 });

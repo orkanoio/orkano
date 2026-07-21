@@ -131,6 +131,10 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "failed to set up Postgres controller: %v\n", err)
 		return 1
 	}
+	if err := (&MongoReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up Mongo controller: %v\n", err)
+		return 1
+	}
 
 	// Registered after the testEnv.Stop defer, so LIFO ordering joins the
 	// manager (lease released against a live apiserver) before teardown.
@@ -187,7 +191,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "scheme-smoke", Namespace: "default"},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 		},
@@ -205,7 +209,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		t.Fatalf("schema default not applied: spec.type = %q, want %q", got.Spec.Type, orkanov1alpha1.WorkloadWeb)
 	}
 
-	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}, &orkanov1alpha1.PostgresList{}} {
+	for _, list := range []client.ObjectList{&orkanov1alpha1.BuildList{}, &orkanov1alpha1.DomainList{}, &orkanov1alpha1.PostgresList{}, &orkanov1alpha1.MongoList{}} {
 		if err := k8sClient.List(ctx, list); err != nil {
 			t.Fatalf("failed to list %T: %v", list, err)
 		}
@@ -216,7 +220,7 @@ func TestSchemeServesOrkanoKinds(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-worker", Namespace: "default"},
 		Spec: orkanov1alpha1.AppSpec{
 			Source: orkanov1alpha1.Source{
-				GitHub: orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
+				GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/example"},
 			},
 			Build: orkanov1alpha1.BuildStrategy{Strategy: "Dockerfile"},
 			Type:  orkanov1alpha1.WorkloadWorker,

@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -67,6 +70,26 @@ func TestCreatePostgres(t *testing.T) {
 	assertAudited(t, store, "postgres.create", "success")
 }
 
+func TestCreatePostgresCannotEnablePgwebWithoutStepUp(t *testing.T) {
+	store := newFakeStore()
+	s := apiServer(t, store)
+	ck := authedSession(t, store)
+	body := postgresCreateRequest{
+		Name: "api-db",
+		Spec: orkanov1alpha1.PostgresSpec{
+			Version: "16", StorageSize: qty(t, "10Gi"),
+			Pgweb: &orkanov1alpha1.PgwebSpec{Enabled: true},
+		},
+	}
+	rec := apiReq(t, s, http.MethodPost, "/api/postgres", body, ck)
+	if rec.Code != http.StatusBadRequest || decodeBody(t, rec)["error"] != "pgweb_requires_step_up" {
+		t.Fatalf("create with Pgweb = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if _, err := getPostgres(t, s, "api-db"); !apierrors.IsNotFound(err) {
+		t.Fatalf("Postgres was created despite rejected Pgweb enable: %v", err)
+	}
+}
+
 func TestCreatePostgresConflict(t *testing.T) {
 	store := newFakeStore()
 	s := apiServer(t, store, seedPostgres(t, "api-db", "10Gi"))
@@ -125,6 +148,21 @@ func TestGetPostgres(t *testing.T) {
 	status, _ := body["status"].(map[string]any)
 	if status["secretName"] != "api-db" {
 		t.Fatalf("status not surfaced: %v", body["status"])
+	}
+	assertConnectionSecretKeys(t, body)
+}
+
+func assertConnectionSecretKeys(t *testing.T, body map[string]any) {
+	t.Helper()
+	got, ok := body["secretKeys"].([]any)
+	want := connectionSecretKeys()
+	if !ok || len(got) != len(want) {
+		t.Fatalf("secretKeys = %#v, want %v", body["secretKeys"], want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("secretKeys[%d] = %v, want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -243,6 +281,114 @@ func TestUpdatePostgresOmittedStoragePreserved(t *testing.T) {
 	got, _ := getPostgres(t, s, "api-db")
 	if got.Spec.StorageSize == nil || got.Spec.StorageSize.String() != "20Gi" {
 		t.Fatalf("omitted storage was not preserved: %v", got.Spec.StorageSize)
+	}
+}
+
+func TestUpdatePostgresPreservesPgweb(t *testing.T) {
+	store := newFakeStore()
+	pg := seedPostgres(t, "api-db", "10Gi")
+	pg.Spec.Pgweb = &orkanov1alpha1.PgwebSpec{Enabled: true}
+	s := apiServer(t, store, pg)
+	ck := authedSession(t, store)
+
+	grow := postgresUpdateRequest{Spec: orkanov1alpha1.PostgresSpec{Version: "16", StorageSize: qty(t, "20Gi")}}
+	if rec := apiReq(t, s, http.MethodPut, "/api/postgres/api-db", grow, ck); rec.Code != http.StatusOK {
+		t.Fatalf("grow = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got, _ := getPostgres(t, s, "api-db")
+	if !got.PgwebEnabled() {
+		t.Fatal("ordinary Postgres update disabled Pgweb")
+	}
+
+	grow.Spec.Pgweb = &orkanov1alpha1.PgwebSpec{Enabled: false}
+	rec := apiReq(t, s, http.MethodPut, "/api/postgres/api-db", grow, ck)
+	if rec.Code != http.StatusBadRequest || decodeBody(t, rec)["error"] != "use_pgweb_endpoint" {
+		t.Fatalf("ordinary Pgweb change = %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdatePgwebRequiresStepUp(t *testing.T) {
+	store := newFakeStore()
+	s := apiServer(t, store, seedPostgres(t, "api-db", "10Gi"))
+	ck := authedSession(t, store)
+
+	if rec := apiReq(t, s, http.MethodPut, "/api/postgres/api-db/pgweb", pgwebUpdateRequest{Enabled: true}, ck); rec.Code != http.StatusForbidden {
+		t.Fatalf("enable without step-up = %d, want 403", rec.Code)
+	}
+	freshenStepUp(t, store, ck.Value)
+	if rec := apiReq(t, s, http.MethodPut, "/api/postgres/api-db/pgweb", pgwebUpdateRequest{Enabled: true}, ck); rec.Code != http.StatusOK {
+		t.Fatalf("enable with step-up = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got, _ := getPostgres(t, s, "api-db")
+	if !got.PgwebEnabled() {
+		t.Fatal("Pgweb was not enabled")
+	}
+	assertAudited(t, store, "postgres.pgweb.enable", "success")
+
+	if rec := apiReq(t, s, http.MethodPut, "/api/postgres/api-db/pgweb", pgwebUpdateRequest{Enabled: false}, ck); rec.Code != http.StatusOK {
+		t.Fatalf("disable with step-up = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got, _ = getPostgres(t, s, "api-db")
+	if got.Spec.Pgweb != nil {
+		t.Fatalf("Pgweb spec after disable = %+v, want nil", got.Spec.Pgweb)
+	}
+	assertAudited(t, store, "postgres.pgweb.disable", "success")
+}
+
+func TestPgwebProxyUsesSessionAndDoesNotForwardCredentials(t *testing.T) {
+	store := newFakeStore()
+	pg := seedPostgres(t, "api-db", "10Gi")
+	pg.Spec.Pgweb = &orkanov1alpha1.PgwebSpec{Enabled: true}
+	pg.Status.PgwebServiceName = "api-db-pgweb"
+	pg.Status.Conditions = append(pg.Status.Conditions, metav1.Condition{
+		Type: orkanov1alpha1.ConditionPgwebReady, Status: metav1.ConditionTrue, Reason: "Available", LastTransitionTime: metav1.Now(),
+	})
+	s := apiServer(t, store, pg)
+	s.cfg.PgwebTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Scheme != "http" || req.URL.Host != "api-db-pgweb.orkano-apps.svc.cluster.local:8081" || req.URL.Path != "/api/postgres/api-db/pgweb/" {
+			t.Errorf("upstream URL = %s", req.URL.String())
+		}
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" || req.Header.Get("Forwarded") != "" || req.Header.Get("X-Forwarded-For") != "" {
+			t.Errorf("browser credentials or forwarding headers leaked upstream: %v", req.Header)
+		}
+		headers := make(http.Header)
+		headers.Set("Content-Type", "text/html")
+		headers.Set("Set-Cookie", "pgweb=secret")
+		headers.Set("WWW-Authenticate", "Basic")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     headers,
+			Body:       io.NopCloser(strings.NewReader("<h1>Pgweb</h1>")),
+			Request:    req,
+		}, nil
+	})
+	ck := authedSession(t, store)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/postgres/api-db/pgweb/", nil)
+	req.RemoteAddr = "10.0.0.1:5555"
+	req.AddCookie(ck)
+	req.Header.Set("Authorization", "Bearer browser-secret")
+	req.Header.Set("Forwarded", "for=attacker")
+	req.Header.Set("X-Forwarded-For", "attacker")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Pgweb") {
+		t.Fatalf("proxy = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Set-Cookie") != "" || rec.Header().Get("WWW-Authenticate") != "" {
+		t.Errorf("upstream auth headers leaked to browser: %v", rec.Header())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Errorf("proxy security headers = %v", rec.Header())
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "connect-src http://example.com/api/postgres/api-db/pgweb/") || strings.Contains(csp, "connect-src 'self'") {
+		t.Errorf("proxy CSP does not confine browser API calls to Pgweb: %q", csp)
+	}
+	assertAudited(t, store, "postgres.pgweb.open", "success")
+
+	unauthorized := apiReq(t, s, http.MethodGet, "/api/postgres/api-db/pgweb/", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("open without dashboard session = %d, want 401", unauthorized.Code)
 	}
 }
 

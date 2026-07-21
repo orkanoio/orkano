@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
+import { CommandLine } from "@/components/CommandLine";
 import { Field } from "@/components/Field";
+import { StatusDot } from "@/components/StatusBadge";
 import { StepUpGate } from "@/components/StepUpGate";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +28,7 @@ import {
   type SetupCheck,
   type SetupStatus,
 } from "@/lib/api";
+import { Link } from "@/lib/router";
 import { isStepUpRequired } from "@/lib/errors";
 
 import { postManifestToGitHub } from "./github";
@@ -72,7 +75,7 @@ export function SetupWizard() {
   });
 
   if (status.isPending) {
-    return <p className="text-muted-foreground text-sm">Loading setup…</p>;
+    return <p className="font-mono text-xs text-muted-foreground">Loading setup…</p>;
   }
   if (status.error) {
     return <ApiErrorAlert error={status.error} />;
@@ -80,19 +83,24 @@ export function SetupWizard() {
   const s = status.data;
 
   return (
-    <section className="flex max-w-2xl flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">Setup</h1>
+    <section className="flex max-w-2xl flex-col gap-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+          Setup
+        </h1>
         <p className="text-muted-foreground text-sm">
           Walk the steps below to finish this install. Everything can be
           revisited later.
         </p>
       </div>
+      <ClusterStep status={s} />
       <AccessModeStep status={s} />
       <SignInStep status={s} />
       <GitHubStep status={s} />
+      <VaultStep status={s} />
       <DomainStep status={s} />
       <RegistryStep />
+      <FirstAppStep status={s} />
     </section>
   );
 }
@@ -111,25 +119,26 @@ function OutcomeBadge({ check }: { check: SetupCheck | undefined }) {
   }
   const render = (
     label: string,
-    variant?: "secondary" | "outline" | "destructive",
+    variant?: "success" | "warning" | "secondary" | "outline" | "destructive",
   ) => (
     <Badge
       variant={variant}
       title={check.message}
       aria-label={check.message ? `${label}: ${check.message}` : label}
     >
+      <StatusDot />
       {label}
     </Badge>
   );
   switch (check.outcome) {
     case "pass":
-      return render("Done");
+      return render("Done", "success");
     case "skip":
       return render("Not applicable", "secondary");
     case "blocked":
       return render(
         `Waiting on ${blockerLabel(check.blockers?.[0])}`,
-        "outline",
+        "warning",
       );
     case "error":
       return render("Could not check", "destructive");
@@ -149,12 +158,30 @@ function StepCard({
   badge: ReactNode;
   children?: ReactNode;
 }) {
+  // The landing's mono-teal step-index look: split a leading "N." off the
+  // title for styling only — the rendered text (and so the accessible name
+  // the tests query) stays byte-identical. NOT aria-hidden: hiding the index
+  // would drop it from the heading's accessible name.
+  const numbered = /^(\d+\.)\s(.*)$/.exec(title);
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle role="heading" aria-level={2}>
-            {title}
+          <CardTitle
+            role="heading"
+            aria-level={2}
+            className="flex items-baseline gap-2 font-display text-lg tracking-tight text-white"
+          >
+            {numbered ? (
+              <>
+                <span className="font-mono text-[11px] font-normal tracking-[0.2em] text-primary">
+                  {numbered[1]}
+                </span>{" "}
+                {numbered[2]}
+              </>
+            ) : (
+              title
+            )}
           </CardTitle>
           {badge}
         </div>
@@ -167,34 +194,29 @@ function StepCard({
   );
 }
 
-// CommandLine shows a copyable shell command the admin must run outside the
-// dashboard (the wizard's rollout prompts).
-function CommandLine({ command }: { command: string }) {
+// --- step 1: cluster ---
+
+// ClusterStep reports node health up front: everything the wizard configures
+// runs on these machines, so a NotReady node is the first thing to fix.
+function ClusterStep({ status }: { status: SetupStatus }) {
+  const check = checkById(status, "cluster.nodes-ready");
   return (
-    <div className="flex items-center gap-2">
-      <code className="bg-muted flex-1 overflow-x-auto rounded-md px-3 py-2 font-mono text-xs">
-        {command}
-      </code>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        // The command in the accessible name: several Copy buttons can share a
-        // screen, and a bare "Copy" tells a screen-reader user nothing.
-        aria-label={`Copy ${command}`}
-        onClick={() => {
-          void navigator.clipboard.writeText(command).catch(() => {
-            // Clipboard access can be denied; the command stays selectable.
-          });
-        }}
-      >
-        Copy
-      </Button>
-    </div>
+    <StepCard
+      title="1. Cluster"
+      description="The nodes this installation runs on. Orkano deploys onto whatever capacity is Ready here."
+      badge={<OutcomeBadge check={check} />}
+    >
+      <p className="text-muted-foreground text-sm">
+        {check?.message ?? ""}{" "}
+        <Link to="/settings" className="text-primary hover:underline">
+          View nodes and the add-node recipe in Settings.
+        </Link>
+      </p>
+    </StepCard>
   );
 }
 
-// --- step 1: access mode ---
+// --- step 2: access mode ---
 
 function AccessModeStep({ status }: { status: SetupStatus }) {
   const queryClient = useQueryClient();
@@ -213,7 +235,7 @@ function AccessModeStep({ status }: { status: SetupStatus }) {
 
   return (
     <StepCard
-      title="1. Access mode"
+      title="2. Access mode"
       description="How this dashboard is reached. It ships ClusterIP-only — nothing is exposed until you set a path up; recording the choice keeps the hardening checks honest."
       badge={<OutcomeBadge check={checkById(status, "setup.access-mode-chosen")} />}
     >
@@ -238,7 +260,7 @@ function AccessModeStep({ status }: { status: SetupStatus }) {
           <AlertDescription>
             Public exposure without single sign-on leaves only the local admin
             account between the internet and this cluster. Connect an identity
-            provider first (step 2).
+            provider first (step 3).
           </AlertDescription>
         </Alert>
       )}
@@ -261,7 +283,7 @@ function AccessModeStep({ status }: { status: SetupStatus }) {
   );
 }
 
-// --- step 2: admin + SSO ---
+// --- step 3: admin + SSO ---
 
 function SignInStep({ status }: { status: SetupStatus }) {
   const [reconfigure, setReconfigure] = useState(false);
@@ -279,7 +301,7 @@ function SignInStep({ status }: { status: SetupStatus }) {
 
   return (
     <StepCard
-      title="2. Sign-in"
+      title="3. Sign-in"
       description="The local admin (created at bootstrap, with a required second factor) is the break-glass account. Connecting an identity provider is the recommended way in for daily use."
       badge={<OutcomeBadge check={oidcCheck} />}
     >
@@ -482,14 +504,15 @@ function OIDCConnectForm({ status }: { status: SetupStatus }) {
   );
 }
 
-// --- step 3: GitHub App ---
+// --- step 4: GitHub App ---
 
 function GitHubStep({ status }: { status: SetupStatus }) {
   const check = checkById(status, "github.app-connected");
+  const allowlist = status.repoAllowlist ?? [];
 
   return (
     <StepCard
-      title="3. GitHub"
+      title="4. GitHub"
       description="One click creates a GitHub App via the manifest flow — exact permissions (repository contents + metadata, read-only), push webhooks pre-wired to this install."
       badge={<OutcomeBadge check={check} />}
     >
@@ -501,6 +524,31 @@ function GitHubStep({ status }: { status: SetupStatus }) {
             Install the App on the repositories you want to deploy, and add
             them to the receiver allowlist.
           </p>
+          <div className="flex flex-col gap-2 rounded-lg border px-4 py-3">
+            <p className="overline-label">Receiver allowlist</p>
+            {allowlist.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {allowlist.map((repo) => (
+                  <Badge key={repo} variant="secondary">
+                    {repo}
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Empty — automatic deploys are deny-all until a repository is added.
+              </p>
+            )}
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              CLI: re-run your original install command with{" "}
+              <code className="font-mono text-foreground">
+                --allow-repo owner/repository
+              </code>
+              . Helm: add the repository under{" "}
+              <code className="font-mono text-foreground">repoAllowlist</code>{" "}
+              and upgrade the release.
+            </p>
+          </div>
           {isRecentConnect(status.github.connectedAt) ? (
             <>
               <p className="text-sm">
@@ -587,13 +635,49 @@ function GitHubConnectForm() {
   );
 }
 
-// --- step 4: domain + TLS ---
+// --- step 5: secrets ---
+
+// VaultStep reports the optional external-vault path (ADR-0018). "Not
+// applicable" means the install never opted into the External Secrets
+// Operator — the card shows the exact re-run one-liner that adds it.
+function VaultStep({ status }: { status: SetupStatus }) {
+  const check = checkById(status, "secrets.vault-connected");
+  return (
+    <StepCard
+      title="5. Secrets"
+      description="Secrets typed into an app's environment live only as Kubernetes Secrets, encrypted at rest. Optionally, sync them from an external vault instead — Orkano then never holds the values at all."
+      badge={<OutcomeBadge check={check} />}
+    >
+      {check?.outcome === "skip" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-muted-foreground text-sm">
+            The External Secrets Operator is not installed. To add it, re-run
+            the installer with the flag — the re-run converges, it does not
+            reinstall:
+          </p>
+          <pre className="bg-terminal text-foreground overflow-x-auto rounded-lg border p-3 font-mono text-xs">
+            orkano init --secrets-vault …your original flags…
+          </pre>
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          {check?.message ?? ""}{" "}
+          <Link to="/vault" className="text-primary hover:underline">
+            Manage stores and synced secrets on the Vault page.
+          </Link>
+        </p>
+      )}
+    </StepCard>
+  );
+}
+
+// --- step 6: domain + TLS ---
 
 function DomainStep({ status }: { status: SetupStatus }) {
   const check = checkById(status, "domains.tls-ready");
   return (
     <StepCard
-      title="4. Domains & TLS"
+      title="6. Domains & TLS"
       description="Custom domains live on each app: add one from the app's screen, point its DNS at the cluster, and cert-manager issues the certificate through the orkano-platform issuer."
       badge={<OutcomeBadge check={check} />}
     >
@@ -606,16 +690,38 @@ function DomainStep({ status }: { status: SetupStatus }) {
   );
 }
 
-// --- step 5: registry ---
+// --- step 7: registry ---
 
 function RegistryStep() {
   // No server check backs this step — the badge says "nothing to do here",
   // deliberately not "verified healthy" (that is a doctor check, Phase 3).
   return (
     <StepCard
-      title="5. Registry"
+      title="7. Registry"
       description="Builds push to the in-cluster registry deployed at install — TLS from an internal CA, images digest-pinned into every rollout. Nothing to configure in v1; external registries are on the roadmap."
       badge={<Badge variant="secondary">Built in</Badge>}
     />
+  );
+}
+
+// --- step 8: first app ---
+
+// FirstAppStep closes the loop: the wizard is done when something actually
+// runs. Passing needs at least one App with a True Ready condition.
+function FirstAppStep({ status }: { status: SetupStatus }) {
+  const check = checkById(status, "apps.first-app-deployed");
+  return (
+    <StepCard
+      title="8. First app"
+      description="Create an app and Orkano builds it immediately — the first deploy needs no push. GitHub pushes take over once the App is connected."
+      badge={<OutcomeBadge check={check} />}
+    >
+      <p className="text-muted-foreground text-sm">
+        {check?.message ?? ""}{" "}
+        <Link to="/apps/new" className="text-primary hover:underline">
+          Create your first app.
+        </Link>
+      </p>
+    </StepCard>
   );
 }

@@ -35,12 +35,17 @@ func connectAs(t *testing.T, dsn, user, password string) *pgxpool.Pool {
 // unrelated failure.
 func assertDenied(t *testing.T, op string, err error) {
 	t.Helper()
+	assertSQLState(t, op, err, "42501")
+}
+
+func assertSQLState(t *testing.T, op string, err error, code string) {
+	t.Helper()
 	if err == nil {
-		t.Fatalf("%s: expected permission denied, got success", op)
+		t.Fatalf("%s: expected SQLSTATE %s, got success", op, code)
 	}
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
-		t.Fatalf("%s: expected SQLSTATE 42501 (insufficient_privilege), got: %v", op, err)
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Fatalf("%s: expected SQLSTATE %s, got: %v", op, code, err)
 	}
 }
 
@@ -82,9 +87,13 @@ func TestQueueRolesBlastRadius(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("receiver EnqueueDelivery should succeed: %v", err)
 		}
+		_, err := recv.Exec(ctx, "INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name) VALUES ('manual-11111111111111111111111111111111', 'orkanoio/orkano', 'manual', 'target')")
+		assertDenied(t, "receiver app-scoped INSERT", err)
+		_, err = recv.Exec(ctx, "INSERT INTO webhook_deliveries (delivery_id, repo, event_type) VALUES ('manual-22222222222222222222222222222222', 'orkanoio/orkano', 'manual')")
+		assertSQLState(t, "receiver forged manual event", err, "23514")
 
 		// Everything that would let it read or drain the queue is denied.
-		_, err := recv.Exec(ctx, "SELECT delivery_id FROM webhook_deliveries")
+		_, err = recv.Exec(ctx, "SELECT delivery_id FROM webhook_deliveries")
 		assertDenied(t, "receiver SELECT", err)
 		_, err = recv.Exec(ctx, "UPDATE webhook_deliveries SET repo = 'x'")
 		assertDenied(t, "receiver UPDATE", err)

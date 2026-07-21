@@ -1,0 +1,37 @@
+# The three Orkano namespaces (ADR-0005) with their Pod Security levels.
+#
+# orkano-system runs only Orkano's own components, which ADR-0007 requires to
+# be non-root with read-only rootfs — restricted is enforceable from day one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# orkano-apps runs arbitrary user images; enforcing restricted would break the
+# Heroku-grade promise (most user images run as root). baseline still blocks
+# privileged pods, host namespaces, and hostPath; warn/audit at restricted
+# keep the gap visible without breaking deploys.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-apps
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# baseline on all three axes per ADR-0012: rootless BuildKit cannot run under
+# restricted, and warn/audit at restricted would flag every legitimate build
+# pod. The AppArmor profile and the M1.2 lockdown manifests compensate.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orkano-builds
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline

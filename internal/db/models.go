@@ -71,4 +71,5 @@ type WebhookDelivery struct {
 	Repo       string
 	EventType  string
 	ReceivedAt pgtype.Timestamptz
+	AppName    pgtype.Text
 }

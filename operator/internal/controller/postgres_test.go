@@ -39,6 +39,9 @@ func TestPostgresDefaults(t *testing.T) {
 	if got.Spec.StorageSize == nil || got.Spec.StorageSize.String() != "10Gi" {
 		t.Errorf("storageSize default = %v, want 10Gi", got.Spec.StorageSize)
 	}
+	if got.Spec.Pgweb != nil {
+		t.Errorf("Pgweb should default to disabled: %+v", got.Spec.Pgweb)
+	}
 }
 
 func TestPostgresVersionImmutable(t *testing.T) {

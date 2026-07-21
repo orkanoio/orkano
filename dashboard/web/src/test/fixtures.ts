@@ -4,9 +4,14 @@ import type {
   AppStatus,
   Condition,
   DomainResponse,
+  ExternalSecretItem,
+  MongoResponse,
+  MongoSpec,
+  MongoStatus,
   PostgresResponse,
   PostgresSpec,
   PostgresStatus,
+  SecretStoreItem,
 } from "@/lib/api";
 
 // Shared builders for the App/catalog screen tests: a minimal valid object
@@ -57,6 +62,7 @@ export function makePostgres(overrides?: {
   name?: string;
   spec?: Partial<PostgresSpec>;
   status?: PostgresStatus;
+  secretKeys?: string[];
 }): PostgresResponse {
   return {
     name: overrides?.name ?? "api-db",
@@ -64,5 +70,65 @@ export function makePostgres(overrides?: {
     creationTimestamp: "2026-07-01T10:00:00Z",
     spec: { version: "16", storageSize: "10Gi", ...overrides?.spec },
     status: { ...overrides?.status },
+    secretKeys: overrides?.secretKeys ?? [
+      "uri",
+      "host",
+      "port",
+      "database",
+      "username",
+      "password",
+    ],
+  };
+}
+
+export function makeMongo(overrides?: {
+  name?: string;
+  spec?: Partial<MongoSpec>;
+  status?: MongoStatus;
+  secretKeys?: string[];
+}): MongoResponse {
+  return {
+    name: overrides?.name ?? "documents",
+    namespace: "orkano-apps",
+    creationTimestamp: "2026-07-01T10:00:00Z",
+    spec: { version: "8.0", storageSize: "10Gi", ...overrides?.spec },
+    status: { ...overrides?.status },
+    secretKeys: overrides?.secretKeys ?? [
+      "uri",
+      "host",
+      "port",
+      "database",
+      "username",
+      "password",
+    ],
+  };
+}
+
+export function makeSecretStore(
+  overrides?: Partial<SecretStoreItem>,
+): SecretStoreItem {
+  return {
+    name: "team-vault",
+    creationTimestamp: "2026-07-01T10:00:00Z",
+    provider: "vault",
+    server: "https://vault.internal.example:8200",
+    path: "secret",
+    version: "v2",
+    ready: "True",
+    ...overrides,
+  };
+}
+
+export function makeExternalSecret(
+  overrides?: Partial<ExternalSecretItem>,
+): ExternalSecretItem {
+  return {
+    name: "api-stripe",
+    creationTimestamp: "2026-07-01T10:00:00Z",
+    storeName: "team-vault",
+    refreshInterval: "1h",
+    keys: [{ secretKey: "STRIPE_KEY", remoteKey: "apps/api/stripe" }],
+    ready: "True",
+    ...overrides,
   };
 }

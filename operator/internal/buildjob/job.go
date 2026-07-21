@@ -42,6 +42,17 @@ const (
 	// multi-arch index (amd64+arm64), not a single-platform manifest.
 	DefaultImage = "moby/buildkit:v0.30.0-rootless@sha256:d76eb1caecac5733ef7553c1e90a1b21f1bb218cd1142d3553de0747b4a14ba9"
 
+	// DefaultGitImage performs the commit-pinned checkout needed by local
+	// contexts (ZIP parity and Nixpacks). It is multi-arch and contains only
+	// Alpine plus Git; no credential is mounted into it.
+	DefaultGitImage = "alpine/git:2.49.1@sha256:c0280cf9572316299b08544065d3bf35db65043d5e3963982ec50647d2746e26"
+
+	// DefaultNixpacksImage is Nixpacks' official multi-arch Ubuntu/Nix base.
+	// The init container downloads the v1.41.0 CLI release and verifies the
+	// architecture-specific SHA before execution. Nixpacks is default-off and
+	// maintenance-mode, which is why the explicit build.nixpacks gate exists.
+	DefaultNixpacksImage = "ghcr.io/railwayapp/nixpacks:latest@sha256:fafdd33327c3c824402c7ac5dc93110da2613ef2a6ba9c5390a8c34c241e548f"
+
 	// podLabelKey/Value is the NetworkPolicy contract (config/netpol/): a
 	// pod without this label gets no network in orkano-builds, fail closed.
 	podLabelKey   = "app.kubernetes.io/name"
@@ -122,6 +133,7 @@ const (
 	// it if DefaultImage is ever bumped off v0.30.x.
 	dockerfileLocalName = "dockerfile"
 	dockerfileMountPath = "/orkano-dockerfile"
+	sourceMountPath     = "/workspace/source"
 )
 
 // Invocation is the BuildKit invocation composed from a Build's snapshot of
@@ -136,6 +148,11 @@ type Invocation struct {
 	// is metadata, the commit is what actually built.
 	ContextURL string
 
+	// LocalSource is set for ZIP sources and for Nixpacks, both of which need a
+	// materialized checkout. Render fills this volume with exactly one immutable
+	// source before BuildKit reads it.
+	LocalSource *LocalSource
+
 	// DockerfilePath is the Dockerfile to build, relative to the context root
 	// (already subPath-scoped). Empty for the Static strategy, whose
 	// Dockerfile is generated rather than read from the repo.
@@ -149,6 +166,19 @@ type Invocation struct {
 	// ImageRef is the push target on the in-cluster registry, tagged with the
 	// commit; the Build controller resolves the digest after the push.
 	ImageRef string
+
+	// NixpacksConfigPath enables the default-off Nixpacks generator. Empty still
+	// means Nixpacks when Nixpacks is true; the field itself is optional config.
+	Nixpacks           bool
+	NixpacksConfigPath string
+}
+
+type LocalSource struct {
+	GitURL        string
+	Commit        string
+	ArchiveDigest string
+	AppName       string
+	SubPath       string
 }
 
 // Compose builds the BuildKit invocation for one Build. It trusts CRD
@@ -159,26 +189,64 @@ type Invocation struct {
 // re-validates nor normalizes it. An empty gitBaseURL falls back to
 // DefaultGitBaseURL, so callers — and the existing tests — that configure no
 // override keep the github.com behaviour.
-func Compose(build *orkanov1alpha1.Build, gitBaseURL string) Invocation {
+func Compose(build *orkanov1alpha1.Build, gitBaseURL string) (Invocation, error) {
+	if build == nil {
+		return Invocation{}, errors.New("compose build invocation: Build is required")
+	}
 	src := build.Spec.Source
 	base := gitBaseURL
 	if base == "" {
 		base = DefaultGitBaseURL
 	}
-	ctxURL := base + src.GitHub.Repo + ".git#" + build.Spec.Commit
+	var gitURL string
+	sourceCount := 0
+	if src.GitHub != nil {
+		sourceCount++
+		gitURL = base + src.GitHub.Repo + ".git"
+	}
+	if src.Git != nil {
+		sourceCount++
+		gitURL = src.Git.URL
+	}
+	if src.Upload != nil {
+		sourceCount++
+		if strings.TrimPrefix(src.Upload.Digest, "sha256:") != build.Spec.Commit {
+			return Invocation{}, errors.New("compose build invocation: upload digest does not match Build commit")
+		}
+	}
+	if sourceCount != 1 {
+		return Invocation{}, errors.New("compose build invocation: exactly one source is required")
+	}
+	ctxURL := ""
+	if gitURL != "" {
+		ctxURL = gitURL + "#" + build.Spec.Commit
+	}
 	// Trim slashes the CRD pattern allows but BuildKit's git fetcher does not
 	// expect: a leading or trailing "/" malforms the subdir fragment, and a
 	// bare "/" means the repo root (no subdir at all). Compose owns producing
 	// the one canonical context URL.
 	if sub := strings.Trim(src.SubPath, "/"); sub != "" {
-		ctxURL += ":" + sub
+		if ctxURL != "" {
+			ctxURL += ":" + sub
+		}
 	}
 	inv := Invocation{
 		ContextURL: ctxURL,
-		ImageRef:   RegistryHost + "/" + build.Spec.AppName + ":" + build.Spec.Commit,
+		ImageRef:   RegistryHost + "/" + build.Spec.AppName + ":" + buildImageTag(build),
+	}
+	needsLocal := src.Upload != nil || build.Spec.Strategy.Strategy == orkanov1alpha1.StrategyNixpacks
+	if needsLocal {
+		inv.ContextURL = ""
+		inv.LocalSource = &LocalSource{GitURL: gitURL, Commit: build.Spec.Commit, AppName: build.Spec.AppName, SubPath: src.SubPath}
+		if src.Upload != nil {
+			inv.LocalSource.ArchiveDigest = src.Upload.Digest
+		}
 	}
 	switch build.Spec.Strategy.Strategy {
 	case orkanov1alpha1.StrategyDockerfile:
+		if build.Spec.Strategy.Static != nil || build.Spec.Strategy.Nixpacks != nil {
+			return Invocation{}, errors.New("compose build invocation: Dockerfile strategy has mismatched members")
+		}
 		inv.DockerfilePath = DefaultDockerfile
 		if df := build.Spec.Strategy.Dockerfile; df != nil && df.Path != "" {
 			inv.DockerfilePath = df.Path
@@ -186,11 +254,44 @@ func Compose(build *orkanov1alpha1.Build, gitBaseURL string) Invocation {
 	case orkanov1alpha1.StrategyStatic:
 		// No Dockerfile in the repo: generate a COPY-only one and let Render
 		// inject it. The CEL rule guarantees static is set for this strategy.
-		if s := build.Spec.Strategy.Static; s != nil {
+		if s := build.Spec.Strategy.Static; s != nil && build.Spec.Strategy.Dockerfile == nil && build.Spec.Strategy.Nixpacks == nil {
 			inv.GeneratedDockerfile = staticDockerfile(s.Dir)
+		} else {
+			return Invocation{}, errors.New("compose build invocation: Static strategy requires only the static member")
 		}
+	case orkanov1alpha1.StrategyNixpacks:
+		if n := build.Spec.Strategy.Nixpacks; n != nil && build.Spec.Strategy.Dockerfile == nil && build.Spec.Strategy.Static == nil {
+			inv.Nixpacks = true
+			inv.NixpacksConfigPath = n.ConfigPath
+			inv.DockerfilePath = ".nixpacks/Dockerfile"
+		} else {
+			return Invocation{}, errors.New("compose build invocation: Nixpacks strategy requires only the nixpacks member")
+		}
+	default:
+		return Invocation{}, fmt.Errorf("compose build invocation: unsupported strategy %q", build.Spec.Strategy.Strategy)
 	}
-	return inv
+	return inv, nil
+}
+
+// buildImageTag gives every immutable Build its own mutable registry tag.
+// Using only the source revision lets two manual attempts for the same commit
+// race: each controller could resolve the digest pushed by the other Job. The
+// readable revision prefix plus a full SHA-256 of the Build identity keeps the
+// exact tag deterministic for retries while isolating concurrent attempts.
+func buildImageTag(build *orkanov1alpha1.Build) string {
+	identity := build.Namespace + "/" + build.Name
+	if build.Name == "" {
+		// Compose's pure unit callers sometimes omit metadata; real admitted
+		// Builds always have a name. Keep those callers deterministic without
+		// weakening the production identity.
+		identity = build.Spec.AppName + "/" + build.Spec.Commit
+	}
+	sum := sha256.Sum256([]byte(identity))
+	revision := build.Spec.Commit
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	return revision + "-" + hex.EncodeToString(sum[:])
 }
 
 // staticDockerfile is the COPY-only Dockerfile for a Static build: serve the
@@ -207,6 +308,8 @@ type Options struct {
 	// Compose builds it from the Build's source; the template treats it as
 	// opaque.
 	ContextURL string
+
+	LocalSource *LocalSource
 
 	// DockerfilePath is the Dockerfile within the context to build; empty
 	// means BuildKit's default ("Dockerfile" at the context root), so the
@@ -225,6 +328,12 @@ type Options struct {
 	// Image overrides the BuildKit image (e.g. an air-gapped mirror);
 	// empty means DefaultImage.
 	Image string
+
+	SourceFetcherImage string
+	GitImage           string
+	NixpacksImage      string
+	Nixpacks           bool
+	NixpacksConfigPath string
 }
 
 // Render returns the Job that runs one Build. The securityContext deviates
@@ -235,8 +344,14 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 	if build.Name == "" || build.Namespace == "" {
 		return nil, errors.New("rendering build Job: Build has no name or namespace")
 	}
-	if opts.ContextURL == "" || opts.ImageRef == "" {
-		return nil, fmt.Errorf("rendering build Job for %q: ContextURL and ImageRef are required", build.Name)
+	if (opts.ContextURL == "") == (opts.LocalSource == nil) || opts.ImageRef == "" {
+		return nil, fmt.Errorf("rendering build Job for %q: exactly one source context and ImageRef are required", build.Name)
+	}
+	if opts.Nixpacks && opts.LocalSource == nil {
+		return nil, fmt.Errorf("rendering build Job for %q: Nixpacks requires a local source", build.Name)
+	}
+	if opts.LocalSource != nil && opts.LocalSource.ArchiveDigest != "" && opts.SourceFetcherImage == "" {
+		return nil, fmt.Errorf("rendering build Job for %q: SourceFetcherImage is required for ZIP sources", build.Name)
 	}
 	image := opts.Image
 	if image == "" {
@@ -250,11 +365,7 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 		timeout = DefaultTimeoutSeconds
 	}
 
-	args := []string{
-		"build",
-		"--frontend=dockerfile.v0",
-		"--opt=context=" + opts.ContextURL,
-	}
+	args := []string{"build", "--frontend=dockerfile.v0"}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "buildkitd", MountPath: "/home/user/.local/share/buildkit"},
 		{Name: "tmp", MountPath: "/tmp"},
@@ -272,6 +383,35 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 		}}},
 	}
 	var initContainers []corev1.Container
+	localContextPath := ""
+	if opts.LocalSource == nil {
+		args = append(args, "--opt=context="+opts.ContextURL)
+	} else {
+		contextPath := sourceMountPath
+		if sub := strings.Trim(opts.LocalSource.SubPath, "/"); sub != "" {
+			contextPath += "/" + sub
+		}
+		localContextPath = contextPath
+		args = append(args, "--local=context="+contextPath)
+		volumes = append(volumes, corev1.Volume{Name: "source", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: resource.NewQuantity(300<<20, resource.BinarySI)}}})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: "source", MountPath: sourceMountPath, ReadOnly: true})
+		gitImage := opts.GitImage
+		if gitImage == "" {
+			gitImage = DefaultGitImage
+		}
+		if opts.LocalSource.ArchiveDigest != "" {
+			initContainers = append(initContainers, archiveInitContainer(opts.SourceFetcherImage, opts.LocalSource))
+		} else {
+			initContainers = append(initContainers, gitInitContainer(gitImage, opts.LocalSource))
+		}
+		if opts.Nixpacks {
+			nixpacksImage := opts.NixpacksImage
+			if nixpacksImage == "" {
+				nixpacksImage = DefaultNixpacksImage
+			}
+			initContainers = append(initContainers, nixpacksInitContainer(nixpacksImage, contextPath, opts.NixpacksConfigPath))
+		}
+	}
 
 	switch {
 	case opts.GeneratedDockerfile != "":
@@ -286,8 +426,11 @@ func Render(build *orkanov1alpha1.Build, opts Options) (*batchv1.Job, error) {
 		)
 		volumes = append(volumes, corev1.Volume{Name: dockerfileLocalName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: dockerfileLocalName, MountPath: dockerfileMountPath, ReadOnly: true})
-		initContainers = []corev1.Container{dockerfileInitContainer(image, opts.GeneratedDockerfile)}
+		initContainers = append(initContainers, dockerfileInitContainer(image, opts.GeneratedDockerfile))
 	case opts.DockerfilePath != "":
+		if localContextPath != "" {
+			args = append(args, "--local=dockerfile="+localContextPath)
+		}
 		args = append(args, "--opt=filename="+opts.DockerfilePath)
 	}
 	args = append(args, "--output=type=image,name="+opts.ImageRef+",push=true")
@@ -394,9 +537,114 @@ func dockerfileInitContainer(image, dockerfile string) corev1.Container {
 			RunAsGroup:               ptr.To(int64(1000)),
 			RunAsNonRoot:             ptr.To(true),
 			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
+	}
+}
+
+func archiveInitContainer(image string, source *LocalSource) corev1.Container {
+	return corev1.Container{
+		Name:  "fetch-source-archive",
+		Image: image,
+		Args: []string{
+			"source-fetch",
+			"--app=" + source.AppName,
+			"--digest=" + source.ArchiveDigest,
+			"--destination=" + sourceMountPath,
+			"--registry-url=https://" + RegistryHost,
+			"--ca-file=" + caMountPath + "/ca.crt",
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "source", MountPath: sourceMountPath},
+			{Name: "tmp", MountPath: "/tmp"},
+			{Name: "registry-ca", MountPath: caMountPath, ReadOnly: true},
+		},
+		Resources:       initResources("100m", "128Mi"),
+		SecurityContext: restrictedInitSecurityContext(),
+	}
+}
+
+func gitInitContainer(image string, source *LocalSource) corev1.Container {
+	return corev1.Container{
+		Name:    "checkout-source",
+		Image:   image,
+		Command: []string{"/bin/sh", "-ec"},
+		Args: []string{`umask 022
+git init "$ORKANO_SOURCE_DIR"
+git -C "$ORKANO_SOURCE_DIR" remote add origin "$ORKANO_GIT_URL"
+git -C "$ORKANO_SOURCE_DIR" -c protocol.file.allow=never fetch --depth=1 origin "$ORKANO_COMMIT"
+test "$(git -C "$ORKANO_SOURCE_DIR" rev-parse FETCH_HEAD)" = "$ORKANO_COMMIT"
+git -C "$ORKANO_SOURCE_DIR" checkout --detach FETCH_HEAD
+test "$(git -C "$ORKANO_SOURCE_DIR" rev-parse HEAD)" = "$ORKANO_COMMIT"
+rm -rf "$ORKANO_SOURCE_DIR/.git"`},
+		Env: []corev1.EnvVar{
+			{Name: "ORKANO_SOURCE_DIR", Value: sourceMountPath},
+			{Name: "ORKANO_GIT_URL", Value: source.GitURL},
+			{Name: "ORKANO_COMMIT", Value: source.Commit},
+		},
+		VolumeMounts:    []corev1.VolumeMount{{Name: "source", MountPath: sourceMountPath}},
+		Resources:       initResources("100m", "128Mi"),
+		SecurityContext: restrictedInitSecurityContext(),
+	}
+}
+
+func nixpacksInitContainer(image, sourceDir, configPath string) corev1.Container {
+	return corev1.Container{
+		Name:    "generate-nixpacks",
+		Image:   image,
+		Command: []string{"/bin/bash", "-ec"},
+		Args: []string{`set -euo pipefail
+case "$(uname -m)" in
+  x86_64) asset=x86_64-unknown-linux-musl; expected=0f55de7874507b9cf7502113120bd96f2ab6979f78d10eaf2eb2ade9207b3af6 ;;
+  aarch64|arm64) asset=aarch64-unknown-linux-musl; expected=912bd02dd2bb6f9c3a9ed965fe8a68b4aa318dc7a2546e2eca6f2806a894ba39 ;;
+  *) echo "unsupported Nixpacks architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+archive=/tmp/nixpacks.tar.gz
+curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/railwayapp/nixpacks/releases/download/v1.41.0/nixpacks-v1.41.0-${asset}.tar.gz" -o "$archive"
+printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
+tar -xzf "$archive" -C /tmp
+set -- /tmp/nixpacks build "$ORKANO_SOURCE_DIR" --out "$ORKANO_SOURCE_DIR"
+if [ -n "$ORKANO_NIXPACKS_CONFIG" ]; then set -- "$@" --config "$ORKANO_NIXPACKS_CONFIG"; fi
+"$@"
+test -s "$ORKANO_SOURCE_DIR/.nixpacks/Dockerfile"`},
+		Env: []corev1.EnvVar{
+			{Name: "HOME", Value: "/tmp"},
+			{Name: "ORKANO_SOURCE_DIR", Value: sourceDir},
+			{Name: "ORKANO_NIXPACKS_CONFIG", Value: configPath},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "source", MountPath: sourceMountPath},
+			{Name: "tmp", MountPath: "/tmp"},
+		},
+		Resources:       initResources("100m", "256Mi"),
+		SecurityContext: restrictedInitSecurityContext(),
+	}
+}
+
+func initResources(cpu, memory string) corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpu),
+			corev1.ResourceMemory: resource.MustParse(memory),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpu),
+			corev1.ResourceMemory: resource.MustParse(memory),
+		},
+	}
+}
+
+func restrictedInitSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsUser:                ptr.To(int64(1000)),
+		RunAsGroup:               ptr.To(int64(1000)),
+		RunAsNonRoot:             ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 }
 

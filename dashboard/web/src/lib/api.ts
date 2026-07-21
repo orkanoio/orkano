@@ -23,12 +23,14 @@ export type AuthStatus =
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly existingKind?: string;
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: string, existingKind?: string) {
     super(`${status.toString()} ${code}`);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.existingKind = existingKind;
   }
 }
 
@@ -37,6 +39,7 @@ export class ApiError extends Error {
 // proxy error page or an empty body must not crash error handling).
 async function parseError(res: Response): Promise<ApiError> {
   let code = "";
+  let existingKind: string | undefined;
   try {
     const body: unknown = await res.json();
     if (
@@ -46,11 +49,18 @@ async function parseError(res: Response): Promise<ApiError> {
       typeof body.error === "string"
     ) {
       code = body.error;
+      if ("existingKind" in body && typeof body.existingKind === "string") {
+        existingKind = body.existingKind;
+      }
     }
   } catch {
     // Non-JSON error body — fall through to the status-only code.
   }
-  return new ApiError(res.status, code || `http_${res.status.toString()}`);
+  return new ApiError(
+    res.status,
+    code || `http_${res.status.toString()}`,
+    existingKind,
+  );
 }
 
 // errorFromResponse is parseError for callers outside this module that drive
@@ -176,15 +186,46 @@ export interface EnvVar {
   secretRef?: SecretKeyRef;
 }
 
-export interface AppSource {
-  github: { repo: string; ref?: string };
-  subPath?: string;
-}
+type SourceLocation = { subPath?: string };
+
+export type AppSource =
+  | (SourceLocation & {
+      github: { repo: string; ref?: string };
+    })
+  | (SourceLocation & {
+      git: { url: string; ref?: string };
+    })
+  | (SourceLocation & {
+      upload: { digest: string; fileName?: string };
+    });
 
 export interface BuildStrategy {
-  strategy: "Dockerfile" | "Static";
+  strategy: "Dockerfile" | "Static" | "Nixpacks";
   dockerfile?: { path?: string };
   static?: { dir: string };
+  nixpacks?: { configPath?: string };
+}
+
+export type SourceKind = "github" | "git" | "upload";
+
+export function sourceKind(source: AppSource): SourceKind {
+  if ("github" in source) {
+    return "github";
+  }
+  if ("git" in source) {
+    return "git";
+  }
+  return "upload";
+}
+
+export function sourceLabel(source: AppSource): string {
+  if ("github" in source) {
+    return source.github.repo;
+  }
+  if ("git" in source) {
+    return source.git.url;
+  }
+  return source.upload.fileName ?? source.upload.digest;
 }
 
 export interface AppSpec {
@@ -247,12 +288,14 @@ export interface DomainResponse {
 export interface PostgresSpec {
   version?: string;
   storageSize?: string;
+  pgweb?: { enabled: boolean };
 }
 
 export interface PostgresStatus {
   observedGeneration?: number;
   conditions?: Condition[];
   secretName?: string;
+  pgwebServiceName?: string;
 }
 
 export interface PostgresResponse {
@@ -261,6 +304,29 @@ export interface PostgresResponse {
   creationTimestamp: string | null;
   spec: PostgresSpec;
   status: PostgresStatus;
+  secretKeys: string[];
+}
+
+export interface MongoSpec {
+  version?: string;
+  storageSize?: string;
+  mongoExpress?: { enabled: boolean };
+}
+
+export interface MongoStatus {
+  observedGeneration?: number;
+  conditions?: Condition[];
+  secretName?: string;
+  mongoExpressServiceName?: string;
+}
+
+export interface MongoResponse {
+  name: string;
+  namespace: string;
+  creationTimestamp: string | null;
+  spec: MongoSpec;
+  status: MongoStatus;
+  secretKeys: string[];
 }
 
 export interface DeployRow {
@@ -270,14 +336,75 @@ export interface DeployRow {
   status: string;
 }
 
+export type BuildPhase = "Pending" | "Running" | "Succeeded" | "Failed";
+
+export interface BuildResponse {
+  name: string;
+  creationTimestamp: string | null;
+  spec: {
+    appName: string;
+    commit: string;
+    source: AppSource;
+    strategy: BuildStrategy;
+    timeoutSeconds?: number;
+  };
+  status: {
+    observedGeneration?: number;
+    phase?: BuildPhase;
+    image?: string;
+    jobRef?: { namespace: string; name: string };
+    startedAt?: string;
+    completedAt?: string;
+    conditions?: Condition[];
+  };
+}
+
+export interface BuildListResponse {
+  items: BuildResponse[];
+  repo: string;
+  automaticDeploys: boolean;
+}
+
+export interface FeatureStatus {
+  id: "source.git" | "source.zip" | "build.nixpacks";
+  label: string;
+  description: string;
+  unsafe: boolean;
+  enabled: boolean;
+}
+
+export interface SourceArchiveResponse {
+  digest: string;
+  fileName: string;
+}
+
+export interface NodeInfo {
+  name: string;
+  roles: string[];
+  ready: boolean;
+  status: string;
+  unschedulable: boolean;
+  kubeletVersion: string;
+  osImage: string;
+  architecture: string;
+  internalIP: string;
+  creationTimestamp: string | null;
+}
+
 // Query keys, hierarchical so invalidating ["apps"] also drops every detail.
 export const appsKey = ["apps"] as const;
 export const appKey = (name: string) => ["apps", name] as const;
 export const appDeploysKey = (name: string) =>
   ["apps", name, "deploys"] as const;
+export const appBuildsKey = (name: string) =>
+  ["apps", name, "builds"] as const;
+export const featuresKey = ["features"] as const;
+export const nodesKey = ["nodes"] as const;
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
 export const postgresKey = (name: string) => ["postgres", name] as const;
+export const mongoListKey = ["mongo"] as const;
+export const mongoKey = (name: string) => ["mongo", name] as const;
 
 async function listItems<T>(path: string): Promise<T[]> {
   return (await getJSON<{ items: T[] }>(path)).items;
@@ -299,6 +426,49 @@ export function updateApp(name: string, spec: AppSpec): Promise<AppResponse> {
   return putJSON(`/api/apps/${encodeURIComponent(name)}`, { spec });
 }
 
+export function updateAppSource(
+  name: string,
+  source: AppSource,
+  build: BuildStrategy,
+): Promise<AppResponse> {
+  return putJSON(`/api/apps/${encodeURIComponent(name)}/source`, {
+    source,
+    build,
+  });
+}
+
+export function fetchFeatures(): Promise<FeatureStatus[]> {
+  return getJSON<{ features: FeatureStatus[] }>("/api/features").then(
+    ({ features }) => features,
+  );
+}
+
+export function listNodes(): Promise<NodeInfo[]> {
+  return listItems("/api/nodes");
+}
+
+export async function uploadSourceArchive(
+  name: string,
+  file: File,
+): Promise<SourceArchiveResponse> {
+  const res = await fetch(
+    `/api/apps/${encodeURIComponent(name)}/source/archive`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/zip",
+        "X-Orkano-Filename": file.name,
+      },
+      body: file,
+    },
+  );
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return (await res.json()) as SourceArchiveResponse;
+}
+
 export async function deleteApp(name: string): Promise<void> {
   await send("DELETE", `/api/apps/${encodeURIComponent(name)}`);
 }
@@ -317,8 +487,16 @@ export function listAppDeploys(name: string): Promise<DeployRow[]> {
   return listItems(`/api/apps/${encodeURIComponent(name)}/deploys`);
 }
 
-// appLogsPath builds the SSE stream URL for lib/sse.ts (not a JSON endpoint).
-export function appLogsPath(
+export function listAppBuilds(name: string): Promise<BuildListResponse> {
+  return getJSON(`/api/apps/${encodeURIComponent(name)}/builds`);
+}
+
+export async function deployApp(name: string): Promise<void> {
+  await post(`/api/apps/${encodeURIComponent(name)}/deploy`);
+}
+
+function resourceLogsPath(
+  basePath: string,
   name: string,
   opts?: { pod?: string; follow?: boolean; tail?: number },
 ): string {
@@ -333,7 +511,39 @@ export function appLogsPath(
     params.set("tail", opts.tail.toString());
   }
   const query = params.toString();
-  return `/api/apps/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
+  return `${basePath}/${encodeURIComponent(name)}/logs${query ? `?${query}` : ""}`;
+}
+
+// Log paths build SSE stream URLs for lib/sse.ts (not JSON endpoints).
+export function appLogsPath(
+  name: string,
+  opts?: { pod?: string; follow?: boolean; tail?: number },
+): string {
+  return resourceLogsPath("/api/apps", name, opts);
+}
+
+export function buildLogsPath(
+  appName: string,
+  buildName: string,
+  opts?: { follow?: boolean; tail?: number },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.follow !== undefined) {
+    params.set("follow", String(opts.follow));
+  }
+  if (opts?.tail !== undefined) {
+    params.set("tail", opts.tail.toString());
+  }
+  const query = params.toString();
+  return `/api/apps/${encodeURIComponent(appName)}/builds/${encodeURIComponent(buildName)}/logs${query ? `?${query}` : ""}`;
+}
+
+export function postgresLogsPath(name: string): string {
+  return resourceLogsPath("/api/postgres", name);
+}
+
+export function mongoLogsPath(name: string): string {
+  return resourceLogsPath("/api/mongo", name);
 }
 
 export function listDomains(): Promise<DomainResponse[]> {
@@ -379,6 +589,7 @@ export interface SetupStatus {
   // loaded (initial connect, or a rotation) — prompt the rollout restart.
   oidcPendingRestart: boolean;
   github: SetupGitHubState;
+  repoAllowlist: string[];
 }
 
 export function fetchSetupStatus(): Promise<SetupStatus> {
@@ -470,6 +681,137 @@ export function updatePostgres(
   return putJSON(`/api/postgres/${encodeURIComponent(name)}`, { spec });
 }
 
+export function updatePgweb(
+  name: string,
+  enabled: boolean,
+): Promise<PostgresResponse> {
+  return putJSON(`/api/postgres/${encodeURIComponent(name)}/pgweb`, { enabled });
+}
+
+export function pgwebPath(name: string): string {
+  return `/api/postgres/${encodeURIComponent(name)}/pgweb/`;
+}
+
 export async function deletePostgres(name: string): Promise<void> {
   await send("DELETE", `/api/postgres/${encodeURIComponent(name)}`);
+}
+
+export function listMongo(): Promise<MongoResponse[]> {
+  return listItems("/api/mongo");
+}
+
+export function getMongo(name: string): Promise<MongoResponse> {
+  return getJSON(`/api/mongo/${encodeURIComponent(name)}`);
+}
+
+export function createMongo(
+  name: string,
+  spec: MongoSpec,
+): Promise<MongoResponse> {
+  return postJSON("/api/mongo", { name, spec });
+}
+
+export function updateMongo(
+  name: string,
+  spec: MongoSpec,
+): Promise<MongoResponse> {
+  return putJSON(`/api/mongo/${encodeURIComponent(name)}`, { spec });
+}
+
+export function updateMongoExpress(
+  name: string,
+  enabled: boolean,
+): Promise<MongoResponse> {
+  return putJSON(`/api/mongo/${encodeURIComponent(name)}/express`, { enabled });
+}
+
+export function mongoExpressPath(name: string): string {
+  return `/api/mongo/${encodeURIComponent(name)}/express/`;
+}
+
+export async function deleteMongo(name: string): Promise<void> {
+  await send("DELETE", `/api/mongo/${encodeURIComponent(name)}`);
+}
+
+// ---------------------------------------------------------------------------
+// External vault (M3.1, ADR-0018): ESO SecretStore/ExternalSecret management.
+// The server owns the object shapes (auth pinned to <store>-credentials,
+// creationPolicy Owner); this client only ever carries the narrow connect and
+// sync fields. The token is write-only — no response ever echoes it.
+
+export interface SecretStoreItem {
+  name: string;
+  creationTimestamp: string | null;
+  provider: string;
+  server?: string;
+  path?: string;
+  version?: string;
+  ready: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+}
+
+export interface SyncKey {
+  secretKey: string;
+  remoteKey: string;
+}
+
+export interface ExternalSecretItem {
+  name: string;
+  creationTimestamp: string | null;
+  storeName: string;
+  refreshInterval?: string;
+  keys: SyncKey[];
+  ready: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+  refreshTime?: string;
+}
+
+export interface SecretStoreWrite {
+  vault: { server: string; path: string; version?: string };
+  // Empty on an update keeps the current credential (spec-only rewire).
+  token: string;
+}
+
+export const secretStoresKey = ["vault", "stores"] as const;
+export const externalSecretsKey = ["vault", "syncs"] as const;
+
+export function listSecretStores(): Promise<SecretStoreItem[]> {
+  return listItems("/api/secretstores");
+}
+
+export function createSecretStore(
+  name: string,
+  body: SecretStoreWrite,
+): Promise<SecretStoreItem> {
+  return postJSON("/api/secretstores", { name, ...body });
+}
+
+export function updateSecretStore(
+  name: string,
+  body: SecretStoreWrite,
+): Promise<SecretStoreItem> {
+  return putJSON(`/api/secretstores/${encodeURIComponent(name)}`, body);
+}
+
+export async function deleteSecretStore(name: string): Promise<void> {
+  await send("DELETE", `/api/secretstores/${encodeURIComponent(name)}`);
+}
+
+export function listExternalSecrets(): Promise<ExternalSecretItem[]> {
+  return listItems("/api/externalsecrets");
+}
+
+export function createExternalSecret(body: {
+  name: string;
+  storeName: string;
+  refreshInterval?: string;
+  keys: SyncKey[];
+}): Promise<ExternalSecretItem> {
+  return postJSON("/api/externalsecrets", body);
+}
+
+export async function deleteExternalSecret(name: string): Promise<void> {
+  await send("DELETE", `/api/externalsecrets/${encodeURIComponent(name)}`);
 }

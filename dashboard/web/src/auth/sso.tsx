@@ -34,7 +34,7 @@ export function SSOSignIn({ enabled }: { enabled: boolean }) {
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3" aria-hidden="true">
         <div className="bg-border h-px flex-1" />
-        <span className="text-muted-foreground text-xs">or</span>
+        <span className="text-muted-foreground font-mono text-xs">or</span>
         <div className="bg-border h-px flex-1" />
       </div>
       <Button asChild variant="outline" className="w-full">

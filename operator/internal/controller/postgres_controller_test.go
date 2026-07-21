@@ -9,12 +9,14 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
@@ -141,6 +143,120 @@ func createDataPVC(t *testing.T, postgresName, size string) {
 	pvc.Status.Phase = corev1.ClaimBound
 	if err := k8sClient.Status().Update(ctx, pvc); err != nil {
 		t.Fatalf("failed to mark data PVC Bound for %s: %v", postgresName, err)
+	}
+}
+
+func TestPgwebLifecycle(t *testing.T) {
+	pg := createPostgres(t, "browser-db", func(pg *orkanov1alpha1.Postgres) {
+		pg.Spec.Pgweb = &orkanov1alpha1.PgwebSpec{Enabled: true}
+	})
+	name := pgwebResourceName(pg.Name)
+
+	var deployment appsv1.Deployment
+	eventually(t, "Pgweb Deployment", func(ctx context.Context) (bool, error) {
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: appsNamespace}, &deployment)
+		return err == nil, client.IgnoreNotFound(err)
+	})
+	assertOwnedBy(t, &deployment, "Postgres", pg.Name)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Image != pgwebImage {
+		t.Errorf("image = %q, want pinned %q", container.Image, pgwebImage)
+	}
+	if deployment.Spec.Template.Spec.AutomountServiceAccountToken == nil || *deployment.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Error("Pgweb must not mount a ServiceAccount token")
+	}
+	if sc := container.SecurityContext; sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem ||
+		sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation || sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("container security context = %+v", sc)
+	}
+	if got := container.Resources.Limits.Memory(); got == nil || got.String() != "256Mi" {
+		t.Errorf("memory limit = %v, want 256Mi", got)
+	}
+	uri := envEntries(container, "PGWEB_DATABASE_URL")
+	if len(uri) != 1 || uri[0].ValueFrom == nil || uri[0].ValueFrom.SecretKeyRef == nil ||
+		uri[0].ValueFrom.SecretKeyRef.Name != pg.Name || uri[0].ValueFrom.SecretKeyRef.Key != orkanov1alpha1.SecretKeyURI {
+		t.Errorf("PGWEB_DATABASE_URL = %+v, want Secret %s/%s", uri, pg.Name, orkanov1alpha1.SecretKeyURI)
+	}
+	for envName, want := range map[string]string{
+		"PGSSLMODE":          "disable",
+		"PGWEB_URL_PREFIX":   pgwebURLPrefix(pg.Name),
+		"PGWEB_LOCK_SESSION": "1",
+	} {
+		env := envEntries(container, envName)
+		if len(env) != 1 || env[0].Value != want {
+			t.Errorf("%s = %+v, want %q", envName, env, want)
+		}
+	}
+	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet == nil ||
+		container.ReadinessProbe.HTTPGet.Path != pgwebHTTPPath(pg.Name)+"api/info" {
+		t.Errorf("readiness probe = %+v", container.ReadinessProbe)
+	}
+	if container.LivenessProbe == nil || container.LivenessProbe.TCPSocket == nil {
+		t.Errorf("liveness probe = %+v, want TCP", container.LivenessProbe)
+	}
+
+	var service corev1.Service
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: name, Namespace: appsNamespace}, &service); err != nil {
+		t.Fatalf("get Pgweb Service: %v", err)
+	}
+	assertOwnedBy(t, &service, "Postgres", pg.Name)
+	if service.Spec.Type != corev1.ServiceTypeClusterIP || service.Spec.Ports[0].Port != pgwebPort {
+		t.Errorf("Service = type %q ports %v", service.Spec.Type, service.Spec.Ports)
+	}
+
+	var policy networkingv1.NetworkPolicy
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: name, Namespace: appsNamespace}, &policy); err != nil {
+		t.Fatalf("get Pgweb NetworkPolicy: %v", err)
+	}
+	assertOwnedBy(t, &policy, "Postgres", pg.Name)
+	if len(policy.Spec.Ingress) != 1 || len(policy.Spec.Egress) != 2 || len(policy.Spec.PolicyTypes) != 2 {
+		t.Errorf("NetworkPolicy = ingress %v egress %v types %v", policy.Spec.Ingress, policy.Spec.Egress, policy.Spec.PolicyTypes)
+	}
+
+	got := waitForPostgresCondition(t, pg.Name, orkanov1alpha1.ConditionPgwebReady, metav1.ConditionFalse, reasonPgwebProvisioning)
+	if got.Status.PgwebServiceName != name {
+		t.Errorf("service name = %q, want %q", got.Status.PgwebServiceName, name)
+	}
+	markDeploymentAvailable(t, name, 1)
+	waitForPostgresCondition(t, pg.Name, orkanov1alpha1.ConditionPgwebReady, metav1.ConditionTrue, reasonPgwebAvailable)
+
+	eventually(t, "disable Pgweb", func(ctx context.Context) (bool, error) {
+		var current orkanov1alpha1.Postgres
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: pg.Name, Namespace: appsNamespace}, &current); err != nil {
+			return false, err
+		}
+		current.Spec.Pgweb = nil
+		if err := k8sClient.Update(ctx, &current); err != nil {
+			if apierrors.IsConflict(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	})
+	disabled := waitForPostgresCondition(t, pg.Name, orkanov1alpha1.ConditionPgwebReady, metav1.ConditionFalse, reasonPgwebDisabled)
+	if disabled.Status.PgwebServiceName != "" {
+		t.Errorf("disabled service name = %q, want empty", disabled.Status.PgwebServiceName)
+	}
+	for kind, object := range map[string]client.Object{
+		"Deployment":    &appsv1.Deployment{},
+		"Service":       &corev1.Service{},
+		"NetworkPolicy": &networkingv1.NetworkPolicy{},
+	} {
+		eventually(t, kind+" deleted after disable", func(ctx context.Context) (bool, error) {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: appsNamespace}, object)
+			return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
+		})
+	}
+	_ = getStatefulSet(t, pg.Name)
+	_ = getPostgresSecret(t, pg.Name)
+}
+
+func TestPgwebResourceNameIsStableAndValid(t *testing.T) {
+	name := strings.Repeat("a", 63)
+	got := pgwebResourceName(name)
+	if got != pgwebResourceName(name) || len(got) > 63 || len(validation.IsDNS1035Label(got)) != 0 {
+		t.Fatalf("resource name = %q, want stable DNS-1035 label no longer than 63", got)
 	}
 }
 
@@ -321,6 +437,60 @@ func TestPostgresInvalidNameProvisionFailed(t *testing.T) {
 			}
 			assertNoChildObjects(t, name)
 		})
+	}
+}
+
+// TestPostgresForeignOwnedSecretProvisionFailed: a same-named Secret already
+// controlled by something else — e.g. an ESO ExternalSecret target (ADR-0018)
+// — is a permanent, user-actionable conflict: ProvisionFailed naming the
+// owner, never an endlessly-retried ReconcileError, and the foreign Secret's
+// data stays untouched (SetControllerReference refuses before any write).
+func TestPostgresForeignOwnedSecretProvisionFailed(t *testing.T) {
+	ctx := context.Background()
+	owner := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "squatter-owner", Namespace: appsNamespace},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "squatter"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "squatter"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: "app", Image: "registry.example/x@sha256:" + strings.Repeat("a", 64),
+				}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	truth := true
+	foreign := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "squatted-db",
+			Namespace: appsNamespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment",
+				Name: owner.Name, UID: owner.UID,
+				Controller: &truth, BlockOwnerDeletion: &truth,
+			}},
+		},
+		Data: map[string][]byte{"token": []byte("keep-me")},
+	}
+	if err := k8sClient.Create(ctx, foreign); err != nil {
+		t.Fatalf("create foreign secret: %v", err)
+	}
+
+	pg := createPostgres(t, "squatted-db", nil)
+	got := waitForPostgresCondition(t, pg.Name, orkanov1alpha1.ConditionReady, metav1.ConditionFalse, reasonProvisionFailed)
+	cond := meta.FindStatusCondition(got.Status.Conditions, orkanov1alpha1.ConditionReady)
+	if !strings.Contains(cond.Message, "owned by") || !strings.Contains(cond.Message, "Deployment") {
+		t.Errorf("message = %q, want the foreign owner named", cond.Message)
+	}
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: appsNamespace, Name: "squatted-db"}, &sec); err != nil {
+		t.Fatalf("foreign secret gone: %v", err)
+	}
+	if string(sec.Data["token"]) != "keep-me" {
+		t.Error("foreign Secret data was overwritten by the Postgres reconciler")
 	}
 }
 

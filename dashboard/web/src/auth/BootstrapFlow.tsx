@@ -156,7 +156,8 @@ function RedeemForm({
           required
         />
         <p className="text-muted-foreground text-xs">
-          Printed exactly once by <span className="font-mono">orkano init</span>.
+          Printed exactly once by{" "}
+          <span className="text-foreground font-mono">orkano init</span>.
         </p>
       </div>
       <div className="flex flex-col gap-2">
@@ -233,7 +234,7 @@ function RecoveryCodes({
         Each recovery code signs you in once if you lose the authenticator.
         Store them somewhere safe — they are shown only now.
       </p>
-      <ul className="bg-muted/50 grid grid-cols-2 gap-x-6 gap-y-1 rounded-md border p-4 font-mono text-sm">
+      <ul className="bg-terminal text-foreground grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border p-4 font-mono text-xs leading-relaxed">
         {codes.map((code) => (
           <li key={code}>{code}</li>
         ))}
@@ -319,7 +320,9 @@ function EnrollTOTP({
       {secret && (
         <p className="text-muted-foreground text-xs">
           Can&apos;t scan? Enter this secret manually:{" "}
-          <span className="font-mono break-all select-all">{secret}</span>
+          <span className="text-foreground font-mono break-all select-all">
+            {secret}
+          </span>
         </p>
       )}
       <div className="flex flex-col gap-2">

@@ -6,7 +6,7 @@ import { makeApp, readyCondition } from "@/test/fixtures";
 import { jsonResponse, renderWithSession, stubFetchRoutes } from "@/test/helpers";
 
 describe("AppList", () => {
-  it("renders apps with status, url, and replica counts", async () => {
+  it("renders each app as a compact card: name plus a status dot", async () => {
     stubFetchRoutes({
       "GET /api/apps": () =>
         jsonResponse(200, {
@@ -16,9 +16,7 @@ describe("AppList", () => {
               status: {
                 conditions: [readyCondition("True", "Available")],
                 url: "https://web.example.com",
-                availableReplicas: 2,
               },
-              spec: { replicas: 2 },
             }),
             makeApp({
               name: "worker",
@@ -34,17 +32,19 @@ describe("AppList", () => {
     });
     renderWithSession(<AppList />);
 
-    expect(await screen.findByRole("link", { name: "web" })).toHaveAttribute(
-      "href",
-      "#/apps/web",
-    );
-    expect(screen.getByText("Ready")).toBeInTheDocument();
-    expect(screen.getByText("WaitingForBuild")).toBeInTheDocument();
+    // The status rides the link's OWN accessible name — aria-label
+    // short-circuits descendant content, so this is the only spelling a
+    // screen reader actually hears.
+    const web = await screen.findByRole("link", { name: "web — Ready" });
+    expect(web).toHaveAttribute("href", "#/apps/web");
     expect(
-      screen.getByRole("link", { name: "https://web.example.com" }),
+      screen.getByRole("link", { name: "worker — WaitingForBuild" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("2/2")).toBeInTheDocument();
-    expect(screen.getByText("Worker")).toBeInTheDocument();
+    // The index deliberately carries no detail beyond name + status: the URL,
+    // replica counts, and source moved to the detail page.
+    expect(
+      screen.queryByText("https://web.example.com"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows an empty state and the create link", async () => {
@@ -70,6 +70,17 @@ describe("AppList", () => {
 
     expect(
       await screen.findByText(/cluster API is unavailable/),
+    ).toBeInTheDocument();
+  });
+
+  it("explains when Orkano CRDs are not ready", async () => {
+    stubFetchRoutes({
+      "GET /api/apps": () => jsonResponse(503, { error: "cluster_not_ready" }),
+    });
+    renderWithSession(<AppList />);
+
+    expect(
+      await screen.findByText(/missing Orkano's CRDs/),
     ).toBeInTheDocument();
   });
 });

@@ -11,9 +11,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
@@ -142,7 +146,7 @@ func validOIDCBody() map[string]string {
 func TestSetupStatusFresh(t *testing.T) {
 	store := newFakeStore()
 	ck := authedSession(t, store)
-	s, _ := setupServer(t, store, nil)
+	s, _ := setupServer(t, store, nil, readyNode("node-a", nil))
 
 	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 	if rec.Code != http.StatusOK {
@@ -152,8 +156,9 @@ func TestSetupStatusFresh(t *testing.T) {
 
 	// Dependency (registration) order is the wizard's walk order.
 	wantOrder := []string{
-		checkAccessModeChosen, checkAdminBootstrapped, checkOIDCConfigured,
-		checkWebhookURLConfigured, checkGitHubAppConnected, checkDomainTLSReady,
+		checkNodesReady, checkAccessModeChosen, checkAdminBootstrapped, checkOIDCConfigured,
+		checkWebhookURLConfigured, checkGitHubAppConnected, checkVaultConnected,
+		checkDomainTLSReady, checkFirstAppDeployed,
 	}
 	if len(resp.Checks) != len(wantOrder) {
 		t.Fatalf("got %d checks, want %d", len(resp.Checks), len(wantOrder))
@@ -165,12 +170,18 @@ func TestSetupStatusFresh(t *testing.T) {
 	}
 
 	for id, outcome := range map[string]string{
+		checkNodesReady:           "pass", // the cluster under a fresh install has its node
 		checkAccessModeChosen:     "fail",
 		checkAdminBootstrapped:    "pass", // the authed session implies a confirmed admin
 		checkOIDCConfigured:       "fail",
 		checkWebhookURLConfigured: "fail",
 		checkGitHubAppConnected:   "blocked",
 		checkDomainTLSReady:       "skip",
+		checkFirstAppDeployed:     "fail",
+		// The fake client's scheme knows the ESO kinds, so the list answers
+		// empty rather than NoMatch: "installed, nothing connected" = fail.
+		// The dedicated vault-check test covers the real NoMatch skip.
+		checkVaultConnected: "fail",
 	} {
 		if got := checkByID(t, resp, id).Outcome; got != outcome {
 			t.Errorf("%s outcome: got %q, want %q", id, got, outcome)
@@ -234,10 +245,31 @@ func TestSetupStatusConfigured(t *testing.T) {
 			}},
 		},
 	}
+	vaultStore := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "external-secrets.io/v1",
+		"kind":       "SecretStore",
+		"metadata":   map[string]any{"name": "team-vault", "namespace": appsNamespace},
+		"status": map[string]any{
+			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
+		},
+	}}
+	runningApp := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/web"}},
+			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+		Status: orkanov1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type: orkanov1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+				Reason: "Available", LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
 	s, _ := setupServer(t, store, func(cfg *Config) {
 		cfg.WebhookURL = "https://hooks.example.com/webhook"
 		cfg.OIDC = &fakeOIDC{}
-	}, domain)
+	}, domain, vaultStore, readyNode("node-a", nil), runningApp)
 
 	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
 	if rec.Code != http.StatusOK {
@@ -257,6 +289,49 @@ func TestSetupStatusConfigured(t *testing.T) {
 	}
 	if !resp.GitHub.Connected || resp.GitHub.AppSlug != "orkano-test" || resp.GitHub.AppID != "42" {
 		t.Errorf("github state drifted: %+v", resp.GitHub)
+	}
+}
+
+// TestSetupStatusClusterDegraded: a NotReady node fails cluster.nodes-ready
+// with honest counts, and created-but-unready apps fail apps.first-app-deployed
+// without claiming an empty install.
+func TestSetupStatusClusterDegraded(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	stuckApp := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+		Spec: orkanov1alpha1.AppSpec{
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: "orkanoio/web"}},
+			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
+		},
+	}
+	s, _ := setupServer(t, store, nil, readyNode("node-a", nil), notReadyNode("node-b"), stuckApp)
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	nodes := checkByID(t, resp, checkNodesReady)
+	if nodes.Outcome != "fail" || !strings.Contains(nodes.Message, "1 of 2") {
+		t.Fatalf("nodes-ready = %+v, want fail with 1-of-2 counts", nodes)
+	}
+	firstApp := checkByID(t, resp, checkFirstAppDeployed)
+	if firstApp.Outcome != "fail" || !strings.Contains(firstApp.Message, "none Ready yet") {
+		t.Fatalf("first-app = %+v, want fail naming unready apps", firstApp)
+	}
+}
+
+// TestSetupStatusNodesUnreadable: an empty node list can only mean the read
+// itself is broken (a cluster always has its own node), so the check reports a
+// probe ERROR — unknown never counts as healthy OR unhealthy.
+func TestSetupStatusNodesUnreadable(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	s, _ := setupServer(t, store, nil)
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	nodes := checkByID(t, resp, checkNodesReady)
+	if nodes.Outcome != "error" {
+		t.Fatalf("nodes-ready with no readable nodes = %+v, want a probe error", nodes)
 	}
 }
 
@@ -653,4 +728,77 @@ func lastAudit(t *testing.T, store *fakeStore, action string) db.AppendAuditEntr
 	}
 	t.Fatalf("no audit entry for action %q (have %+v)", action, store.audit)
 	return db.AppendAuditEntryParams{}
+}
+
+// TestSetupStatusVaultCheck pins the secrets.vault-connected branches the
+// shared status tests cannot reach: ESO absent (NoMatch → skip, the optional
+// path) and a connected store that is not Ready (fail with guidance).
+func TestSetupStatusVaultCheck(t *testing.T) {
+	t.Run("eso absent skips", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		noMatch := interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if u, ok := list.(*unstructured.UnstructuredList); ok && u.GetKind() == "SecretStoreList" {
+					return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "external-secrets.io", Kind: "SecretStore"}}
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}
+		k8s := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(noMatch).Build()
+		s := serverWith(t, store, k8s)
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "skip" || !strings.Contains(c.Message, "--secrets-vault") {
+			t.Fatalf("got %q (%s), want skip pointing at --secrets-vault", c.Outcome, c.Message)
+		}
+	})
+
+	t.Run("store not ready fails", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		broken := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1",
+			"kind":       "SecretStore",
+			"metadata":   map[string]any{"name": "team-vault", "namespace": appsNamespace},
+			"status": map[string]any{
+				"conditions": []any{map[string]any{"type": "Ready", "status": "False"}},
+			},
+		}}
+		s, _ := setupServer(t, store, nil, broken)
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "fail" || !strings.Contains(c.Message, "0 of 1 store(s) Ready") {
+			t.Fatalf("got %q (%s), want fail counting the unready store", c.Outcome, c.Message)
+		}
+	})
+
+	// Every connected store must be Ready — one healthy store must not hide a
+	// second one's expired credential behind a Done badge (review-caught).
+	t.Run("partial ready fails", func(t *testing.T) {
+		store := newFakeStore()
+		ck := authedSession(t, store)
+		mk := func(name, ready string) *unstructured.Unstructured {
+			return &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "external-secrets.io/v1",
+				"kind":       "SecretStore",
+				"metadata":   map[string]any{"name": name, "namespace": appsNamespace},
+				"status": map[string]any{
+					"conditions": []any{map[string]any{"type": "Ready", "status": ready}},
+				},
+			}}
+		}
+		s, _ := setupServer(t, store, nil, mk("vault-a", "True"), mk("vault-b", "False"))
+
+		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+		resp := decodeSetupStatus(t, rec.Body.Bytes())
+		c := checkByID(t, resp, checkVaultConnected)
+		if c.Outcome != "fail" || !strings.Contains(c.Message, "1 of 2") {
+			t.Fatalf("got %q (%s), want fail with the 1-of-2 count", c.Outcome, c.Message)
+		}
+	})
 }

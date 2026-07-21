@@ -2,8 +2,9 @@
 # operator renders is annotated with this issuer name (orkano-platform, the
 # operator's --cluster-issuer default), and cert-manager's ingress-shim issues
 # the certificate. Let's Encrypt staging by default (PLANNING risk #7 — avoids
-# burning prod rate limits in dev); --acme-prod selects production. Distinct
-# from the namespaced internal-CA Issuer that signs the registry's TLS.
+# burning prod rate limits in dev); init's --acme-prod / the chart's
+# acme.production selects production. Distinct from the namespaced internal-CA
+# Issuer that signs the registry's TLS.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -19,5 +20,7 @@ spec:
     solvers:
       - http01:
           ingress:
-            # k3s's bundled ingress controller.
-            class: traefik
+            # The class the solver Ingresses use (k3s bundles traefik).
+            # Quoted: a class name that is a YAML-1.1 boolean word ("no",
+            # "on", …) would silently decode as a boolean.
+            class: "traefik"

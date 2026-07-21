@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$comment": "Mirrors internal/install/components.go's input validation (versionRe/emailRe/repoNameRe/hostRe plus internal/features' stable IDs): the same fail-closed bounds on every value that lands in a rendered YAML scalar, so a value can never break the YAML, inject into it, or silently select an unknown feature. Keep the patterns and enum in sync with Go.",
+  "type": "object",
+  "properties": {
+    "images": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-zA-Z0-9._:/-]*[a-zA-Z0-9])?$"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+      }
+    },
+    "acme": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+        },
+        "production": {
+          "type": "boolean"
+        }
+      }
+    },
+    "receiver": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        }
+      }
+    },
+    "repoAllowlist": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+      }
+    },
+    "features": {
+      "type": "object",
+      "properties": {
+        "unsafe": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "source.git",
+              "source.zip",
+              "build.nixpacks"
+            ]
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "className": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+        }
+      }
+    },
+    "certManager": {
+      "type": "object",
+      "properties": {
+        "install": {
+          "type": "boolean"
+        }
+      }
+    },
+    "secretsVault": {
+      "type": "object",
+      "properties": {
+        "install": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

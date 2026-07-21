@@ -2,15 +2,15 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-// Vendored shadcn/ui table (new-york style, Tailwind v4) — plain table
-// elements, no dependency.
+// Vendored shadcn/ui table (plain table elements, no dependency), restyled
+// onto the landing design system: mono uppercase heads, hairline rows.
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div data-slot="table-container" className="relative w-full overflow-x-auto">
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        className={cn("w-full caption-bottom text-[13px]", className)}
         {...props}
       />
     </div>
@@ -42,7 +42,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
     <tr
       data-slot="table-row"
       className={cn(
-        "hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
+        "hover:bg-white/3 data-[state=selected]:bg-muted border-b transition-colors",
         className,
       )}
       {...props}
@@ -55,7 +55,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "text-muted-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap",
+        "text-muted-foreground h-10 px-3 text-left align-middle font-mono text-[10.5px] font-medium tracking-[0.09em] uppercase whitespace-nowrap",
         className,
       )}
       {...props}
@@ -67,7 +67,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
   return (
     <td
       data-slot="table-cell"
-      className={cn("p-2 align-middle whitespace-nowrap", className)}
+      className={cn("p-3 align-middle whitespace-nowrap", className)}
       {...props}
     />
   );

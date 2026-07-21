@@ -1,8 +1,9 @@
 # Orkano operator (M1.5 component deploy, rendered per install). Runs in
 # orkano-system under restricted PSA on the distroless-nonroot image; uses its
 # orkano-operator ServiceAccount (the only component that talks to the API) and
-# the dispatcher-role DSN from the orkano-operator-db Secret. The image tag is
-# the CLI's own version so the deployed operator matches the installer.
+# the dispatcher-role DSN from the orkano-operator-db Secret. The image tag
+# matches the installing release: the CLI's own version on `orkano init`, the
+# chart's appVersion (or images.tag) on Helm installs.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,6 +41,14 @@ spec:
                 secretKeyRef:
                   name: orkano-operator-db
                   key: dsn
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the operator.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ .UnsafeFeatures }}"
+            # ZIP extraction reuses this exact, version-matched binary in a
+            # restricted build-pod init container.
+            - name: ORKANO_SOURCE_FETCHER_IMAGE
+              value: "{{ .OperatorImage }}"
           ports:
             - name: health
               containerPort: 8081

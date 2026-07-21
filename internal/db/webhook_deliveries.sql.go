@@ -7,10 +7,12 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const claimDelivery = `-- name: ClaimDelivery :one
-SELECT id, delivery_id, repo, event_type
+SELECT id, delivery_id, repo, event_type, app_name
 FROM webhook_deliveries
 ORDER BY id
 FOR UPDATE SKIP LOCKED
@@ -22,13 +24,14 @@ type ClaimDeliveryRow struct {
 	DeliveryID string
 	Repo       string
 	EventType  string
+	AppName    pgtype.Text
 }
 
 // The dispatcher's consume half: claim the oldest doorbell, skipping any row a
 // concurrent claim already holds. FOR UPDATE locks the row until the surrounding
 // transaction ends, so the dispatcher can act on the delivery (re-fetch the
 // commit, create the Build) and only then DELETE + COMMIT — at-least-once
-// delivery, made exactly-once by the Build's deterministic name. SKIP LOCKED
+// delivery, made idempotent by the Build's deterministic per-row name. SKIP LOCKED
 // keeps a single stuck delivery from blocking the rest (and is correct if a
 // second consumer ever appears). No rows -> pgx.ErrNoRows = queue drained.
 func (q *Queries) ClaimDelivery(ctx context.Context) (ClaimDeliveryRow, error) {
@@ -39,6 +42,7 @@ func (q *Queries) ClaimDelivery(ctx context.Context) (ClaimDeliveryRow, error) {
 		&i.DeliveryID,
 		&i.Repo,
 		&i.EventType,
+		&i.AppName,
 	)
 	return i, err
 }
@@ -73,6 +77,28 @@ type EnqueueDeliveryParams struct {
 // so the bare form dedups identically while keeping the receiver INSERT-only.
 func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, enqueueDelivery, arg.DeliveryID, arg.Repo, arg.EventType)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enqueueManualDelivery = `-- name: EnqueueManualDelivery :execrows
+INSERT INTO webhook_deliveries (delivery_id, repo, event_type, app_name)
+VALUES ($1, $2, 'manual', $3)
+ON CONFLICT DO NOTHING
+`
+
+type EnqueueManualDeliveryParams struct {
+	DeliveryID string
+	Repo       string
+	AppName    pgtype.Text
+}
+
+// The authenticated dashboard rings the same doorbell, scoped to exactly one
+// App. The dispatcher still re-fetches the authoritative repository HEAD.
+func (q *Queries) EnqueueManualDelivery(ctx context.Context, arg EnqueueManualDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enqueueManualDelivery, arg.DeliveryID, arg.Repo, arg.AppName)
 	if err != nil {
 		return 0, err
 	}

@@ -32,7 +32,7 @@ jobs:
       # shellcheck ships on the ubuntu-latest runner. The on-box installer is
       # served to users and piped into a shell, so it is linted like product code
       # (ADR-0017). Extend the list as more first-party scripts are hardened.
-      - run: shellcheck hack/install/install.sh
+      - run: shellcheck hack/install/install.sh hack/vendor-external-secrets.sh
 
   test:
     runs-on: ubuntu-latest
@@ -87,6 +87,20 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make vulncheck
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # helm lint + the ADR-0019 golden-render drift guard (chart component
+      # templates vs internal/install's renderComponents, byte-identical for
+      # equivalent values). Uses the Makefile's sha256-pinned helm download —
+      # no mutable setup-helm action in the supply chain (the golangci-lint
+      # precedent).
+      - run: make verify-chart
 
   image-pins:
     runs-on: ubuntu-latest

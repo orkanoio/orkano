@@ -19,6 +19,6 @@ func main() {
 
 	if err := cmd.NewRootCommand(version).ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		os.Exit(cmd.ExitCode(err))
 	}
 }

@@ -1,0 +1,214 @@
+# Orkano dashboard (M2.2 component deploy, rendered per install). The
+# operator-facing control panel: serves the embedded SPA and writes Orkano
+# custom resources through its narrow-RBAC orkano-dashboard ServiceAccount
+# (INV-01: never cluster-admin). Image tag = the installing release's. Unlike
+# the receiver it MOUNTS its SA token — it is the one component besides the
+# operator that talks to the Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orkano-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-dashboard
+        orkano.io/source-zip-enabled: {{ has "source.zip" .Values.features.unsafe | quote }}
+    spec:
+      serviceAccountName: orkano-dashboard
+      # Explicit (the default): the dashboard needs its SA token to reach the
+      # Kubernetes API — so a copy-paste of the receiver's `false` would silently
+      # break it, not just tighten it.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: {{ .Values.images.repository }}/orkano-dashboard:{{ include "orkano.imageTag" . }}
+          env:
+            # The dashboard's own store (users/sessions/audit/history) as the
+            # least-privilege orkano_dashboard role (INV-03: only the DSN, by
+            # reference; it holds no user-app secret values).
+            - name: ORKANO_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-db
+                  key: dsn
+            # The app-layer key that encrypts the TOTP seed at rest, so a Postgres
+            # dump alone cannot bypass 2FA (the attacker also needs this Secret).
+            # Injected via secretKeyRef (the kubelet mounts it), so the dashboard
+            # needs no secrets-read RBAC — ADR-0013's value-blind-only grant holds.
+            - name: ORKANO_DASHBOARD_ENC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-dashboard-enc-key
+                  key: key
+            # The install-token hash the dashboard checks redemption against, same
+            # secretKeyRef-not-RBAC reasoning as above.
+            - name: ORKANO_BOOTSTRAP_TOKEN_SHA256
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-bootstrap-token
+                  key: token-sha256
+            # Non-secret mirror of the receiver policy: the dashboard uses it
+            # only to explain whether automatic push deploys are enabled.
+            - name: ORKANO_REPO_ALLOWLIST
+              value: "{{ join "," .Values.repoAllowlist }}"
+            # Explicit unsafe-feature opt-ins. This lives directly in the pod
+            # template (not a ConfigMap) so a value change rolls the dashboard.
+            - name: ORKANO_UNSAFE_FEATURES
+              value: "{{ include "orkano.unsafeFeaturesCSV" . }}"
+            - name: ORKANO_REGISTRY_URL
+              value: "https://orkano-registry.orkano-system.svc.cluster.local"
+            - name: ORKANO_REGISTRY_CA_FILE
+              value: "/orkano-registry-ca/ca.crt"
+{{- if .Values.receiver.host }}
+            # The receiver's public webhook endpoint (init's --receiver-host /
+            # the chart's receiver.host), baked into the GitHub App manifest
+            # the wizard generates; without it the manifest flow refuses
+            # (webhook_url_not_configured).
+            # ORKANO_PUBLIC_URL stays deliberately un-templated: no dashboard
+            # host exists at init time (ClusterIP-only, INV-05) and the
+            # request-derived origin is correct on the private access paths —
+            # set it by hand when fronting the dashboard at a fixed URL.
+            - name: ORKANO_WEBHOOK_URL
+              value: "https://{{ .Values.receiver.host }}/webhook"
+{{- end }}
+            # OIDC sign-in config (ADR-0016), OPTIONAL per key: every ref is
+            # optional:true, so the dashboard starts with OIDC disabled until
+            # the onboarding wizard (M2.6) fills the install's empty orkano-oidc
+            # placeholder via a value-blind UPDATE and the admin rolls the pod —
+            # no init flags, fail-closed by absence. The client secret stays in
+            # this K8s Secret, never in Postgres.
+            #
+            # Explicit per-key refs, deliberately NOT envFrom — the wizard grant
+            # (orkano-dashboard-credentials, update-only, step-up-gated) makes
+            # this Secret dashboard-SA-writable, and envFrom would let a hostile
+            # write inject ARBITRARY env into this very pod on its next restart
+            # — ORKANO_GITHUB_API_BASE_URL would redirect the next manifest
+            # exchange's single-use code to a hostile host (trading credential
+            # ROTATION, which the grant allows, for THEFT of the next App key,
+            # which value-blindness forbids), and KUBERNETES_SERVICE_HOST or
+            # HTTPS_PROXY reach even deeper. Naming the keys pins the injectable
+            # surface to exactly the OIDC configuration itself.
+            - name: ORKANO_OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ISSUER
+                  optional: true
+            - name: ORKANO_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_CLIENT_ID
+                  optional: true
+            - name: ORKANO_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_CLIENT_SECRET
+                  optional: true
+            - name: ORKANO_OIDC_REDIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_REDIRECT_URL
+                  optional: true
+            - name: ORKANO_OIDC_ALLOWED_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ALLOWED_EMAILS
+                  optional: true
+            - name: ORKANO_OIDC_ALLOWED_GROUPS
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_ALLOWED_GROUPS
+                  optional: true
+            - name: ORKANO_OIDC_SCOPES
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_SCOPES
+                  optional: true
+            - name: ORKANO_OIDC_GROUPS_CLAIM
+              valueFrom:
+                secretKeyRef:
+                  name: orkano-oidc
+                  key: ORKANO_OIDC_GROUPS_CLAIM
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Project only the public CA certificate. The registry TLS private key
+            # remains inaccessible to the dashboard process.
+            - name: registry-ca
+              mountPath: /orkano-registry-ca
+              readOnly: true
+      volumes:
+        # readOnlyRootFilesystem (ADR-0007) with a writable /tmp for scratch.
+        - name: tmp
+          emptyDir: {}
+        - name: registry-ca
+          secret:
+            secretName: orkano-registry-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+# ClusterIP only: the dashboard is never internet-reachable by default (INV-05).
+# Access is the onboarding wizard's job (orkano proxy / Tailscale / IAP); there
+# is deliberately no Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: orkano-dashboard
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-dashboard
+spec:
+  selector:
+    app.kubernetes.io/name: orkano-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

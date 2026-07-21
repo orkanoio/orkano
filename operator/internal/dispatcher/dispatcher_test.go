@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/operator/internal/githubapp"
 )
 
@@ -25,9 +26,11 @@ import (
 // the concurrency cap.
 
 const (
-	testNS   = "orkano-apps"
-	testSHA  = "abcdef0123456789abcdef0123456789abcdef01" // 40 hex
-	testSHA2 = "1111111111111111111111111111111111111111"
+	testNS    = "orkano-apps"
+	testSHA   = "abcdef0123456789abcdef0123456789abcdef01" // 40 hex
+	testSHA2  = "1111111111111111111111111111111111111111"
+	manualID1 = "manual-11111111111111111111111111111111"
+	manualID2 = "manual-22222222222222222222222222222222"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -43,7 +46,7 @@ func makeApp(name, repo, ref string) *orkanov1alpha1.App {
 	return &orkanov1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
 		Spec: orkanov1alpha1.AppSpec{
-			Source: orkanov1alpha1.Source{GitHub: orkanov1alpha1.GitHubSource{Repo: repo, Ref: ref}},
+			Source: orkanov1alpha1.Source{GitHub: &orkanov1alpha1.GitHubSource{Repo: repo, Ref: ref}},
 			Build:  orkanov1alpha1.BuildStrategy{Strategy: orkanov1alpha1.StrategyDockerfile},
 		},
 	}
@@ -97,8 +100,8 @@ func (g *fakeGitHub) ResolveCommit(_ context.Context, repo, ref string) (string,
 }
 
 type fakeRow struct {
-	id                          int64
-	deliveryID, repo, eventType string
+	id                                   int64
+	deliveryID, repo, eventType, appName string
 }
 
 type fakeQueue struct {
@@ -119,7 +122,7 @@ func (q *fakeQueue) ClaimNext(_ context.Context) (*Delivery, error) {
 	row := q.pending[0]
 	q.pending = q.pending[1:]
 	return &Delivery{
-		ID: row.id, DeliveryID: row.deliveryID, Repo: row.repo, EventType: row.eventType,
+		ID: row.id, DeliveryID: row.deliveryID, Repo: row.repo, EventType: row.eventType, AppName: row.appName,
 		ack: func(context.Context) error {
 			q.mu.Lock()
 			defer q.mu.Unlock()
@@ -238,6 +241,134 @@ func TestDispatcherDuplicateDeliveryIsIdempotent(t *testing.T) {
 	}
 	if builds := listBuilds(t, c); len(builds) != 1 {
 		t.Fatalf("created %d Builds, want 1 (the same commit collapses to one Build)", len(builds))
+	}
+}
+
+func TestDispatcherManualDeployTargetsOneAppAndCreatesAttempts(t *testing.T) {
+	api := makeApp("api", "orkanoio/mono", "")
+	web := makeApp("web", "orkanoio/mono", "")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(api, web).Build()
+	q := &fakeQueue{}
+	q.enqueue(
+		fakeRow{id: 1, deliveryID: manualID1, repo: "orkanoio/mono", eventType: manualEventType, appName: "web"},
+		fakeRow{id: 2, deliveryID: manualID2, repo: "orkanoio/mono", eventType: manualEventType, appName: "web"},
+	)
+	d := newDispatcher(c, q, &fakeGitHub{sha: map[string]string{"orkanoio/mono@": testSHA}})
+
+	d.tick(context.Background())
+
+	builds := listBuilds(t, c)
+	if len(builds) != 2 {
+		t.Fatalf("created %d Builds, want two manual attempts", len(builds))
+	}
+	seen := map[string]bool{}
+	for i := range builds {
+		if builds[i].Spec.AppName != "web" {
+			t.Fatalf("manual Build targeted %q, want only web", builds[i].Spec.AppName)
+		}
+		seen[builds[i].Name] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("manual Build names = %v, want one unique attempt per request", seen)
+	}
+}
+
+func TestDispatcherManualGenericGitAndZIP(t *testing.T) {
+	gitApp := makeApp("git-app", "unused/repo", "")
+	gitApp.Spec.Source = orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{URL: "https://git.example.com/acme/app.git", Ref: "main"}}
+	zipDigest := strings.Repeat("a", 64)
+	zipApp := makeApp("zip-app", "unused/repo", "")
+	zipApp.Spec.Source = orkanov1alpha1.Source{Upload: &orkanov1alpha1.UploadSource{Digest: "sha256:" + zipDigest, FileName: "source.zip"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(gitApp, zipApp).Build()
+	q := &fakeQueue{}
+	q.enqueue(
+		fakeRow{id: 1, deliveryID: manualID1, repo: "git:queue-key", eventType: manualEventType, appName: "git-app"},
+		fakeRow{id: 2, deliveryID: manualID2, repo: "zip:queue-key", eventType: manualEventType, appName: "zip-app"},
+	)
+	d := newDispatcher(c, q, &fakeGitHub{})
+	d.Git = &fakeGitHub{sha: map[string]string{"https://git.example.com/acme/app.git@main": testSHA}}
+	d.Features, _ = features.Parse([]string{string(features.SourceGit), string(features.SourceZip)})
+
+	d.tick(context.Background())
+
+	builds := listBuilds(t, c)
+	if len(builds) != 2 {
+		t.Fatalf("created %d Builds, want generic Git and ZIP", len(builds))
+	}
+	commits := map[string]string{}
+	for i := range builds {
+		commits[builds[i].Spec.AppName] = builds[i].Spec.Commit
+	}
+	if commits["git-app"] != testSHA || commits["zip-app"] != zipDigest {
+		t.Fatalf("commits = %v", commits)
+	}
+}
+
+func TestDispatcherDropsDisabledUnsafeFeatureBeforeResolution(t *testing.T) {
+	app := makeApp("git-app", "unused/repo", "")
+	app.Spec.Source = orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{URL: "https://git.example.com/acme/app.git"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app).Build()
+	q := &fakeQueue{}
+	q.enqueue(fakeRow{id: 1, deliveryID: manualID1, repo: "irrelevant", eventType: manualEventType, appName: "git-app"})
+	resolver := &fakeGitHub{sha: map[string]string{"https://git.example.com/acme/app.git@": testSHA}}
+	d := newDispatcher(c, q, &fakeGitHub{})
+	d.Git = resolver
+
+	d.tick(context.Background())
+
+	if len(q.acked) != 1 || len(q.nacked) != 0 || len(resolver.calls) != 0 {
+		t.Fatalf("acked=%v nacked=%v resolver calls=%v", q.acked, q.nacked, resolver.calls)
+	}
+	if builds := listBuilds(t, c); len(builds) != 0 {
+		t.Fatalf("created %d Builds with source.git disabled", len(builds))
+	}
+}
+
+func TestDispatcherDropsMalformedDeliveryBeforeResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  fakeRow
+	}{
+		{name: "manual id", row: fakeRow{id: 1, deliveryID: "manual-forged", repo: "orkanoio/web", eventType: manualEventType, appName: "web"}},
+		{name: "manual app", row: fakeRow{id: 1, deliveryID: manualID1, repo: "orkanoio/web", eventType: manualEventType, appName: "Bad_App"}},
+		{name: "scoped push", row: fakeRow{id: 1, deliveryID: "github-delivery", repo: "orkanoio/web", eventType: pushEventType, appName: "web"}},
+		{name: "unknown event", row: fakeRow{id: 1, deliveryID: "delivery", repo: "orkanoio/web", eventType: "manual-ish"}},
+		{name: "empty source pointer", row: fakeRow{id: 1, deliveryID: "delivery", eventType: pushEventType}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := makeApp("web", "orkanoio/web", "")
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app).Build()
+			q := &fakeQueue{}
+			q.enqueue(tc.row)
+			resolver := &fakeGitHub{sha: map[string]string{"orkanoio/web@": testSHA}}
+			d := newDispatcher(c, q, resolver)
+
+			d.tick(context.Background())
+
+			if len(q.acked) != 1 || len(q.nacked) != 0 || len(resolver.calls) != 0 {
+				t.Fatalf("acked=%v nacked=%v resolver calls=%v", q.acked, q.nacked, resolver.calls)
+			}
+			if builds := listBuilds(t, c); len(builds) != 0 {
+				t.Fatalf("malformed delivery created %d Builds", len(builds))
+			}
+		})
+	}
+}
+
+func TestManualDeliveryRetryIsIdempotent(t *testing.T) {
+	app := makeApp("web", "orkanoio/web", "")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app).Build()
+	delivery := &Delivery{DeliveryID: manualID1, Repo: "orkanoio/web", EventType: manualEventType, AppName: "web"}
+	d := newDispatcher(c, nil, &fakeGitHub{})
+
+	if err := d.createBuild(context.Background(), app, testSHA, delivery); err != nil {
+		t.Fatalf("first createBuild: %v", err)
+	}
+	if err := d.createBuild(context.Background(), app, testSHA, delivery); err != nil {
+		t.Fatalf("retry createBuild: %v", err)
+	}
+	if builds := listBuilds(t, c); len(builds) != 1 {
+		t.Fatalf("created %d Builds, want one for a retried manual delivery", len(builds))
 	}
 }
 

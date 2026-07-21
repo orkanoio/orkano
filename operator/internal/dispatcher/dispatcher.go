@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,7 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/operator/internal/githubapp"
+	"github.com/orkanoio/orkano/operator/internal/gitresolver"
 )
 
 const (
@@ -36,7 +39,7 @@ const (
 	DefaultMaxConcurrentBuilds = 5
 
 	// managedByLabel/Value mark Builds the dispatcher created, distinguishing
-	// them from Builds applied by hand (the manual-redeploy button).
+	// them from Builds applied directly with kubectl.
 	managedByLabel = "app.kubernetes.io/managed-by"
 	managedByValue = "orkano"
 
@@ -45,6 +48,14 @@ const (
 	// buildNameSHALen is how much of the commit goes in the Build name — enough
 	// to stay unique per App across commits while keeping the name readable.
 	buildNameSHALen = 12
+	manualEventType = "manual"
+	pushEventType   = "push"
+	manualHashLen   = 8
+)
+
+var (
+	manualDeliveryIDPattern = regexp.MustCompile(`^manual-[0-9a-f]{32}$`)
+	manualAppNamePattern    = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 )
 
 // CommitResolver re-fetches the authoritative HEAD commit for a repo + ref.
@@ -64,6 +75,11 @@ type Dispatcher struct {
 	Queue Queue
 	// GitHub resolves a repo+ref to its current HEAD commit.
 	GitHub CommitResolver
+	// Git resolves a generic public HTTPS URL+ref. It is only consulted for a
+	// manual delivery whose App uses the source.git gate.
+	Git CommitResolver
+	// Features is the validated process-wide unsafe-feature set.
+	Features features.Set
 	// Log is the dispatcher's logger; the zero Logger is a safe no-op.
 	Log logr.Logger
 	// PollInterval is the queue poll cadence; <=0 means DefaultPollInterval.
@@ -180,7 +196,10 @@ func (d *Dispatcher) processOne(ctx context.Context) (bool, error) {
 // when a transient failure means the row should be retried. err carries the
 // reason for logging.
 func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, err error) {
-	apps, err := d.appsForRepo(ctx, delivery.Repo)
+	if err := validateDelivery(delivery); err != nil {
+		return true, err
+	}
+	apps, err := d.appsForDelivery(ctx, delivery)
 	if err != nil {
 		return false, fmt.Errorf("listing Apps for repo %s: %w", delivery.Repo, err)
 	}
@@ -193,9 +212,14 @@ func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, 
 	unresolvable := 0
 	for i := range apps {
 		app := &apps[i]
-		sha, resolveErr := d.GitHub.ResolveCommit(ctx, app.Spec.Source.GitHub.Repo, app.Spec.Source.GitHub.Ref)
+		if featureErr := d.Features.ValidateApp(app.Spec); featureErr != nil {
+			d.Log.Info("skipping App: required unsafe feature is disabled", "app", app.Name, "namespace", app.Namespace, "reason", featureErr.Error())
+			unresolvable++
+			continue
+		}
+		sha, resolveErr := d.resolveCommit(ctx, app)
 		switch {
-		case errors.Is(resolveErr, githubapp.ErrUnresolvable):
+		case errors.Is(resolveErr, githubapp.ErrUnresolvable), errors.Is(resolveErr, gitresolver.ErrUnresolvable):
 			// This App's repo/ref will never resolve. Skip it without failing the
 			// doorbell — other Apps sharing the repo (a monorepo) may resolve.
 			d.Log.Info("skipping App: repo or ref unresolvable",
@@ -205,7 +229,7 @@ func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, 
 		case resolveErr != nil:
 			return false, fmt.Errorf("resolving commit for App %s/%s: %w", app.Namespace, app.Name, resolveErr)
 		}
-		if err := d.createBuild(ctx, app, sha); err != nil {
+		if err := d.createBuild(ctx, app, sha, delivery); err != nil {
 			return false, fmt.Errorf("creating Build for App %s/%s: %w", app.Namespace, app.Name, err)
 		}
 	}
@@ -214,6 +238,64 @@ func (d *Dispatcher) handle(ctx context.Context, delivery *Delivery) (ack bool, 
 		return true, fmt.Errorf("every App for repo %s was unresolvable", delivery.Repo)
 	}
 	return true, nil
+}
+
+func validateDelivery(delivery *Delivery) error {
+	if delivery == nil {
+		return errors.New("delivery is nil")
+	}
+	if delivery.Repo == "" {
+		return fmt.Errorf("delivery %q has an empty source pointer", delivery.DeliveryID)
+	}
+	switch delivery.EventType {
+	case pushEventType:
+		if delivery.DeliveryID == "" || delivery.AppName != "" {
+			return fmt.Errorf("push delivery %q has an invalid app scope", delivery.DeliveryID)
+		}
+	case manualEventType:
+		if !manualDeliveryIDPattern.MatchString(delivery.DeliveryID) || !manualAppNamePattern.MatchString(delivery.AppName) || len(delivery.AppName) > 253 {
+			return fmt.Errorf("manual delivery %q has an invalid app scope", delivery.DeliveryID)
+		}
+	default:
+		return fmt.Errorf("delivery %q has unsupported event type %q", delivery.DeliveryID, delivery.EventType)
+	}
+	return nil
+}
+
+func (d *Dispatcher) resolveCommit(ctx context.Context, app *orkanov1alpha1.App) (string, error) {
+	source := app.Spec.Source
+	switch {
+	case source.GitHub != nil:
+		if d.GitHub == nil {
+			return "", errors.New("GitHub commit resolver is not configured")
+		}
+		return d.GitHub.ResolveCommit(ctx, source.GitHub.Repo, source.GitHub.Ref)
+	case source.Git != nil:
+		if d.Git == nil {
+			return "", errors.New("generic Git commit resolver is not configured")
+		}
+		return d.Git.ResolveCommit(ctx, source.Git.URL, source.Git.Ref)
+	case source.Upload != nil:
+		return strings.TrimPrefix(source.Upload.Digest, "sha256:"), nil
+	default:
+		return "", fmt.Errorf("app %s has no source: %w", app.Name, gitresolver.ErrUnresolvable)
+	}
+}
+
+func (d *Dispatcher) appsForDelivery(ctx context.Context, delivery *Delivery) ([]orkanov1alpha1.App, error) {
+	if delivery.AppName == "" {
+		return d.appsForRepo(ctx, delivery.Repo)
+	}
+	var apps orkanov1alpha1.AppList
+	if err := d.Client.List(ctx, &apps); err != nil {
+		return nil, err
+	}
+	for i := range apps.Items {
+		if apps.Items[i].Name == delivery.AppName {
+			return []orkanov1alpha1.App{apps.Items[i]}, nil
+		}
+	}
+	return nil, nil
 }
 
 // appsForRepo returns every App whose source repo matches, case-insensitively
@@ -230,18 +312,19 @@ func (d *Dispatcher) appsForRepo(ctx context.Context, repo string) ([]orkanov1al
 	want := strings.ToLower(strings.TrimSpace(repo))
 	var matched []orkanov1alpha1.App
 	for i := range apps.Items {
-		if strings.ToLower(apps.Items[i].Spec.Source.GitHub.Repo) == want {
+		github := apps.Items[i].Spec.Source.GitHub
+		if github != nil && strings.ToLower(github.Repo) == want {
 			matched = append(matched, apps.Items[i])
 		}
 	}
 	return matched, nil
 }
 
-// createBuild creates the snapshot Build, treating AlreadyExists as success: the
-// deterministic name makes a duplicate delivery (or a re-resolve to the same
-// HEAD, or a re-processed row) converge on the one Build for that commit.
-func (d *Dispatcher) createBuild(ctx context.Context, app *orkanov1alpha1.App, sha string) error {
-	build := buildFromApp(app, sha)
+// createBuild creates the snapshot Build, treating AlreadyExists as success.
+// Pushes converge by commit; a manual request gets one deterministic name for
+// that queue row, so retrying it is idempotent while a later click is a new attempt.
+func (d *Dispatcher) createBuild(ctx context.Context, app *orkanov1alpha1.App, sha string, delivery *Delivery) error {
+	build := buildFromApp(app, sha, buildNameForDelivery(app.Name, sha, delivery))
 	err := d.Client.Create(ctx, build)
 	if apierrors.IsAlreadyExists(err) {
 		return nil
@@ -258,10 +341,10 @@ func (d *Dispatcher) createBuild(ctx context.Context, app *orkanov1alpha1.App, s
 // applies. The Build is a standalone record (no ownerRef): the App controller
 // finds it via the spec.appName index, and its lifecycle is independent of the
 // App, matching how Builds are created elsewhere.
-func buildFromApp(app *orkanov1alpha1.App, sha string) *orkanov1alpha1.Build {
+func buildFromApp(app *orkanov1alpha1.App, sha, name string) *orkanov1alpha1.Build {
 	return &orkanov1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      buildName(app.Name, sha),
+			Name:      name,
 			Namespace: app.Namespace,
 			Labels:    map[string]string{managedByLabel: managedByValue},
 		},
@@ -280,20 +363,37 @@ func buildFromApp(app *orkanov1alpha1.App, sha string) *orkanov1alpha1.Build {
 // (mirroring buildjob.JobName). The App name is a DNS-1123 subdomain and the
 // commit is lowercase hex, so the result is a valid object name.
 func buildName(appName, sha string) string {
+	return buildNameWithSuffix(appName, sha, "")
+}
+
+func buildNameForDelivery(appName, sha string, delivery *Delivery) string {
+	if delivery.EventType != manualEventType {
+		return buildName(appName, sha)
+	}
+	sum := sha256.Sum256([]byte(delivery.DeliveryID))
+	suffix := "r" + hex.EncodeToString(sum[:])[:manualHashLen]
+	return buildNameWithSuffix(appName, sha, suffix)
+}
+
+func buildNameWithSuffix(appName, sha, suffix string) string {
 	short := sha
 	if len(short) > buildNameSHALen {
 		short = short[:buildNameSHALen]
 	}
-	if name := appName + "-" + short; len(name) <= maxNameLen {
+	tail := short
+	if suffix != "" {
+		tail += "-" + suffix
+	}
+	if name := appName + "-" + tail; len(name) <= maxNameLen {
 		return name
 	}
 	sum := sha256.Sum256([]byte(appName))
 	hash := hex.EncodeToString(sum[:4]) // 8 chars
 	prefix := appName
-	if max := maxNameLen - len(short) - len(hash) - 2; len(prefix) > max { // 2 dashes
+	if max := maxNameLen - len(tail) - len(hash) - 2; len(prefix) > max { // 2 dashes
 		prefix = prefix[:max]
 	}
-	return strings.TrimRight(prefix, "-.") + "-" + hash + "-" + short
+	return strings.TrimRight(prefix, "-.") + "-" + hash + "-" + tail
 }
 
 func buildTerminal(b *orkanov1alpha1.Build) bool {

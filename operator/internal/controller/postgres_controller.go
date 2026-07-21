@@ -3,13 +3,16 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -49,6 +52,17 @@ const (
 	// to it under the restricted-grade securityContext orkano-apps warns on.
 	postgresUID = int64(999)
 
+	pgwebLabel         = "app.orkano.io/pgweb"
+	pgwebContainerName = "pgweb"
+	pgwebSuffix        = "-pgweb"
+	pgwebPort          = int32(8081)
+	pgwebPortName      = "http"
+	pgwebUID           = int64(1000)
+
+	reasonPgwebDisabled     = "Disabled"
+	reasonPgwebProvisioning = "Provisioning"
+	reasonPgwebAvailable    = "Available"
+
 	// maxIdentifierLen is PostgreSQL's NAMEDATALEN-1: identifiers longer than
 	// this are silently truncated by initdb, so a name above it is rejected
 	// rather than left to diverge from the connection Secret.
@@ -74,6 +88,10 @@ var postgresImages = map[string]string{
 	"16": "postgres:16@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171",
 	"17": "postgres:17@sha256:2203e6282d9e7de7c24d7da234e2a744fb325df366a3fd8ed940e8abbee39527",
 }
+
+// pgwebImage is the official MIT-licensed Pgweb 0.17.0 multi-architecture
+// image index (amd64+arm64). Pgweb is optional and internal-only.
+const pgwebImage = "sosedoff/pgweb:0.17.0@sha256:a5256d416e2e8b92d69a4459058e3eca33a9f075d8325491644411d0bc3bd70b"
 
 // defaultStorageSize mirrors the CRD default so an object created without the
 // apiserver defaulter (e.g. a unit test) still provisions sanely.
@@ -146,11 +164,32 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			"storageSize %s is below the %s minimum a database needs to start", storage.String(), minStorageSize.String()))
 	}
 
+	if !pg.PgwebEnabled() {
+		if err := r.disablePgweb(ctx, &pg); err != nil {
+			setPgwebReady(&pg, metav1.ConditionFalse, reasonReconcileError, err.Error())
+			if statusErr := r.updateStatus(ctx, &pg, statusBefore); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, fmt.Errorf("disabling Pgweb: %w", err)
+		}
+		pg.Status.PgwebServiceName = ""
+		setPgwebReady(&pg, metav1.ConditionFalse, reasonPgwebDisabled, "Pgweb is disabled")
+	}
+
 	// Infrastructure errors below take reasonReconcileError, NOT ProvisionFailed:
 	// a transient apiserver blip must not look like the permanent, user-actionable
 	// failures above — a user who reads ProvisionFailed might delete-and-recreate,
 	// destroying the database (mirrors the App controller's reason split).
 	if err := r.ensureSecret(ctx, &pg, ident); err != nil {
+		// A same-named Secret controlled by something else (e.g. an ESO
+		// ExternalSecret target, ADR-0018) is permanent and user-actionable —
+		// retrying forever as ReconcileError would hide the real cause. The
+		// name must change; overwriting is never an option.
+		var owned *controllerutil.AlreadyOwnedError
+		if errors.As(err, &owned) {
+			return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonProvisionFailed, fmt.Errorf(
+				"connection Secret %q already exists and is owned by %s %s — pick a different name", pg.Name, owned.Owner.Kind, owned.Owner.Name))
+		}
 		return ctrl.Result{}, r.failReady(ctx, &pg, statusBefore, reasonReconcileError, fmt.Errorf("reconciling connection Secret: %w", err))
 	}
 	pg.Status.SecretName = pg.Name
@@ -180,6 +219,15 @@ func (r *PostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		setPostgresReady(&pg, metav1.ConditionTrue, reasonAvailable, "database is accepting connections")
 	} else {
 		setPostgresReady(&pg, metav1.ConditionFalse, reasonProvisioning, "waiting for the database pod to become ready")
+	}
+	if pg.PgwebEnabled() {
+		if err := r.reconcilePgweb(ctx, &pg); err != nil {
+			setPgwebReady(&pg, metav1.ConditionFalse, reasonReconcileError, err.Error())
+			if statusErr := r.updateStatus(ctx, &pg, statusBefore); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, fmt.Errorf("reconciling Pgweb: %w", err)
+		}
 	}
 	log.V(1).Info("reconciled Postgres", "ready", sts.Status.ReadyReplicas)
 	return ctrl.Result{}, r.updateStatus(ctx, &pg, statusBefore)
@@ -415,6 +463,207 @@ func mutatePostgresPodTemplate(pg *orkanov1alpha1.Postgres, tmpl *corev1.PodTemp
 	}
 }
 
+func pgwebResourceName(postgresName string) string {
+	if len(postgresName)+len(pgwebSuffix) <= 63 {
+		return postgresName + pgwebSuffix
+	}
+	sum := sha256.Sum256([]byte(postgresName))
+	hash := hex.EncodeToString(sum[:4])
+	maxPrefix := 63 - len(pgwebSuffix) - len(hash) - 1
+	prefix := strings.TrimRight(postgresName[:maxPrefix], "-")
+	return prefix + "-" + hash + pgwebSuffix
+}
+
+// pgwebURLPrefix is intentionally returned without a leading slash: Pgweb's
+// --prefix parser appends the trailing slash and its router adds the leading
+// slash. pgwebHTTPPath is the browser/probe form.
+func pgwebURLPrefix(postgresName string) string {
+	return "api/postgres/" + postgresName + "/pgweb"
+}
+
+func pgwebHTTPPath(postgresName string) string {
+	return "/" + pgwebURLPrefix(postgresName) + "/"
+}
+
+func (r *PostgresReconciler) reconcilePgweb(ctx context.Context, pg *orkanov1alpha1.Postgres) error {
+	name := pgwebResourceName(pg.Name)
+	pg.Status.PgwebServiceName = name
+	if err := r.ensurePgwebService(ctx, pg, name); err != nil {
+		return fmt.Errorf("service: %w", err)
+	}
+	deployment, err := r.ensurePgwebDeployment(ctx, pg, name)
+	if err != nil {
+		return fmt.Errorf("deployment: %w", err)
+	}
+	if err := r.ensurePgwebNetworkPolicy(ctx, pg, name); err != nil {
+		return fmt.Errorf("network policy: %w", err)
+	}
+	if deployment.Status.AvailableReplicas >= 1 {
+		setPgwebReady(pg, metav1.ConditionTrue, reasonPgwebAvailable, "Pgweb is available through the authenticated dashboard")
+	} else {
+		setPgwebReady(pg, metav1.ConditionFalse, reasonPgwebProvisioning, "waiting for Pgweb to become ready")
+	}
+	return nil
+}
+
+func (r *PostgresReconciler) ensurePgwebService(ctx context.Context, pg *orkanov1alpha1.Postgres, name string) error {
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pg.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
+		if !service.CreationTimestamp.IsZero() && !metav1.IsControlledBy(service, pg) {
+			return pgwebOwnedObjectError("Service", service, pg)
+		}
+		service.Labels = pgwebLabels(pg)
+		service.Spec.Type = corev1.ServiceTypeClusterIP
+		service.Spec.Selector = map[string]string{pgwebLabel: pg.Name}
+		service.Spec.Ports = []corev1.ServicePort{{
+			Name: pgwebPortName, Port: pgwebPort,
+			TargetPort: intstr.FromString(pgwebPortName), Protocol: corev1.ProtocolTCP,
+		}}
+		return controllerutil.SetControllerReference(pg, service, r.Scheme)
+	})
+	return err
+}
+
+func (r *PostgresReconciler) ensurePgwebDeployment(ctx context.Context, pg *orkanov1alpha1.Postgres, name string) (*appsv1.Deployment, error) {
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pg.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+		if !deployment.CreationTimestamp.IsZero() && !metav1.IsControlledBy(deployment, pg) {
+			return pgwebOwnedObjectError("Deployment", deployment, pg)
+		}
+		deployment.Labels = pgwebLabels(pg)
+		if deployment.CreationTimestamp.IsZero() {
+			deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{pgwebLabel: pg.Name}}
+		}
+		deployment.Spec.Replicas = ptr.To(int32(1))
+		mutatePgwebPodTemplate(pg, &deployment.Spec.Template)
+		return controllerutil.SetControllerReference(pg, deployment, r.Scheme)
+	})
+	return deployment, err
+}
+
+func mutatePgwebPodTemplate(pg *orkanov1alpha1.Postgres, tmpl *corev1.PodTemplateSpec) {
+	tmpl.Labels = pgwebLabels(pg)
+	tmpl.Spec.AutomountServiceAccountToken = ptr.To(false)
+	tmpl.Spec.SecurityContext = &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(pgwebUID), RunAsGroup: ptr.To(pgwebUID), FSGroup: ptr.To(pgwebUID),
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+	tmpl.Spec.Volumes = []corev1.Volume{{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	if len(tmpl.Spec.Containers) != 1 || tmpl.Spec.Containers[0].Name != pgwebContainerName {
+		tmpl.Spec.Containers = []corev1.Container{{Name: pgwebContainerName}}
+	}
+	c := &tmpl.Spec.Containers[0]
+	c.Image = pgwebImage
+	c.Args = []string{"--skip-open", "--no-ssh", "--open-retry=60", "--open-retry-delay=5"}
+	c.Ports = []corev1.ContainerPort{{Name: pgwebPortName, ContainerPort: pgwebPort, Protocol: corev1.ProtocolTCP}}
+	c.Env = []corev1.EnvVar{
+		secretEnv("PGWEB_DATABASE_URL", pg.Name, orkanov1alpha1.SecretKeyURI),
+		{Name: "PGSSLMODE", Value: "disable"},
+		{Name: "PGWEB_URL_PREFIX", Value: pgwebURLPrefix(pg.Name)},
+		{Name: "PGWEB_LOCK_SESSION", Value: "1"},
+	}
+	c.VolumeMounts = []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}}
+	c.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+	}
+	healthPath := pgwebHTTPPath(pg.Name) + "api/info"
+	httpProbe := func(period, timeout, failure int32) *corev1.Probe {
+		return &corev1.Probe{
+			ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: healthPath, Port: intstr.FromString(pgwebPortName)}},
+			PeriodSeconds: period, TimeoutSeconds: timeout, SuccessThreshold: 1, FailureThreshold: failure,
+		}
+	}
+	c.StartupProbe = httpProbe(5, 3, 60)
+	c.ReadinessProbe = httpProbe(10, 3, 3)
+	c.LivenessProbe = &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(pgwebPortName)}},
+		PeriodSeconds: 20, TimeoutSeconds: 3, SuccessThreshold: 1, FailureThreshold: 3,
+	}
+	c.SecurityContext = &corev1.SecurityContext{
+		RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(pgwebUID), RunAsGroup: ptr.To(pgwebUID),
+		ReadOnlyRootFilesystem: ptr.To(true), AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:   &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+func (r *PostgresReconciler) ensurePgwebNetworkPolicy(ctx context.Context, pg *orkanov1alpha1.Postgres, name string) error {
+	policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pg.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, policy, func() error {
+		if !policy.CreationTimestamp.IsZero() && !metav1.IsControlledBy(policy, pg) {
+			return pgwebOwnedObjectError("NetworkPolicy", policy, pg)
+		}
+		policy.Labels = pgwebLabels(pg)
+		policy.Spec = networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{pgwebLabel: pg.Name}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": systemNamespace}},
+					PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "orkano-dashboard"}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(pgwebPort))}},
+			}},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				{
+					To:    []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{postgresLabel: pg.Name}}}},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(postgresPort))}},
+				},
+				{
+					To: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))},
+						{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(53))},
+					},
+				},
+			},
+		}
+		return controllerutil.SetControllerReference(pg, policy, r.Scheme)
+	})
+	return err
+}
+
+func pgwebLabels(pg *orkanov1alpha1.Postgres) map[string]string {
+	return map[string]string{
+		pgwebLabel:                   pg.Name,
+		managedByLabel:               managedByValue,
+		"app.kubernetes.io/name":     pgwebContainerName,
+		"app.kubernetes.io/instance": pgwebResourceName(pg.Name),
+	}
+}
+
+func pgwebOwnedObjectError(kind string, obj metav1.Object, pg *orkanov1alpha1.Postgres) error {
+	owner := metav1.GetControllerOf(obj)
+	if owner == nil {
+		return fmt.Errorf("existing %s %s/%s is not managed by Orkano; delete it or disable Pgweb", kind, obj.GetNamespace(), obj.GetName())
+	}
+	return fmt.Errorf("existing %s %s/%s is owned by %s %s; delete it or disable Pgweb", kind, obj.GetNamespace(), obj.GetName(), owner.Kind, owner.Name)
+}
+
+func (r *PostgresReconciler) disablePgweb(ctx context.Context, pg *orkanov1alpha1.Postgres) error {
+	name := pgwebResourceName(pg.Name)
+	for _, obj := range []client.Object{&appsv1.Deployment{}, &corev1.Service{}, &networkingv1.NetworkPolicy{}} {
+		key := types.NamespacedName{Name: name, Namespace: pg.Namespace}
+		if err := r.Get(ctx, key, obj); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if !metav1.IsControlledBy(obj, pg) {
+			continue
+		}
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func secretEnv(name, secretName, key string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 		SecretKeyRef: &corev1.SecretKeySelector{
@@ -484,6 +733,16 @@ func setPostgresReady(pg *orkanov1alpha1.Postgres, status metav1.ConditionStatus
 	})
 }
 
+func setPgwebReady(pg *orkanov1alpha1.Postgres, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&pg.Status.Conditions, metav1.Condition{
+		Type:               orkanov1alpha1.ConditionPgwebReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: pg.Generation,
+	})
+}
+
 // failReady records why reconciliation stopped (ProvisionFailed for permanent,
 // user-actionable refusals; ReconcileError for transient infrastructure errors)
 // before returning the error, so the cause is visible in `kubectl describe`,
@@ -516,8 +775,10 @@ func (r *PostgresReconciler) updateStatus(ctx context.Context, pg *orkanov1alpha
 func (r *PostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&orkanov1alpha1.Postgres{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		// The connection Secret is owned (GC cascades) but not watched: the
 		// operator holds no secrets list/watch, so it is absent from the cache.
 		Named("postgres").

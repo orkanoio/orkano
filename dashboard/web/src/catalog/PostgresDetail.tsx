@@ -1,9 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Database,
+  Gauge,
+  HardDrive,
+  Plug,
+  TriangleAlert,
+} from "lucide-react";
 import { useState, type FormEvent } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
-import { StatusBadge } from "@/components/StatusBadge";
+import {
+  DetailWorkspace,
+  type DetailSection,
+} from "@/components/DetailWorkspace";
+import { StatusBadge, StatusDot } from "@/components/StatusBadge";
 import { StepUpGate } from "@/components/StepUpGate";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,26 +30,31 @@ import {
   ApiError,
   deletePostgres,
   getPostgres,
+  pgwebPath,
   postgresKey,
   postgresListKey,
+  postgresLogsPath,
   updatePostgres,
+  updatePgweb,
   type PostgresResponse,
 } from "@/lib/api";
 import { findCondition, formatAge, readiness } from "@/lib/format";
 import { parseQuantityBytes } from "@/lib/quantity";
 import { Link, navigate } from "@/lib/router";
+import { ResourceStreamCard } from "@/apps/LogsCard";
 
-// The connection Secret's frozen key set (ADR-0014; api/v1alpha1 SecretKey*).
-const connectionKeys = [
-  "uri",
-  "host",
-  "port",
-  "database",
-  "username",
-  "password",
-] as const;
+type PostgresSection = "overview" | "connection" | "storage" | "pgweb" | "danger";
+
+const postgresSections: readonly DetailSection<PostgresSection>[] = [
+  { id: "overview", label: "Overview", icon: Gauge },
+  { id: "connection", label: "Connection", icon: Plug },
+  { id: "storage", label: "Storage", icon: HardDrive },
+  { id: "pgweb", label: "Pgweb", icon: Database },
+  { id: "danger", label: "Danger", icon: TriangleAlert, destructive: true },
+];
 
 export function PostgresDetail({ name }: { name: string }) {
+  const [section, setSection] = useState<PostgresSection>("overview");
   const query = useQuery({
     queryKey: postgresKey(name),
     queryFn: () => getPostgres(name),
@@ -45,7 +62,7 @@ export function PostgresDetail({ name }: { name: string }) {
   });
 
   if (query.isPending) {
-    return <p className="text-muted-foreground text-sm">Loading…</p>;
+    return <p className="font-mono text-xs text-muted-foreground">Loading…</p>;
   }
   if (query.error) {
     const gone =
@@ -55,12 +72,15 @@ export function PostgresDetail({ name }: { name: string }) {
         {gone ? (
           <p className="text-muted-foreground text-sm">
             There is no database named{" "}
-            <span className="font-mono">{name}</span>.
+            <span className="font-mono text-foreground">{name}</span>.
           </p>
         ) : (
           <ApiErrorAlert error={query.error} />
         )}
-        <Link to="/databases" className="text-primary text-sm hover:underline">
+        <Link
+          to="/databases"
+          className="font-mono text-[13px] text-primary hover:underline"
+        >
           Back to databases
         </Link>
       </section>
@@ -75,57 +95,242 @@ export function PostgresDetail({ name }: { name: string }) {
       : undefined;
 
   return (
-    <section className="flex flex-col gap-6">
+    <section className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold">{pg.name}</h1>
-        <StatusBadge conditions={pg.status.conditions} />
-        <div className="ml-auto">
-          <DeletePostgres name={pg.name} />
-        </div>
-      </div>
-      {failureMessage && (
-        <p className="text-destructive text-sm">{failureMessage}</p>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Overview</CardTitle>
-          <CardDescription>
-            PostgreSQL {pg.spec.version ?? "16"} — the major version is fixed
-            for the life of the database.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Storage</dt>
-            <dd>{pg.spec.storageSize ?? "10Gi"}</dd>
-            <dt className="text-muted-foreground">Created</dt>
-            <dd>{formatAge(pg.creationTimestamp)} ago</dd>
-          </dl>
-          <GrowStorage pg={pg} />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Connect an app</CardTitle>
-          <CardDescription>
-            Connection details live only in the Kubernetes Secret{" "}
-            <span className="font-mono">{pg.status.secretName ?? pg.name}</span>
-            {" — "}reference it from an app's environment variables.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-sm">
-          <p>
-            On the app's page, add a secret reference with Secret name{" "}
-            <span className="font-mono">
-              {pg.status.secretName ?? pg.name}
-            </span>{" "}
-            and key <span className="font-mono">uri</span> (a full connection
-            URI). Available keys:{" "}
-            <span className="font-mono">{connectionKeys.join(", ")}</span>.
+        <div className="min-w-0">
+          <h1 className="truncate font-display text-2xl font-medium tracking-tight text-white">
+            {pg.name}
+          </h1>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            PostgreSQL {pg.spec.version ?? "16"} · {pg.spec.storageSize ?? "10Gi"}
           </p>
-        </CardContent>
-      </Card>
+        </div>
+        <StatusBadge conditions={pg.status.conditions} />
+      </div>
+
+      <ResourceStreamCard
+        resourceName={pg.name}
+        path={postgresLogsPath(pg.name)}
+      />
+
+      <DetailWorkspace
+        sections={postgresSections}
+        active={section}
+        onSelect={setSection}
+      >
+        {section === "overview" ? (
+          <PostgresOverviewCard pg={pg} failureMessage={failureMessage} />
+        ) : null}
+        {section === "connection" ? <PostgresConnectionCard pg={pg} /> : null}
+        {section === "storage" ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Storage</CardTitle>
+              <CardDescription>
+                Persistent storage can grow, but it cannot be reduced.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <GrowStorage pg={pg} />
+            </CardContent>
+          </Card>
+        ) : null}
+        {section === "pgweb" ? <PgwebCard pg={pg} /> : null}
+        {section === "danger" ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-destructive">Danger zone</CardTitle>
+              <CardDescription>
+                Deleting this database permanently removes its data volume.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <DeletePostgres name={pg.name} />
+            </CardContent>
+          </Card>
+        ) : null}
+      </DetailWorkspace>
     </section>
+  );
+}
+
+function PostgresOverviewCard({
+  pg,
+  failureMessage,
+}: {
+  pg: PostgresResponse;
+  failureMessage?: string;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Overview</CardTitle>
+        <CardDescription>
+          The major version is fixed for the life of this database.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {failureMessage ? (
+          <p className="font-mono text-[13px] text-destructive">
+            {failureMessage}
+          </p>
+        ) : null}
+        <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-6 gap-y-3">
+          <dt className="overline-label">Engine</dt>
+          <dd className="font-mono text-[13px] text-foreground">
+            PostgreSQL {pg.spec.version ?? "16"}
+          </dd>
+          <dt className="overline-label">Storage</dt>
+          <dd className="font-mono text-[13px] text-foreground">
+            {pg.spec.storageSize ?? "10Gi"}
+          </dd>
+          <dt className="overline-label">Connection Secret</dt>
+          <dd className="font-mono text-[13px] text-foreground">
+            {pg.status.secretName ?? pg.name}
+          </dd>
+          <dt className="overline-label">Created</dt>
+          <dd className="font-mono text-[13px] text-foreground">
+            {formatAge(pg.creationTimestamp)} ago
+          </dd>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PostgresConnectionCard({ pg }: { pg: PostgresResponse }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Connection</CardTitle>
+        <CardDescription>
+          Reference this Kubernetes Secret from an app. Orkano never reads the values back.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div>
+          <p className="overline-label">Connection Secret</p>
+          <p className="mt-1 font-mono text-sm text-foreground">
+            {pg.status.secretName ?? pg.name}
+          </p>
+        </div>
+        <div>
+          <p className="overline-label">Available keys</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {pg.secretKeys.map((key) => (
+              <code key={key} className="rounded-md border bg-terminal px-2 py-1 text-xs text-primary">
+                {key}
+              </code>
+            ))}
+          </div>
+        </div>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          For a full connection string, select this database and the <span className="font-mono text-foreground">uri</span> key in an app's Variables section.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PgwebCard({ pg }: { pg: PostgresResponse }) {
+  const queryClient = useQueryClient();
+  const enabled = pg.spec.pgweb?.enabled ?? false;
+  const condition = findCondition(pg.status.conditions, "PgwebReady");
+  const ready = enabled && condition?.status === "True";
+  const provisioning = enabled && condition?.reason === "Provisioning";
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => updatePgweb(pg.name, next),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(postgresKey(pg.name), updated);
+      void queryClient.invalidateQueries({ queryKey: postgresListKey });
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-3">
+          <CardTitle className="overline-label">Pgweb</CardTitle>
+          {!enabled ? (
+            <Badge variant="secondary">
+              <StatusDot />
+              Disabled
+            </Badge>
+          ) : ready ? (
+            <Badge variant="success">
+              <StatusDot />
+              Available
+            </Badge>
+          ) : provisioning ? (
+            <Badge variant="warning">
+              <StatusDot />
+              Starting
+            </Badge>
+          ) : (
+            <Badge variant="destructive" title={condition?.message}>
+              <StatusDot />
+              Unavailable
+            </Badge>
+          )}
+        </div>
+        <CardDescription>
+          An optional SQL browser locked to this database. It opens through
+          your current Orkano session without another login or a credential in
+          the URL.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Pgweb has full access to this database. Enable it only while you need
+          to inspect or edit data, then disable it when you are finished.
+        </p>
+        {enabled && condition?.message && !ready ? (
+          <p className="font-mono text-xs text-muted-foreground">
+            {condition.message}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {ready ? (
+            <Button asChild size="sm">
+              <a
+                href={pgwebPath(pg.name)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open Pgweb
+              </a>
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant={enabled ? "outline" : "default"}
+            size="sm"
+            disabled={toggle.isPending}
+            onClick={() => {
+              toggle.mutate(!enabled);
+            }}
+          >
+            {toggle.isPending
+              ? enabled
+                ? "Disabling…"
+                : "Enabling…"
+              : enabled
+                ? "Disable Pgweb"
+                : "Enable Pgweb"}
+          </Button>
+        </div>
+        <ApiErrorAlert error={toggle.error} />
+        <StepUpGate
+          error={toggle.error}
+          onConfirmed={() => {
+            toggle.mutate(!enabled);
+          }}
+          onDismiss={() => {
+            toggle.reset();
+          }}
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -188,7 +393,7 @@ function GrowStorage({ pg }: { pg: PostgresResponse }) {
         </Button>
       </div>
       {sizeError !== "" && (
-        <p className="text-destructive text-xs">{sizeError}</p>
+        <p className="font-mono text-xs text-destructive">{sizeError}</p>
       )}
       <ApiErrorAlert error={grow.error} />
     </form>
@@ -226,9 +431,10 @@ function DeletePostgres({ name }: { name: string }) {
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-sm">
-          Permanently delete <span className="font-mono">{name}</span> and all
-          of its data?
+        <span className="text-muted-foreground text-sm">
+          Permanently delete{" "}
+          <span className="font-mono text-foreground">{name}</span> and all of
+          its data?
         </span>
         <Button
           type="button"

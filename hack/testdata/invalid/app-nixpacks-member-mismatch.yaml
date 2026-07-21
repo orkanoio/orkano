@@ -1,0 +1,12 @@
+# Violates: Nixpacks strategy requires its matching configuration member.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-nixpacks-member
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/app
+  build:
+    strategy: Nixpacks

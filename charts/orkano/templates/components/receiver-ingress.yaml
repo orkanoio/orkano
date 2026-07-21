@@ -1,0 +1,37 @@
+{{- if .Values.receiver.host }}
+# The receiver is Orkano's one internet-facing component (GitHub webhooks,
+# INV-05). This Ingress exposes it on the configured receiver host over HTTPS:
+# cert-manager's ingress-shim issues the certificate from the orkano-platform
+# ClusterIssuer (ADR-0006), and plain HTTP is the ingress controller's redirect
+# job (on k3s, config/traefik's cluster-wide web->websecure redirect). Rendered
+# only when a receiver host is set (init's --receiver-host / the chart's
+# receiver.host); without one the receiver stays ClusterIP-only.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orkano-receiver
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-receiver
+  annotations:
+    cert-manager.io/cluster-issuer: orkano-platform
+spec:
+  # Quoted (as are the hosts): plain scalars that happen to be YAML-1.1
+  # boolean words ("no", "on", …) would silently decode as booleans.
+  ingressClassName: "{{ .Values.ingress.className }}"
+  tls:
+    - hosts:
+        - "{{ .Values.receiver.host }}"
+      secretName: orkano-receiver-tls
+  rules:
+    - host: "{{ .Values.receiver.host }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orkano-receiver
+                port:
+                  number: 80
+{{- end }}

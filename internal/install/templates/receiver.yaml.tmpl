@@ -1,8 +1,9 @@
 # Orkano webhook receiver (M1.5 component deploy, rendered per install). The one
-# internet-facing component, exposed via a Traefik Ingress (rendered separately
-# for --receiver-host). It holds no Kubernetes credentials (INV-04): SA token not
-# mounted, no Role. Its entire config is the HMAC secret, the INSERT-only
-# receiver DSN, and the repo allowlist. Runs restricted-PSA in orkano-system.
+# internet-facing component, exposed via an Ingress (rendered separately when a
+# receiver host is configured). It holds no Kubernetes credentials (INV-04): SA
+# token not mounted, no Role. Its entire config is the HMAC secret, the
+# INSERT-only receiver DSN, and the repo allowlist. Runs restricted-PSA in
+# orkano-system.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -74,9 +75,9 @@ spec:
             capabilities:
               drop: [ALL]
 ---
-# ClusterIP: the receiver is reached through the Traefik Ingress (rendered for
-# --receiver-host), never directly. INV-05: nothing public except via that
-# deliberate Ingress.
+# ClusterIP: the receiver is reached through its Ingress (rendered when a
+# receiver host is configured), never directly. INV-05: nothing public except
+# via that deliberate Ingress.
 apiVersion: v1
 kind: Service
 metadata:

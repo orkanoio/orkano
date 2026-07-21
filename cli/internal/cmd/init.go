@@ -6,9 +6,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/orkanoio/orkano/internal/checks"
+	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/internal/install"
 	"github.com/orkanoio/orkano/internal/k3s"
 	"github.com/orkanoio/orkano/internal/localexec"
@@ -19,22 +21,24 @@ import (
 )
 
 type initOptions struct {
-	version       string
-	local         bool
-	nodes         []string
-	sshUser       string
-	sshPort       int
-	sshKeyPath    string
-	hostKeyPaths  []string
-	acceptNewKey  bool
-	k3sVersion    string
-	kubeconfig    string
-	readyTimeout  time.Duration
-	skipPreflight bool
-	acmeEmail     string
-	acmeProd      bool
-	allowRepos    []string
-	receiverHost  string
+	version        string
+	local          bool
+	nodes          []string
+	sshUser        string
+	sshPort        int
+	sshKeyPath     string
+	hostKeyPaths   []string
+	acceptNewKey   bool
+	k3sVersion     string
+	kubeconfig     string
+	readyTimeout   time.Duration
+	skipPreflight  bool
+	acmeEmail      string
+	acmeProd       bool
+	allowRepos     []string
+	unsafeFeatures []string
+	receiverHost   string
+	secretsVault   bool
 }
 
 func newInitCommand(version string) *cobra.Command {
@@ -70,12 +74,18 @@ func newInitCommand(version string) *cobra.Command {
 	f.StringVar(&opt.acmeEmail, "acme-email", "", "email to register the Let's Encrypt account with (optional)")
 	f.BoolVar(&opt.acmeProd, "acme-prod", false, "use Let's Encrypt production instead of staging (staging is the safe default)")
 	f.StringArrayVar(&opt.allowRepos, "allow-repo", nil, "owner/repo allowed to trigger builds; repeat to allow several (the webhook receiver's allowlist)")
+	f.StringArrayVar(&opt.unsafeFeatures, "enable-unsafe-feature", nil,
+		fmt.Sprintf("UNSAFE: enable a security-sensitive capability; repeat for %s, %s, or %s", features.SourceGit, features.SourceZip, features.BuildNixpacks))
 	f.StringVar(&opt.receiverHost, "receiver-host", "", "public hostname to expose the webhook receiver on over HTTPS (optional; without it the receiver stays cluster-internal)")
+	f.BoolVar(&opt.secretsVault, "secrets-vault", false, "install the External Secrets Operator for external secret stores (Vault etc.); opt-in — re-run init with this flag to add it later")
 
 	return cmd
 }
 
 func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
+	if err := normalizeUnsafeFeatures(opt); err != nil {
+		return err
+	}
 	if opt.local {
 		return runInitLocal(ctx, out, errw, opt)
 	}
@@ -152,6 +162,7 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	writef(errw, "Deploying Orkano components on %s...\n", opt.nodes[0])
 	bootstrapToken, err := deployComponents(ctx, out, errw, opt, privateKey, hostKeys[0])
 	if err != nil {
+		printBootstrapTokenAfterFailure(out, bootstrapToken)
 		return fmt.Errorf("deploy components: %w", err)
 	}
 
@@ -160,10 +171,30 @@ func runInit(ctx context.Context, out, errw io.Writer, opt *initOptions) error {
 	// build-pod CA + the node-ingress policy from the first server.
 	writef(errw, "Wiring the in-cluster registry...\n")
 	if err := wireRegistry(ctx, out, errw, opt, privateKey, hostKeys); err != nil {
+		// The deploy step succeeded, so a fresh token exists and printSummary —
+		// its only other outlet — is never reached. Losing it here is the same
+		// lockout as losing it on the deploy failure above.
+		printBootstrapTokenAfterFailure(out, bootstrapToken)
 		return fmt.Errorf("wire registry: %w", err)
 	}
 
 	printSummary(out, opt, first, anyFresh, anyChanged, bootstrapToken)
+	return nil
+}
+
+// normalizeUnsafeFeatures validates the explicit opt-ins before init performs
+// preflight, SSH, bootstrap, or any other node mutation. It also rewrites the
+// slice into canonical order so every downstream install.Config receives the
+// same stable value regardless of flag order.
+func normalizeUnsafeFeatures(opt *initOptions) error {
+	enabled, err := features.Parse(opt.unsafeFeatures)
+	if err != nil {
+		return fmt.Errorf("--enable-unsafe-feature: %w", err)
+	}
+	opt.unsafeFeatures = nil
+	if csv := enabled.CSV(); csv != "" {
+		opt.unsafeFeatures = strings.Split(csv, ",")
+	}
 	return nil
 }
 
@@ -228,7 +259,8 @@ func runInitLocal(ctx context.Context, out, errw io.Writer, opt *initOptions) er
 	logf := func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) }
 
 	if !opt.skipPreflight {
-		if err := runPreflight(ctx, out, runner, "this machine ("+addr+")"); err != nil {
+		// Sudo false: --local requires root, so the readyz probe runs directly.
+		if err := runPreflight(ctx, out, runner, "this machine ("+addr+")", false); err != nil {
 			return err
 		}
 	}
@@ -259,16 +291,30 @@ func runInitLocal(ctx context.Context, out, errw io.Writer, opt *initOptions) er
 	writef(errw, "Deploying Orkano components...\n")
 	bootstrapToken, err := deployLocal(ctx, errw, opt, runner)
 	if err != nil {
+		printBootstrapTokenAfterFailure(out, bootstrapToken)
 		return fmt.Errorf("deploy components: %w", err)
 	}
 
 	writef(errw, "Wiring the in-cluster registry...\n")
 	if err := wireRegistryLocal(ctx, errw, opt, runner, addr); err != nil {
+		// Same as the SSH path: a fresh token from the successful deploy step
+		// would otherwise be lost with the skipped summary.
+		printBootstrapTokenAfterFailure(out, bootstrapToken)
 		return fmt.Errorf("wire registry: %w", err)
 	}
 
 	printLocalSummary(out, opt, res, !res.AlreadyInstalled, res.Changed || npRes.Changed, bootstrapToken, addr)
 	return nil
+}
+
+// readinessTargets is the critical path the component deploy waits for,
+// extended with the External Secrets Operator's when it is opted in.
+func readinessTargets(opt *initOptions) []install.Workload {
+	targets := install.DefaultReadinessTargets()
+	if opt.secretsVault {
+		targets = append(targets, install.SecretsVaultReadinessTargets()...)
+	}
+	return targets
 }
 
 // deployComponentsLocal runs the component deploy over the local runner. It is
@@ -279,11 +325,16 @@ func deployComponentsLocal(ctx context.Context, errw io.Writer, opt *initOptions
 		ACMEEmail:        opt.acmeEmail,
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
+		UnsafeFeatures:   opt.unsafeFeatures,
 		ReceiverHost:     opt.receiverHost,
-		ReadinessTargets: install.DefaultReadinessTargets(),
+		SecretsVault:     opt.secretsVault,
+		ReadinessTargets: readinessTargets(opt),
 		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 	})
 	if err != nil {
+		if res != nil {
+			return res.BootstrapToken, err
+		}
 		return "", err
 	}
 	return res.BootstrapToken, nil
@@ -349,12 +400,17 @@ func deployOnNode0(ctx context.Context, _, errw io.Writer, opt *initOptions, pri
 		ACMEEmail:        opt.acmeEmail,
 		ACMEProd:         opt.acmeProd,
 		RepoAllowlist:    opt.allowRepos,
+		UnsafeFeatures:   opt.unsafeFeatures,
 		ReceiverHost:     opt.receiverHost,
-		ReadinessTargets: install.DefaultReadinessTargets(),
+		SecretsVault:     opt.secretsVault,
+		ReadinessTargets: readinessTargets(opt),
 		Sudo:             opt.sshUser != "root",
 		Logf:             func(format string, args ...any) { writef(errw, "  "+format+"\n", args...) },
 	})
 	if err != nil {
+		if res != nil {
+			return res.BootstrapToken, err
+		}
 		return "", err
 	}
 	return res.BootstrapToken, nil
@@ -449,7 +505,7 @@ func bootstrapNode(ctx context.Context, out, errw io.Writer, opt *initOptions, p
 
 	target := opt.sshUser + "@" + node
 	if !opt.skipPreflight {
-		if err := runPreflight(ctx, out, client, target); err != nil {
+		if err := runPreflight(ctx, out, client, target, cfg.Sudo); err != nil {
 			return nil, nil, false, err
 		}
 	}
@@ -536,9 +592,9 @@ func writef(w io.Writer, format string, args ...any) {
 
 // runPreflight executes the install preflight and refuses the install on any
 // critical failure or indeterminate critical check.
-func runPreflight(ctx context.Context, out io.Writer, exec preflight.Executor, target string) error {
+func runPreflight(ctx context.Context, out io.Writer, exec preflight.Executor, target string, sudo bool) error {
 	reg := checks.New()
-	if err := preflight.Register(reg, preflight.Options{Executor: exec, Target: target}); err != nil {
+	if err := preflight.Register(reg, preflight.Options{Executor: exec, Target: target, AllowExistingK3s: true, Sudo: sudo}); err != nil {
 		return fmt.Errorf("register preflight checks: %w", err)
 	}
 	run, err := reg.Run(ctx)
@@ -578,6 +634,12 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	}
 	writef(out, "  components:         deployed\n")
 	writef(out, "  registry:           wired on every node\n")
+	if opt.secretsVault {
+		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
+	}
+	if len(opt.unsafeFeatures) > 0 {
+		writef(out, "  UNSAFE features:    %s (enabled by explicit opt-in)\n", strings.Join(opt.unsafeFeatures, ", "))
+	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
 	} else {
@@ -596,7 +658,10 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
 			"Redeem it at first dashboard login to create the admin account (Phase 2).\n", bootstrapToken)
 	} else {
-		writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n")
+		// The SSH-path reader is at their workstation, where the kubeconfig this
+		// run just wrote already reaches the cluster (the "Try it" line below) —
+		// no node-picking, no sudo, and it works uniformly across HA members.
+		printBootstrapTokenRecovery(out, "KUBECONFIG=\""+opt.kubeconfig+"\" kubectl")
 	}
 	writef(out, "\nTry it: KUBECONFIG=%s kubectl get nodes\n", opt.kubeconfig)
 }
@@ -629,6 +694,12 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	writef(out, "  nodes:              1 (single node — not highly available)\n")
 	writef(out, "  components:         deployed\n")
 	writef(out, "  registry:           wired\n")
+	if opt.secretsVault {
+		writef(out, "  secrets vault:      External Secrets Operator deployed (connect a store from the dashboard)\n")
+	}
+	if len(opt.unsafeFeatures) > 0 {
+		writef(out, "  UNSAFE features:    %s (enabled by explicit opt-in)\n", strings.Join(opt.unsafeFeatures, ", "))
+	}
 	if opt.receiverHost != "" {
 		writef(out, "  receiver:           https://%s\n", opt.receiverHost)
 	} else {
@@ -642,7 +713,9 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
 			"Redeem it at first dashboard login to create the admin account.\n", bootstrapToken)
 	} else {
-		writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n")
+		// --local runs as root on the box itself, so the node's own k3s kubectl
+		// is the reader's working command (absolute path: RHEL sudo secure_path).
+		printBootstrapTokenRecovery(out, "/usr/local/bin/k3s kubectl")
 	}
 
 	// The dashboard is ClusterIP-only and never exposed to the internet (INV-05).
@@ -660,4 +733,32 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	writef(out, "\nThis is a single node — if it fails, the cluster is down. For high\n"+
 		"availability, install three servers over SSH instead:\n"+
 		"  orkano init --node A --node B --node C --ssh-key <key>\n")
+}
+
+func printBootstrapTokenAfterFailure(out io.Writer, bootstrapToken string) {
+	if bootstrapToken == "" {
+		return
+	}
+	writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+		"The install hit an error after creating this token. Re-run `orkano init` after fixing the error;\n"+
+		"this token will not be shown again, but it will work once the dashboard is ready.\n", bootstrapToken)
+}
+
+// printBootstrapTokenRecovery prints the rotate-the-secret recipe for a re-run
+// whose token was generated (and possibly never seen) on an earlier run. kubectl
+// is the caller's working command base — the SSH path passes a KUBECONFIG-scoped
+// kubectl for the workstation, --local the node's own k3s kubectl — so the
+// recipe is copy-pasteable exactly where the reader is sitting. The digest goes
+// through openssl (already required for the rand step) so the recipe works on
+// macOS workstations too, which ship no sha256sum.
+func printBootstrapTokenRecovery(out io.Writer, kubectl string) {
+	writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n"+
+		"If that first run failed before you copied it, the plaintext token cannot be recovered because\n"+
+		"only its sha256 hash is stored. Rotate it:\n\n"+
+		"  TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')\n"+
+		"  HASH=$(printf %%s \"$TOKEN\" | openssl dgst -sha256 | awk '{print $NF}')\n"+
+		"  %s -n orkano-system create secret generic orkano-bootstrap-token \\\n"+
+		"    --from-literal=token-sha256=\"$HASH\" --dry-run=client -o yaml | %s apply -f -\n"+
+		"  %s -n orkano-system rollout restart deploy/orkano-dashboard\n"+
+		"  printf 'Bootstrap token: %%s\\n' \"$TOKEN\"\n", kubectl, kubectl, kubectl)
 }

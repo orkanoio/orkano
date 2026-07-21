@@ -12,9 +12,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/dashboard/internal/oidc"
+	"github.com/orkanoio/orkano/internal/features"
 )
 
 // readyTimeout bounds the dependency checks /readyz performs so a wedged backend
@@ -34,6 +37,12 @@ const readyTimeout = 2 * time.Second
 // it works under the least-privilege orkano_dashboard role.
 type Pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// ArchiveStore writes a validated source ZIP into Orkano's content-addressed
+// internal registry. *sourcearchive.Registry satisfies it; tests use a fake.
+type ArchiveStore interface {
+	Upload(ctx context.Context, appName, filename string, source io.ReadSeeker, size int64, digest string) error
 }
 
 // Config wires the server's collaborators. K8s, DB, Store, Cipher, and
@@ -87,6 +96,26 @@ type Config struct {
 	// redirect (callback) URL. Empty derives it from the request (scheme + Host),
 	// which is trustworthy on the dashboard's private access paths (INV-05).
 	PublicURL string
+	// RepoAllowlist mirrors the receiver's non-secret repository allowlist so the
+	// UI can explain whether GitHub pushes for an App will be accepted. Manual
+	// deploys remain authenticated and work independently of this list.
+	RepoAllowlist []string
+	// Features is the validated, explicit unsafe-feature set for this process.
+	// Its zero value is the secure default. Every mutation is checked here even
+	// when the UI has already hidden a disabled option.
+	Features features.Set
+	// Archives stores validated ZIP sources. It is required only when source.zip
+	// is enabled, so secure-default installations never gain a registry writer.
+	Archives ArchiveStore
+	// MongoExpressTransport carries requests from the authenticated dashboard
+	// proxy to an operator-owned ClusterIP Service. OPTIONAL: New installs a
+	// direct, timeout-bounded transport that ignores ambient HTTP proxy settings;
+	// tests inject a fake RoundTripper.
+	MongoExpressTransport http.RoundTripper
+	// PgwebTransport carries requests from the authenticated dashboard proxy to
+	// an operator-owned internal Pgweb Service. OPTIONAL and timeout-bounded;
+	// tests inject a fake RoundTripper.
+	PgwebTransport http.RoundTripper
 	// BootstrapTokenHash is hex(sha256(install token)); the redeem flow compares a
 	// presented token's hash against it in constant time.
 	BootstrapTokenHash string
@@ -105,6 +134,10 @@ type Server struct {
 	log    *slog.Logger
 	router chi.Router
 	rl     *rateLimiter
+	// nameMu makes the cross-kind name check + create one critical section for
+	// the single dashboard replica shipped in v1. Kubernetes itself has no
+	// atomic uniqueness primitive across different resource kinds.
+	nameMu sync.Mutex
 	// started is when this process loaded its configuration — the wizard's
 	// setup status compares the orkano-oidc write marker against it to detect a
 	// credential rotation this process has not picked up yet.
@@ -141,6 +174,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.BootstrapTokenHash == "" {
 		return nil, errors.New("server: BootstrapTokenHash is required")
 	}
+	if cfg.Features.Enabled(features.SourceZip) && cfg.Archives == nil {
+		return nil, errors.New("server: Archives is required when source.zip is enabled")
+	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -161,6 +197,28 @@ func New(cfg Config) (*Server, error) {
 		cfg.OIDCValidator = func(ctx context.Context, getenv func(string) string) error {
 			_, err := oidc.New(ctx, getenv)
 			return err
+		}
+	}
+	if cfg.MongoExpressTransport == nil {
+		cfg.MongoExpressTransport = &http.Transport{
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   4,
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
+		}
+	}
+	if cfg.PgwebTransport == nil {
+		cfg.PgwebTransport = &http.Transport{
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   4,
+			IdleConnTimeout:       30 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
 		}
 	}
 

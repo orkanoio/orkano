@@ -18,6 +18,12 @@ import {
 // GitHub blocked behind the missing webhook URL, domains not applicable.
 const freshChecks: SetupCheck[] = [
   {
+    id: "cluster.nodes-ready",
+    severity: "warning",
+    outcome: "pass",
+    message: "1 node(s) Ready",
+  },
+  {
     id: "setup.access-mode-chosen",
     severity: "warning",
     outcome: "fail",
@@ -42,10 +48,22 @@ const freshChecks: SetupCheck[] = [
     blockers: ["github.webhook-url-configured"],
   },
   {
+    id: "secrets.vault-connected",
+    severity: "info",
+    outcome: "skip",
+    message: "External Secrets Operator not installed — optional",
+  },
+  {
     id: "domains.tls-ready",
     severity: "info",
     outcome: "skip",
     message: "no Domains yet — not applicable until an app has a custom domain",
+  },
+  {
+    id: "apps.first-app-deployed",
+    severity: "info",
+    outcome: "fail",
+    message: "no apps yet — create your first app",
   },
 ];
 
@@ -59,6 +77,7 @@ function makeStatus(over: Partial<SetupStatus> = {}): SetupStatus {
     oidcEnabled: false,
     oidcPendingRestart: false,
     github: { connected: false },
+    repoAllowlist: [],
     ...over,
   };
 }
@@ -68,29 +87,72 @@ function statusRoute(status: SetupStatus) {
 }
 
 describe("SetupWizard", () => {
-  it("renders the five steps with the fresh-install outcomes", async () => {
+  it("renders the eight steps with the fresh-install outcomes", async () => {
     stubFetchRoutes(statusRoute(makeStatus()));
     renderWithSession(<SetupWizard />);
 
     expect(
-      await screen.findByRole("heading", { name: "1. Access mode" }),
+      await screen.findByRole("heading", { name: "1. Cluster" }),
     ).toBeInTheDocument();
     for (const name of [
-      "2. Sign-in",
-      "3. GitHub",
-      "4. Domains & TLS",
-      "5. Registry",
+      "2. Access mode",
+      "3. Sign-in",
+      "4. GitHub",
+      "5. Secrets",
+      "6. Domains & TLS",
+      "7. Registry",
+      "8. First app",
     ]) {
       expect(screen.getByRole("heading", { name })).toBeInTheDocument();
     }
+    // The cluster step links the Settings node inventory; the first-app step
+    // links the create form.
+    expect(
+      screen.getByRole("link", { name: /View nodes and the add-node recipe/ }),
+    ).toHaveAttribute("href", "#/settings");
+    expect(
+      screen.getByRole("link", { name: "Create your first app." }),
+    ).toHaveAttribute("href", "#/apps/new");
     // The blocked GitHub step names its prerequisite as human copy (never the
     // raw check ID), and the webhook-URL guidance shows in its body.
     expect(
       screen.getByText("Waiting on the webhook URL"),
     ).toBeInTheDocument();
     expect(screen.getByText(/--receiver-host/)).toBeInTheDocument();
-    expect(screen.getByText("Not applicable")).toBeInTheDocument();
+    // Two optional skips on a fresh install: the vault and domains steps.
+    expect(screen.getAllByText("Not applicable")).toHaveLength(2);
+    // The vault skip shows the exact opt-in re-run one-liner.
+    expect(screen.getByText(/orkano init --secrets-vault/)).toBeInTheDocument();
     expect(screen.getByText("Built in")).toBeInTheDocument(); // registry: no server check backs it
+  });
+
+  it("links the vault page when a store is connected but unhealthy", async () => {
+    stubFetchRoutes(
+      statusRoute(
+        makeStatus({
+          checks: makeStatus().checks.map((c) =>
+            c.id === "secrets.vault-connected"
+              ? {
+                  ...c,
+                  outcome: "fail",
+                  message: "1 store(s) connected, none Ready",
+                }
+              : c,
+          ),
+        }),
+      ),
+    );
+    renderWithSession(<SetupWizard />);
+
+    expect(
+      await screen.findByRole("link", {
+        name: /Manage stores and synced secrets/,
+      }),
+    ).toHaveAttribute("href", "#/vault");
+    expect(screen.getByText(/none Ready/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/orkano init --secrets-vault/),
+    ).not.toBeInTheDocument();
   });
 
   it("saves the access mode and refreshes the status", async () => {

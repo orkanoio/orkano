@@ -11,6 +11,49 @@ import (
 // waitPollInterval is how often waitReady re-checks; tests shrink it.
 var waitPollInterval = 5 * time.Second
 
+// applyAndWaitCRDs explicitly applies the Orkano CRD manifests and blocks until
+// every one is Established, so no controller manifest is written before
+// discovery can serve its types. Runs every Apply (converge, not change-gated)
+// — see the caller's comment.
+func (n *node) applyAndWaitCRDs(ctx context.Context, crds []crdManifest, timeout time.Duration) error {
+	names := make([]string, 0, len(crds))
+	for _, c := range crds {
+		if err := n.runOK(ctx, fmt.Sprintf("%s%s kubectl apply -f %s", n.sudo, k3sBin, c.path), "apply CRD "+c.crdName); err != nil {
+			return err
+		}
+		names = append(names, c.crdName)
+	}
+	return n.waitCRDsEstablished(ctx, names, timeout)
+}
+
+func (n *node) waitCRDsEstablished(ctx context.Context, names []string, timeout time.Duration) error {
+	if len(names) == 0 {
+		return nil
+	}
+	wait, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	refs := make([]string, len(names))
+	for i, name := range names {
+		refs[i] = "crd/" + name
+	}
+	// The remote --timeout runs slightly under the local ctx budget so kubectl
+	// exits on its own with the per-resource "timed out waiting" message instead
+	// of the SSH session being torn down into a generic context error. kubectl
+	// budgets one shared timeout across all named refs, matching the local ctx.
+	remote := timeout - 5*time.Second
+	if remote <= 0 {
+		remote = timeout
+	}
+	cmd := fmt.Sprintf("%s%s kubectl wait --for=condition=Established %s --timeout=%s",
+		n.sudo, k3sBin, strings.Join(refs, " "), remote)
+	if err := n.runOK(wait, cmd, "wait for CRDs to be established"); err != nil {
+		return err
+	}
+	n.logf("orkano CRDs established (%s)", strings.Join(names, ", "))
+	return nil
+}
+
 // waitReady polls each target until it reports at least one ready replica, or
 // the timeout elapses. A not-found result (k3s has not applied the manifest
 // yet) and a transient transport error both count as "keep waiting", never a

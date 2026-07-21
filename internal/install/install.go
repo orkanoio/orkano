@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
@@ -44,6 +46,11 @@ const (
 
 	// manifestMode keeps the written manifests root-only on the server node.
 	manifestMode = "0600"
+
+	// crdManifestPrefix identifies the flattened config/crd/*.yaml files. CRDs
+	// must be established before any controller-runtime manager starts watching
+	// Orkano types; otherwise the operator can crash on REST mapping discovery.
+	crdManifestPrefix = "crd-"
 )
 
 // Runner runs a command on the server node. *ssh.Client satisfies it; tests
@@ -66,9 +73,22 @@ type Config struct {
 	ACMEProd bool
 	// RepoAllowlist seeds the receiver's ORKANO_REPO_ALLOWLIST (owner/name).
 	RepoAllowlist []string
+	// UnsafeFeatures is the explicit allowlist of security-sensitive source and
+	// build capabilities enabled for this installation. Empty is fail-closed.
+	// Unknown IDs are rejected before any manifests are written.
+	UnsafeFeatures []string
 	// ReceiverHost is the public hostname for the webhook receiver's Ingress.
 	// Empty renders no Ingress — the receiver stays ClusterIP-only (INV-05).
 	ReceiverHost string
+	// SecretsVault adds the vendored External Secrets Operator to the write
+	// set (`orkano init --secrets-vault`, ADR-0018). Opt-in and one-way from
+	// the installer's side: a later re-run without the flag leaves the file in
+	// place — k3s re-applies auto-deploy manifests on restart but never
+	// deletes resources when a file disappears, so disabling is a deliberate
+	// two-step manual operation (remove the file, then delete the resources —
+	// which cascades to every synced Secret), never a forgotten flag.
+	// docs/vault.md documents the procedure.
+	SecretsVault bool
 	// ReadinessTargets are the workloads Apply waits to become Ready before
 	// returning. Empty skips the wait.
 	ReadinessTargets []Workload
@@ -142,6 +162,18 @@ func DefaultReadinessTargets() []Workload {
 	}
 }
 
+// SecretsVaultReadinessTargets is the additional critical path when the
+// External Secrets Operator is opted in (ADR-0018): its controller, the
+// validating webhook (without which every SecretStore/ExternalSecret write is
+// rejected), and the cert-controller that issues the webhook's serving cert.
+func SecretsVaultReadinessTargets() []Workload {
+	return []Workload{
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets"},
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets-webhook"},
+		{Namespace: "external-secrets", Kind: "deployment", Name: "external-secrets-cert-controller"},
+	}
+}
+
 func (c Config) autoDeployDir() string {
 	if c.AutoDeployDir == "" {
 		return DefaultAutoDeployDir
@@ -180,6 +212,18 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The vendored External Secrets Operator joins the write set only on
+	// opt-in (ADR-0018). Its own CRDs are deliberately not routed through the
+	// Established gate below: nothing Orkano runs watches ESO types at startup
+	// (the dashboard's lazy RESTMapper self-heals), matching the cert-manager
+	// precedent.
+	if cfg.SecretsVault {
+		eso, err := externalSecretsManifests()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, eso...)
+	}
 	// Per-install component manifests (version-tagged images, ACME/allowlist
 	// values) join the static set; both are written and reconciled identically.
 	comps, err := renderComponents(cfg)
@@ -189,7 +233,35 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	files = append(files, comps...)
 
 	base := path.Join(cfg.autoDeployDir(), manifestSubdir)
-	for _, f := range files {
+	crds, rest, err := splitCRDManifests(base, files)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, c := range crds {
+		changed, err := n.ensureFile(ctx, c.path, c.content, manifestMode)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			res.Changed = true
+			n.logf("wrote %s", c.name)
+		}
+	}
+	// Apply + wait runs on EVERY run, not only when a file changed: the gate is
+	// about cluster state (Established), which a crashed earlier run or a still-
+	// converging server can leave unmet behind unchanged files. Both commands are
+	// idempotent no-ops against an already-Established CRD. The files also stay
+	// in the auto-deploy dir, so k3s's AddOn controller independently applies the
+	// same byte-identical content — a deliberate, harmless second path (wrangler
+	// apply converges onto pre-existing objects rather than conflicting).
+	if len(crds) > 0 {
+		if err := n.applyAndWaitCRDs(ctx, crds, cfg.waitTimeout()); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, f := range rest {
 		changed, err := n.ensureFile(ctx, path.Join(base, f.name), f.content, manifestMode)
 		if err != nil {
 			return nil, err
@@ -217,16 +289,16 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 			return nil, err
 		}
 		token, secChanged, err := ensureSecrets(ctx, n, vals)
-		if err != nil {
-			return nil, err
-		}
-		res.Changed = res.Changed || secChanged
 		res.BootstrapToken = token
+		res.Changed = res.Changed || secChanged
+		if err != nil {
+			return res, err
+		}
 	}
 
 	if len(cfg.ReadinessTargets) > 0 {
 		if err := n.waitReady(ctx, cfg.ReadinessTargets, cfg.waitTimeout()); err != nil {
-			return nil, err
+			return res, err
 		}
 	}
 	return res, nil
@@ -242,18 +314,106 @@ type manifestFile struct {
 	content []byte
 }
 
+// crdManifest is a manifestFile plus the applied path and API name. CRDs are
+// treated specially because the operator cannot even create its manager until
+// discovery knows these types.
+type crdManifest struct {
+	manifestFile
+	path    string
+	crdName string
+}
+
+func splitCRDManifests(base string, files []manifestFile) ([]crdManifest, []manifestFile, error) {
+	var crds []crdManifest
+	rest := make([]manifestFile, 0, len(files))
+	for _, f := range files {
+		if !strings.HasPrefix(f.name, crdManifestPrefix) {
+			rest = append(rest, f)
+			continue
+		}
+		name, err := crdName(f.content)
+		if err != nil {
+			return nil, nil, fmt.Errorf("install: parse %s: %w", f.name, err)
+		}
+		crds = append(crds, crdManifest{
+			manifestFile: f,
+			path:         path.Join(base, f.name),
+			crdName:      name,
+		})
+	}
+	return crds, rest, nil
+}
+
+func crdName(content []byte) (string, error) {
+	// yaml.Unmarshal silently reads only the FIRST document of a multi-document
+	// stream, but kubectl apply would apply them all — the Established wait would
+	// then cover only the first CRD, silently reintroducing the operator-starts-
+	// before-CRD race for the rest. Refuse the shape outright; config/crd/ files
+	// are one CRD per file by construction (controller-gen output).
+	if err := ensureSingleDocument(content); err != nil {
+		return "", err
+	}
+	var doc struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return "", err
+	}
+	if doc.Kind != "CustomResourceDefinition" {
+		return "", fmt.Errorf("kind %q is not CustomResourceDefinition", doc.Kind)
+	}
+	if doc.Metadata.Name == "" {
+		return "", errors.New("metadata.name is empty")
+	}
+	return doc.Metadata.Name, nil
+}
+
+// ensureSingleDocument rejects a YAML stream holding more than one document. A
+// leading `---` marker (controller-gen emits one) is fine; a separator after
+// any content means a second document follows.
+func ensureSingleDocument(content []byte) error {
+	seenContent := false
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			if seenContent {
+				return errors.New("multi-document manifest; CRD files must hold exactly one CRD")
+			}
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			seenContent = true
+		}
+	}
+	return nil
+}
+
 // staticManifests walks the embedded config/ tree into a deterministic,
 // sorted list so a re-run writes the same files in the same order.
 func staticManifests() ([]manifestFile, error) {
+	return manifestsFromFS(config.StaticManifests)
+}
+
+// externalSecretsManifests returns the vendored External Secrets Operator set
+// (ADR-0018), embedded separately from StaticManifests so it can only ever be
+// written on opt-in.
+func externalSecretsManifests() ([]manifestFile, error) {
+	return manifestsFromFS(config.ExternalSecretsManifest)
+}
+
+func manifestsFromFS(fsys fs.FS) ([]manifestFile, error) {
 	var files []manifestFile
-	err := fs.WalkDir(config.StaticManifests, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || path.Ext(p) != ".yaml" {
 			return nil
 		}
-		content, err := config.StaticManifests.ReadFile(p)
+		content, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", p, err)
 		}

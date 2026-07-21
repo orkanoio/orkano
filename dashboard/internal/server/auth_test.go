@@ -35,12 +35,16 @@ type fakeStore struct {
 	audit      []db.AppendAuditEntryParams
 	deploys    []db.DeployHistory
 	settings   map[string]db.Setting
+	deliveries []db.EnqueueManualDeliveryParams
 	deployID   int64
 	nextUserID int64
 	failCreate bool
 	// settingsErr, when set, is returned by every settings method — simulates the
 	// DB being away from the wizard's setup endpoints.
 	settingsErr error
+	// enqueueErr simulates the platform queue being unavailable to a manual
+	// deploy request.
+	enqueueErr error
 	// confirmErr, when set, is returned by ConfirmUserTOTP — used to simulate the
 	// single-confirmed-admin unique-violation a concurrent redeem would trigger.
 	confirmErr error

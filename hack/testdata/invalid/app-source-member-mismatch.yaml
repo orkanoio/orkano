@@ -1,0 +1,14 @@
+# Violates: Source CEL — exactly one source member must be set.
+apiVersion: orkano.io/v1alpha1
+kind: App
+metadata:
+  name: invalid-source-members
+  namespace: orkano-apps
+spec:
+  source:
+    github:
+      repo: alice/app
+    git:
+      url: https://git.example.com/alice/app.git
+  build:
+    strategy: Dockerfile
