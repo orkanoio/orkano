@@ -17,8 +17,10 @@
 # loads inside the colima VM whose kernel the kind nodes share).
 # Local teardown: kind delete cluster --name orkano-e2e
 #
-# Env knobs: KEEP=1 leaves the cluster up after the run; CLEAN=1 deletes it on
-# exit; E2E_CLUSTER / SMOKE_NODE_IMAGE override the cluster name / node image.
+# Env knobs: KEEP=1 leaves the cluster up after the run and, only after every
+# hermetic assertion passes, switches build clones to DEVELOPMENT_GIT_BASE_URL
+# (default https://github.com/) for real-repository dogfooding. CLEAN=1 deletes
+# it on exit; E2E_CLUSTER / SMOKE_NODE_IMAGE override the cluster name / node image.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -631,8 +633,7 @@ kubectl delete pod build-canary -n orkano-builds >/dev/null 2>&1 || true
 # self-contained deploy + rollout/readyz probe over the platform the engine has
 # already stood up (Postgres + migrations + the orkano-dashboard RBAC/SA). It is
 # the M2.2 deferral: prove the orkano-dashboard binary boots against the real
-# orkano_dashboard role + schema, not just that the Go units pass. It never
-# redeems the install token, so the cluster stays at needs_bootstrap.
+# orkano_dashboard role + schema, not just that the Go units pass.
 log "deploy the dashboard and smoke its rollout + API (M2.6)"
 kubectl apply -f "$DIR/manifests/70-dashboard.yaml" >/dev/null
 kubectl rollout status deploy/orkano-dashboard -n orkano-system --timeout=180s \
@@ -649,16 +650,57 @@ wait_http "http://127.0.0.1:18091/readyz" 60 || fatal "dashboard /readyz never a
 # The embedded SPA (the placeholder page in this Node-free build) serves at root.
 curl -fsS -o /dev/null "http://127.0.0.1:18091/" || fatal "dashboard did not serve the SPA at /"
 # Functional proof: /api/auth/status queries the real dashboard schema as the
-# orkano_dashboard role. A fresh hermetic cluster has no admin (the token is never
-# redeemed), so CountConfirmedAdmins == 0 -> needs_bootstrap. This exercises the
-# /api router + the dashboard migrations (00003-00007) + the role's SELECT grant
+# orkano_dashboard role. A fresh cluster reports needs_bootstrap; a retained
+# KEEP=1 developer cluster with a confirmed admin reports needs_login. Both prove
+# the API router + dashboard migrations (00003-00007) + the role's SELECT grant
 # end to end — a strictly stronger check than /readyz's bare DB ping. No -f here:
 # a non-2xx must be captured into status_body so the fatal message is actionable.
 status_body="$(curl -sS "http://127.0.0.1:18091/api/auth/status" 2>/dev/null || true)"
 kill "$PF_PID" 2>/dev/null; PF_PID=""
-echo "$status_body" | grep -q '"needs_bootstrap"' \
-  || fatal "dashboard /api/auth/status did not report needs_bootstrap (got: '$status_body')"
-echo "OK: dashboard rolled out; /readyz + SPA answer; auth-status = needs_bootstrap"
+auth_state="$(printf '%s' "$status_body" | jq -r '.state // empty' 2>/dev/null || true)"
+case "$auth_state" in
+  needs_bootstrap|needs_login) ;;
+  *) fatal "dashboard /api/auth/status reported an invalid state (got: '$status_body')" ;;
+esac
+echo "OK: dashboard rolled out; /readyz + SPA answer; auth-status = $auth_state"
+
+# KEEP=1 means this is a persistent developer cluster, not an ephemeral CI
+# assertion. The entire suite above intentionally ran against the in-cluster
+# fixture first; switch only now so CI stays hermetic and the retained cluster
+# can build arbitrary real repositories. The dispatcher still uses the GitHub
+# API stub until a developer configures real GitHub App credentials, but manual
+# Builds and dashboard-driven dogfooding no longer rewrite clone URLs to the
+# fixture. Replace the flag by value, not array index, so manifest arg ordering
+# can change without silently patching the wrong setting.
+if [ "${KEEP:-}" = "1" ]; then
+  development_git_base_url="${DEVELOPMENT_GIT_BASE_URL:-https://github.com/}"
+  case "$development_git_base_url" in
+    https://*/|http://*/) ;;
+    *) fatal "DEVELOPMENT_GIT_BASE_URL must be an http(s) URL ending in /" ;;
+  esac
+  log "switch retained cluster builds to $development_git_base_url"
+  args_patch="$(kubectl get deployment orkano-operator -n orkano-system -o json | jq -c --arg base "$development_git_base_url" '
+    .spec.template.spec.containers[]
+    | select(.name == "operator")
+    | .args
+    | map(if startswith("--git-base-url=") then "--git-base-url=" + $base else . end)
+    | [{"op":"replace","path":"/spec/template/spec/containers/0/args","value":.}]
+  ')"
+  echo "$args_patch" | grep -q -- "--git-base-url=$development_git_base_url" \
+    || fatal "operator Deployment has no --git-base-url flag to replace"
+  kubectl patch deployment orkano-operator -n orkano-system --type=json -p "$args_patch" >/dev/null
+  kubectl rollout status deployment/orkano-operator -n orkano-system --timeout=180s \
+    || fatal "operator did not become Ready after switching to real Git"
+  live_git_arg="$(kubectl get deployment orkano-operator -n orkano-system -o json | jq -r '
+    .spec.template.spec.containers[]
+    | select(.name == "operator")
+    | .args[]
+    | select(startswith("--git-base-url="))
+  ')"
+  [ "$live_git_arg" = "--git-base-url=$development_git_base_url" ] \
+    || fatal "operator retained git mode is '$live_git_arg', want --git-base-url=$development_git_base_url"
+  echo "OK: retained cluster builds clone from $development_git_base_url"
+fi
 
 log "PASS — engine E2E + invariant probes + dashboard smoke"
 echo "cluster:        $CLUSTER ($(kind version))"
