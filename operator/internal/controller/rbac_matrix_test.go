@@ -718,6 +718,21 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	}
 	for name, namespaces := range humanRoleNamespaces {
 		for namespace := range namespaces {
+			if namespace == "" {
+				// A cluster-scoped human tuple (the viewer's node inventory) is
+				// granted by a ClusterRole of the same name; probe it through a
+				// ClusterRoleBinding, since a RoleBinding cannot exist unnamespaced.
+				crb := &rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "sar-probe-" + name},
+					RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: name},
+					Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: "sar-probe:" + name}},
+				}
+				if err := k8sClient.Create(ctx, crb); err != nil {
+					t.Fatalf("failed to cluster-bind probe user for role %s: %v", name, err)
+				}
+				t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), crb) })
+				continue
+			}
 			rb := &rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{Name: "sar-probe-" + name, Namespace: namespace},
 				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},

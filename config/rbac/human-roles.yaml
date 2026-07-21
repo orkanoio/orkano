@@ -61,3 +61,29 @@ subjects:
   - kind: Group
     apiGroup: rbac.authorization.k8s.io
     name: orkano:viewers
+---
+# The dashboard's Settings page lists cluster nodes — a cluster-scoped read no
+# namespaced Role can grant. Reuse the same fixed viewer group with a minimal
+# ClusterRole: node inventory only (get/list — no watch, the page polls), no
+# secrets, no mutation, nothing else cluster-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orkano-viewer
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orkano-viewers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: orkano-viewer
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: orkano:viewers

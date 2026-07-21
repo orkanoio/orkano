@@ -378,6 +378,19 @@ export interface SourceArchiveResponse {
   fileName: string;
 }
 
+export interface NodeInfo {
+  name: string;
+  roles: string[];
+  ready: boolean;
+  status: string;
+  unschedulable: boolean;
+  kubeletVersion: string;
+  osImage: string;
+  architecture: string;
+  internalIP: string;
+  creationTimestamp: string | null;
+}
+
 // Query keys, hierarchical so invalidating ["apps"] also drops every detail.
 export const appsKey = ["apps"] as const;
 export const appKey = (name: string) => ["apps", name] as const;
@@ -386,6 +399,7 @@ export const appDeploysKey = (name: string) =>
 export const appBuildsKey = (name: string) =>
   ["apps", name, "builds"] as const;
 export const featuresKey = ["features"] as const;
+export const nodesKey = ["nodes"] as const;
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
 export const postgresKey = (name: string) => ["postgres", name] as const;
@@ -427,6 +441,10 @@ export function fetchFeatures(): Promise<FeatureStatus[]> {
   return getJSON<{ features: FeatureStatus[] }>("/api/features").then(
     ({ features }) => features,
   );
+}
+
+export function listNodes(): Promise<NodeInfo[]> {
+  return listItems("/api/nodes");
 }
 
 export async function uploadSourceArchive(

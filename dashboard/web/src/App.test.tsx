@@ -212,7 +212,7 @@ describe("App auth gate", () => {
     expect(window.location.search).toBe("");
     expect(window.location.hash).toBe("#/setup");
     expect(
-      await screen.findByRole("heading", { name: "1. Access mode" }),
+      await screen.findByRole("heading", { name: "2. Access mode" }),
     ).toBeInTheDocument();
   });
 
