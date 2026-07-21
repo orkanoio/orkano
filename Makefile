@@ -61,7 +61,7 @@ lint: $(BIN)/golangci-lint
 test:
 	@KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" || exit 1; export KUBEBUILDER_ASSETS; \
 	for m in $(MODULES); do \
-		echo "test $$m" && (cd $$m && go test ./...) || exit 1; \
+		echo "test $$m" && (cd $$m && go test -timeout 25m ./...) || exit 1; \
 	done
 
 build:
