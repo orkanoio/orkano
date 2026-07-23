@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -88,6 +89,45 @@ func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, netpolEnforced 
 		}).Build()
 }
 
+// componentDeployment builds a ready orkano-system Deployment. Its single
+// container is named per deploymentEnv's TrimPrefix convention and carries an
+// explicit empty ORKANO_UNSAFE_FEATURES so features.unsafe-disabled probes a
+// definitive pass rather than erroring on a missing policy env.
+func componentDeployment(name string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: name},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name: strings.TrimPrefix(name, "orkano-"),
+						Env:  []corev1.EnvVar{{Name: "ORKANO_UNSAFE_FEATURES", Value: ""}},
+					}},
+				},
+			},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 1},
+	}
+}
+
+// healthyComponents is the set of ready orkano-system workloads that make
+// platform.components-ready pass (and lets features.unsafe-disabled flip from a
+// skip to a definitive pass). Threaded into a healthy fixture via the
+// doctorFakeCluster extra objects; the score-0/exit-1 failure-path tests
+// deliberately omit it so components-ready fails critical there.
+func healthyComponents() []ctrlclient.Object {
+	return []ctrlclient.Object{
+		componentDeployment("orkano-operator"),
+		componentDeployment("orkano-receiver"),
+		componentDeployment("orkano-registry"),
+		componentDeployment("orkano-dashboard"),
+		&appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "orkano-system", Name: "orkano-postgres"},
+			Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1},
+		},
+	}
+}
+
 // healthyClusterCert keeps the healthy-cluster fixtures passing the
 // tls.certificate-expiry check (a real install always has the platform PKI).
 func healthyClusterCert() ctrlclient.Object {
@@ -105,7 +145,7 @@ func healthyClusterCert() ctrlclient.Object {
 }
 
 func TestDoctorHealthyCluster(t *testing.T) {
-	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
+	gotPath := stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, append(healthyComponents(), healthyClusterCert())...), nil)
 
 	var out bytes.Buffer
 	err := runDoctor(context.Background(), &out, &doctorOptions{kubeconfig: "custom.kubeconfig"})
@@ -159,7 +199,7 @@ func TestDoctorJSONOutput(t *testing.T) {
 }
 
 func TestDoctorLocalRunsNodeChecks(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, append(healthyComponents(), healthyClusterCert())...), nil)
 	stubLocalNode(t, func(cmd string) (string, string, int) {
 		if cmd == "cat /sys/kernel/security/apparmor/profiles" {
 			return "orkano-buildkit (enforce)\n", "", 0
@@ -208,7 +248,7 @@ func TestDoctorIndeterminateExitsTwo(t *testing.T) {
 // the attempts reach the report: a fixable failing check registered through the
 // seam resolves and the resolved line renders.
 func TestDoctorFixFlow(t *testing.T) {
-	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
+	stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, append(healthyComponents(), healthyClusterCert())...), nil)
 	orig := registerDoctorChecks
 	t.Cleanup(func() { registerDoctorChecks = orig })
 	registerDoctorChecks = func(reg *checks.Registry, opt doctor.Options) error {
@@ -248,7 +288,7 @@ func TestDoctorFixFlow(t *testing.T) {
 // into a CI failure.
 func TestDoctorMinScoreGate(t *testing.T) {
 	t.Run("below threshold fails", func(t *testing.T) {
-		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyComponents()...), nil)
 
 		var out bytes.Buffer
 		err := runDoctor(context.Background(), &out, &doctorOptions{minScore: 100})
@@ -266,7 +306,7 @@ func TestDoctorMinScoreGate(t *testing.T) {
 		}
 	})
 	t.Run("same cluster passes without the gate", func(t *testing.T) {
-		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyComponents()...), nil)
 
 		var out bytes.Buffer
 		if err := runDoctor(context.Background(), &out, &doctorOptions{}); err != nil {
@@ -274,7 +314,7 @@ func TestDoctorMinScoreGate(t *testing.T) {
 		}
 	})
 	t.Run("met threshold passes", func(t *testing.T) {
-		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyClusterCert()), nil)
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, append(healthyComponents(), healthyClusterCert())...), nil)
 
 		var out bytes.Buffer
 		if err := runDoctor(context.Background(), &out, &doctorOptions{minScore: 100}); err != nil {
@@ -310,7 +350,7 @@ func TestDoctorMinScoreGate(t *testing.T) {
 		}
 	})
 	t.Run("json exit code reflects the gate", func(t *testing.T) {
-		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true), nil)
+		stubDoctorClient(t, doctorFakeCluster(t, corev1.ServiceTypeClusterIP, true, healthyComponents()...), nil)
 
 		var out bytes.Buffer
 		err := runDoctor(context.Background(), &out, &doctorOptions{jsonOut: true, minScore: 100})
