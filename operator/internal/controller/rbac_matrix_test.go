@@ -39,6 +39,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/orkanoio/orkano/internal/doctor"
 )
 
 const (
@@ -756,6 +758,8 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{identity: dashboardIdentity, namespace: "", group: "", resource: "groups", resourceName: "orkano:viewers", verb: "impersonate"},
 		// The dashboard's orkano-system credential-write grant (orkano-dashboard-credentials).
 		{identity: dashboardIdentity, namespace: systemNamespace, resource: "secrets", resourceName: "orkano-github-app", verb: "update"},
+		// The dashboard doctor face's orkano-system viewer RoleBinding.
+		{identity: humanIdentityPrefix + "orkano-viewer", namespace: systemNamespace, group: "apps", resource: "statefulsets", resourceName: "orkano-postgres", verb: "get"},
 	}
 	for name := range humanRoles {
 		canaries = append(canaries, rbacTuple{identity: humanIdentityPrefix + name, namespace: appsNamespace, group: "orkano.io", resource: "apps", verb: "get"})
@@ -815,6 +819,20 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		}
 	}
 
+	// The dashboard doctor face's viewer reads in orkano-system and cluster-scope
+	// are pinned by resourceNames; prove the pins bind by naming peers the viewer
+	// must never reach (the nameless request is covered by the denied walk).
+	viewerProbe := sarUser(humanIdentityPrefix + "orkano-viewer")
+	if sarAllowed(t, ctx, viewerProbe, systemNamespace, "", "services", "orkano-registry", "get") {
+		t.Error("viewer may get services/orkano-registry in orkano-system, but only orkano-dashboard is pinned")
+	}
+	if sarAllowed(t, ctx, viewerProbe, systemNamespace, "apps", "deployments", "orkano-postgres", "get") {
+		t.Error("viewer may get deployments/orkano-postgres in orkano-system, but that name is not in the deployments pin")
+	}
+	if sarAllowed(t, ctx, viewerProbe, "", "", "namespaces", "default", "get") {
+		t.Error("viewer may get namespaces/default, but only kube-system is pinned")
+	}
+
 	// The shipped orkano:viewers -> orkano-viewer binding makes the impersonated
 	// reads work out of the box: wait for the group binding to authorize a read...
 	eventually(t, "the orkano:viewers group binding to authorize a read", func(ctx context.Context) (bool, error) {
@@ -824,6 +842,49 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 	if sarAllowedAs(t, ctx, "orkano:viewer", []string{"orkano:viewers"}, appsNamespace, "orkano.io", "apps", "delete") {
 		t.Error("a member of orkano:viewers may delete apps, but orkano-viewer is read-only")
 	}
+
+	// A live authorizer proof that the shipped viewer grants actually satisfy the
+	// dashboard doctor face's reads: build the same impersonated identity the
+	// dashboard uses (orkano:viewer in group orkano:viewers — the literals are
+	// duplicated because dashboard/internal/server is unimportable here) and run
+	// every read-only doctor check's Probe through it, failing only on a
+	// Forbidden. It runs here, after the manifests are applied and the canary
+	// warm-up has let the authorizer catch up, so it never races informer
+	// propagation. Deliberately partial: reads behind CRDs absent from envtest
+	// (k3s ETCDSnapshotFile, traefik, ESO) NoMatch-skip before reaching the
+	// authorizer, so the guard covers the resourceNames-pinned gets (components/
+	// features/exposure), both Certificate lists, and the orkano-system Ingress
+	// list — exactly the surface TestComponentsMatchReadinessTargets can force to
+	// drift. NotFound/NoMatch-driven fail/skip outcomes against the near-empty
+	// suite are expected; only a Forbidden means a missing grant.
+	viewerCfg := rest.CopyConfig(restConfig)
+	viewerCfg.Impersonate = rest.ImpersonationConfig{
+		UserName: "orkano:viewer",
+		Groups:   []string{"orkano:viewers"},
+	}
+	viewerClient, err := client.New(viewerCfg, client.Options{Scheme: k8sClient.Scheme()})
+	if err != nil {
+		t.Fatalf("build impersonated viewer client: %v", err)
+	}
+	// The exposure check skips (and never lists Ingresses) unless the dashboard
+	// Service exists, so create it to drive that read past the skip.
+	dashSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: systemNamespace, Name: "orkano-dashboard"},
+		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, Ports: []corev1.ServicePort{{Port: 80}}},
+	}
+	if err := k8sClient.Create(ctx, dashSvc); err != nil {
+		t.Fatalf("create dashboard Service: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), dashSvc) })
+
+	probed := 0
+	for _, c := range doctor.ReadOnlyChecks(doctor.Options{Client: viewerClient, SkipSecretReads: true}) {
+		probed++
+		if _, err := c.Probe(ctx); apierrors.IsForbidden(err) {
+			t.Errorf("%s: viewer denied a dashboard-face read: %v", c.ID, err)
+		}
+	}
+	t.Logf("dashboard viewer-face probe: ran %d read-only doctor checks with no Forbidden", probed)
 
 	// The denied walk: every combination of the identities, the doc's
 	// resource universe plus high-value canaries, every verb, every scope —

@@ -57,6 +57,10 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 	// Cluster node inventory for the Settings page — a read view like the rest,
 	// through the impersonated viewer's cluster-scoped nodes grant.
 	r.With(s.RequireSession).Get("/api/nodes", s.handleListNodes)
+	// The dashboard doctor face: a read-only, value-blind run of the doctor
+	// cluster checks under the impersonated viewer. A read view — session tier,
+	// no step-up, no audit.
+	r.With(s.RequireSession).Get("/api/doctor", s.handleDoctor)
 	r.Route("/api/apps", func(ar chi.Router) {
 		ar.Use(s.RequireSession)
 		ar.Get("/", s.handleListApps)

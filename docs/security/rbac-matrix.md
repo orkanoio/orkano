@@ -57,7 +57,12 @@ No Kubernetes permissions and no token mounted (`automountServiceAccountToken: f
 | orkano-admin | apps, builds, domains, postgreses, mongoes (orkano.io) | get, list, watch, create, update, patch, delete | `orkano-apps` |
 | | pods, pods/log (core) | get, list, watch | `orkano-apps` |
 | orkano-viewer | apps, builds, domains, postgreses, mongoes (orkano.io); pods, pods/log (core); secretstores, externalsecrets (external-secrets.io) | get, list, watch | `orkano-apps` — the dashboard's impersonation target, bound to the orkano:viewers group; the ESO kinds back the vault status views (ADR-0018) and hold configuration, never values |
+| | certificates (cert-manager.io) | list | `orkano-apps` — the dashboard doctor's TLS check lists the per-Domain ACME leaf Certificates; status only, never values |
 | | pods, pods/log (core) | get, list, watch | `orkano-builds` — historical and live BuildKit output for Build attempts selected in the dashboard; no Jobs or Secrets access |
-| | nodes (core) | get, list | cluster-scoped — read-only node inventory for the dashboard's Settings page and the setup wizard's cluster step; no watch (the views poll), and no other cluster-scoped access joins it |
+| | services[orkano-dashboard] (core); deployments[orkano-operator], deployments[orkano-receiver], deployments[orkano-registry], deployments[orkano-dashboard] (apps); statefulsets[orkano-postgres] (apps) | get | `orkano-system` — the dashboard doctor's platform-components, unsafe-features and dashboard-exposure checks read these control-plane workloads and the dashboard Service by name |
+| | ingresses (networking.k8s.io); ingressroutes, ingressroutetcps (traefik.io); certificates (cert-manager.io) | list | `orkano-system` — the exposure check lists Ingresses and Traefik IngressRoutes that might route to the dashboard, and the TLS check lists cert-manager Certificates |
+| | nodes (core) | get, list | cluster-scoped — read-only node inventory for the dashboard's Settings page and the setup wizard's cluster step; no watch (the views poll) |
+| | etcdsnapshotfiles (k3s.cattle.io) | list | cluster-scoped — the dashboard doctor's etcd-backup check reads k3s's snapshot records; list only, no watch |
+| | namespaces[kube-system] (core) | get | cluster-scoped — the etcd-backup check reads the cluster's age from kube-system when no snapshots exist |
 
 Humans get no secrets verbs at all in v1 — secret writes flow through the dashboard SA's value-blind path, and values are never displayed.

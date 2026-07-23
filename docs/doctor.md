@@ -81,3 +81,18 @@ check that only becomes fixable after another fix lands needs a second run.
 Checks that errored or were blocked are never auto-remediated — doctor does not
 "fix" what it cannot see. The plain report marks fixable failures and suggests
 the flag.
+
+## In the dashboard
+
+The dashboard surfaces the same checks on its Doctor page, running them
+per-request as the impersonated read-only viewer rather than the admin
+kubeconfig. It reports the **read-only subset**: `net.networkpolicy-enforced` is
+omitted because it creates pods (the viewer holds no such grant), and
+`secrets.store-health` runs value-blind — it cannot read a target Secret to
+confirm existence, so that one leg is verified only by the CLI `orkano doctor`.
+Per-check outcomes, messages and remediations match the CLI report; the score
+and status use the same semantics but are computed over the read-only subset, so
+they can differ from a CLI run — in particular, a failing network-policy probe
+lowers the CLI score and exit code without affecting the dashboard's. Run
+`orkano doctor` for the full set, including the live network-policy probe and the
+target-Secret existence check.
