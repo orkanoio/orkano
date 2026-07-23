@@ -110,6 +110,13 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 				return check.Result{Status: check.StatusFail, Message: strings.Join(problems, "; ")}, nil
 			}
 
+			if opt.SkipSecretReads {
+				return check.Result{
+					Status: check.StatusPass,
+					Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) healthy — target-Secret existence is verified only by the CLI doctor",
+						len(stores.Items), len(syncs.Items)),
+				}, nil
+			}
 			return check.Result{
 				Status: check.StatusPass,
 				Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) healthy with their target Secrets present",
@@ -169,6 +176,12 @@ func checkExternalSecret(ctx context.Context, opt Options, es *unstructured.Unst
 	}
 
 	// The produced Secret must actually exist — the App references it by name.
+	// The dashboard face runs value-blind (Options.SkipSecretReads): its viewer
+	// identity holds no `secrets get`, so it cannot read the target to confirm
+	// it, and the CLI doctor verifies existence instead.
+	if opt.SkipSecretReads {
+		return "", nil
+	}
 	target := name
 	if t, _, _ := unstructured.NestedString(es.Object, "spec", "target", "name"); t != "" {
 		target = t

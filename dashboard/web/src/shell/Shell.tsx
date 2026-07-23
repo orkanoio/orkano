@@ -5,6 +5,7 @@ import {
   LayoutGrid,
   Settings,
   SlidersHorizontal,
+  Stethoscope,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -27,6 +28,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { authStatusKey, logout, type AuthStatus } from "@/lib/api";
 import { Link, routeSegments, useRoute } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { DoctorPage } from "@/doctor/DoctorPage";
 import { SettingsPage } from "@/settings/SettingsPage";
 import { SetupWizard } from "@/setup/SetupWizard";
 
@@ -91,6 +93,13 @@ export function Shell({
               icon={SlidersHorizontal}
             >
               Setup
+            </NavLink>
+            <NavLink
+              to="/doctor"
+              active={isSection(route, "doctor")}
+              icon={Stethoscope}
+            >
+              Doctor
             </NavLink>
             <NavLink
               to="/settings"
@@ -193,6 +202,9 @@ function routeContent(segments: string[]): ReactNode {
   }
   if (head === "setup") {
     return <SetupWizard />;
+  }
+  if (head === "doctor") {
+    return <DoctorPage />;
   }
   if (head === "settings") {
     return <SettingsPage />;

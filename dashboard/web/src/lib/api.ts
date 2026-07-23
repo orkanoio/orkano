@@ -815,3 +815,37 @@ export function createExternalSecret(body: {
 export async function deleteExternalSecret(name: string): Promise<void> {
   await send("DELETE", `/api/externalsecrets/${encodeURIComponent(name)}`);
 }
+
+// ---------------------------------------------------------------------------
+// Doctor (dashboard face of the shared check framework, dashboard/internal/
+// server doctor.go): the read-only check subset run per-request as the
+// impersonated viewer. The per-check shape reuses SetupCheck — both are faces
+// of the same registry — while status/score/summary mirror the run's own
+// ExitCode/Score/Summary verbatim.
+
+export const doctorKey = ["doctor"] as const;
+
+export interface DoctorReport {
+  status: "healthy" | "unhealthy" | "indeterminate";
+  score: {
+    value: number;
+    earned: number;
+    possible: number;
+    passed: number;
+    scored: number;
+  };
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    errored: number;
+    blocked: number;
+    skipped: number;
+  };
+  checks: SetupCheck[];
+  checkedAt: string;
+}
+
+export function fetchDoctorReport(): Promise<DoctorReport> {
+  return getJSON("/api/doctor");
+}

@@ -34,6 +34,11 @@ rules:
   - apiGroups: ["external-secrets.io"]
     resources: ["secretstores", "externalsecrets"]
     verbs: ["get", "list", "watch"]
+  # The dashboard doctor's TLS check lists cert-manager Certificates in
+  # orkano-apps too (the per-Domain ACME leaves live here); status only.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["list"]
 ---
 # BuildKit logs live with the build Job pods, outside orkano-apps. Reuse the
 # same fixed viewer group with a second namespace-local read-only Role; no Job
@@ -62,10 +67,67 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
     name: orkano:viewers
 ---
-# The dashboard's Settings page lists cluster nodes — a cluster-scoped read no
-# namespaced Role can grant. Reuse the same fixed viewer group with a minimal
-# ClusterRole: node inventory only (get/list — no watch, the page polls), no
-# secrets, no mutation, nothing else cluster-scoped.
+# The dashboard doctor face (a read-only run under the impersonated viewer)
+# reads platform-component health in orkano-system. Every grant maps 1:1 to a
+# doctor read: pinned get-by-name for the workloads and the dashboard Service,
+# namespace-scoped list for the exposure and TLS checks. No secrets, no
+# mutation — the value-blind viewer never gains `secrets get`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-viewer
+  namespace: orkano-system
+rules:
+  # exposure.dashboard-not-public reads the dashboard Service by name.
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["orkano-dashboard"]
+    verbs: ["get"]
+  # platform.components-ready and features.unsafe-disabled read the control-plane
+  # Deployments by name.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["orkano-operator", "orkano-receiver", "orkano-registry", "orkano-dashboard"]
+    verbs: ["get"]
+  # platform.components-ready reads the platform Postgres StatefulSet by name.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: ["orkano-postgres"]
+    verbs: ["get"]
+  # exposure.dashboard-not-public lists Ingresses and Traefik IngressRoutes that
+  # might route to the dashboard.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["list"]
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "ingressroutetcps"]
+    verbs: ["list"]
+  # tls.certificate-expiry lists cert-manager Certificates (the internal CA and
+  # registry/receiver leaves live here).
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-viewers
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-viewer
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: orkano:viewers
+---
+# The dashboard's Settings page lists cluster nodes, and the dashboard doctor's
+# etcd-backup check reads k3s's cluster-scoped snapshot records and the
+# cluster's age from kube-system — cluster-scoped reads no namespaced Role can
+# grant. Reuse the same fixed viewer group with a minimal ClusterRole: node
+# inventory (get/list — no watch, the page polls), snapshot-record list, and a
+# name-pinned get on the kube-system namespace. No secrets, no mutation.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -74,6 +136,13 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
+  - apiGroups: ["k3s.cattle.io"]
+    resources: ["etcdsnapshotfiles"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["kube-system"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -272,6 +272,7 @@ func TestChecksContract(t *testing.T) {
 		id       string
 		severity check.Severity
 	}{
+		{"platform.components-ready", check.SeverityCritical},
 		{"exposure.dashboard-not-public", check.SeverityCritical},
 		{"tls.certificate-expiry", check.SeverityWarning},
 		{"backup.etcd-snapshot-age", check.SeverityWarning},
@@ -279,9 +280,77 @@ func TestChecksContract(t *testing.T) {
 		{"secrets.store-health", check.SeverityWarning},
 		{"features.unsafe-disabled", check.SeverityWarning},
 	}
-	cs := doctor.Checks(doctor.Options{})
+	assertContract(t, doctor.Checks(doctor.Options{}), want)
+}
+
+// TestReadOnlyChecksContract pins the dashboard doctor face's set: the same
+// checks as Checks in the same order, minus the one pod-creating probe
+// (net.networkpolicy-enforced). Two guards bracket the set relationship —
+// ReadOnlyChecks must be a subset of Checks by ID, and the exact difference
+// Checks minus ReadOnlyChecks must be exactly {net.networkpolicy-enforced} — so
+// a check added to either set alone forces a deliberate decision about whether
+// the dashboard face should run it.
+func TestReadOnlyChecksContract(t *testing.T) {
+	want := []struct {
+		id       string
+		severity check.Severity
+	}{
+		{"platform.components-ready", check.SeverityCritical},
+		{"exposure.dashboard-not-public", check.SeverityCritical},
+		{"tls.certificate-expiry", check.SeverityWarning},
+		{"backup.etcd-snapshot-age", check.SeverityWarning},
+		{"secrets.store-health", check.SeverityWarning},
+		{"features.unsafe-disabled", check.SeverityWarning},
+	}
+	ro := doctor.ReadOnlyChecks(doctor.Options{})
+	assertContract(t, ro, want)
+
+	for _, c := range ro {
+		if c.ID == "net.networkpolicy-enforced" {
+			t.Errorf("ReadOnlyChecks must not include the pod-creating netpol probe")
+		}
+	}
+
+	full := map[string]bool{}
+	for _, c := range doctor.Checks(doctor.Options{}) {
+		full[c.ID] = true
+	}
+	for _, c := range ro {
+		if !full[c.ID] {
+			t.Errorf("ReadOnlyChecks has %q, which Checks does not — the read-only set must be a subset", c.ID)
+		}
+	}
+
+	// The subset guard above cannot fire when a check is added to Checks() alone;
+	// pin the exact difference so that case is caught too — everything Checks has
+	// that ReadOnlyChecks lacks must be exactly the one deliberate CLI-only probe.
+	roIDs := map[string]bool{}
+	for _, c := range ro {
+		roIDs[c.ID] = true
+	}
+	var cliOnly []string
+	for _, c := range doctor.Checks(doctor.Options{}) {
+		if !roIDs[c.ID] {
+			cliOnly = append(cliOnly, c.ID)
+		}
+	}
+	for _, id := range cliOnly {
+		if id != "net.networkpolicy-enforced" {
+			t.Errorf("check %q is in Checks but not ReadOnlyChecks — either add it to ReadOnlyChecks or pin it as a deliberate CLI-only exclusion here", id)
+		}
+	}
+	if len(cliOnly) != 1 {
+		t.Errorf("Checks minus ReadOnlyChecks = %v, want exactly [net.networkpolicy-enforced]", cliOnly)
+	}
+}
+
+func assertContract(t *testing.T, cs []check.Check, want []struct {
+	id       string
+	severity check.Severity
+}) {
+	t.Helper()
 	if len(cs) != len(want) {
-		t.Fatalf("Checks() returned %d checks, want %d", len(cs), len(want))
+		t.Fatalf("got %d checks, want %d", len(cs), len(want))
 	}
 	for i, w := range want {
 		c := cs[i]

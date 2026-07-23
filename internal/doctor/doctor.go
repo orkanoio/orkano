@@ -46,6 +46,13 @@ type Options struct {
 	// Now is the doctor's clock for age and expiry math; defaults to time.Now.
 	// Injected in tests, mirroring preflight.Options.
 	Now func() time.Time
+	// SkipSecretReads makes secrets.store-health skip the target-Secret
+	// existence Get. The dashboard doctor face runs value-blind (INV-03/
+	// ADR-0013): its impersonated viewer identity never gains `secrets get`, so
+	// it cannot read a Secret to confirm it exists. Skipping is outcome-neutral —
+	// a Ready, fresh sync still passes — and the healthy message says existence
+	// is verified only by the CLI doctor, so the report never overclaims.
+	SkipSecretReads bool
 }
 
 func (o Options) now() time.Time {
@@ -62,9 +69,11 @@ func (o Options) maxSnapshotAge() time.Duration {
 	return DefaultMaxSnapshotAge
 }
 
-// Checks returns the doctor's cluster checks for the given options.
+// Checks returns the doctor's cluster checks for the given options. Components
+// first — "is Orkano even running" precedes any report on how it is configured.
 func Checks(opt Options) []check.Check {
 	return []check.Check{
+		componentsReadyCheck(opt),
 		dashboardNotPublicCheck(opt),
 		certificateExpiryCheck(opt),
 		etcdSnapshotAgeCheck(opt),
@@ -74,9 +83,35 @@ func Checks(opt Options) []check.Check {
 	}
 }
 
+// ReadOnlyChecks is the dashboard doctor face's set: Checks minus
+// net.networkpolicy-enforced, the one pod-creating probe. The dashboard runs
+// value-blind under the impersonated viewer, which holds no grant to create
+// pods, and PRD principle #9 reserves canary-pod probing for the CLI's explicit
+// disclosure — so the dashboard reports the read-only subset only. Same order
+// as Checks.
+func ReadOnlyChecks(opt Options) []check.Check {
+	return []check.Check{
+		componentsReadyCheck(opt),
+		dashboardNotPublicCheck(opt),
+		certificateExpiryCheck(opt),
+		etcdSnapshotAgeCheck(opt),
+		secretsStoreHealthCheck(opt),
+		unsafeFeaturesDisabledCheck(opt),
+	}
+}
+
 // Register adds every doctor cluster check to reg.
 func Register(reg *checks.Registry, opt Options) error {
-	for _, c := range Checks(opt) {
+	return registerAll(reg, Checks(opt))
+}
+
+// RegisterReadOnly adds the dashboard doctor face's read-only check set to reg.
+func RegisterReadOnly(reg *checks.Registry, opt Options) error {
+	return registerAll(reg, ReadOnlyChecks(opt))
+}
+
+func registerAll(reg *checks.Registry, cs []check.Check) error {
+	for _, c := range cs {
 		if err := reg.Register(c); err != nil {
 			return fmt.Errorf("register %s: %w", c.ID, err)
 		}

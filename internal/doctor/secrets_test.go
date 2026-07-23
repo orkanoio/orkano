@@ -30,6 +30,20 @@ func probeStoreHealth(t *testing.T, c client.Client, now time.Time) (check.Resul
 	return check.Result{}, nil
 }
 
+// probeStoreHealthSkip runs the store-health check through ReadOnlyChecks with
+// the value-blind SkipSecretReads knob set — the dashboard doctor face's path.
+func probeStoreHealthSkip(t *testing.T, c client.Client, now time.Time) (check.Result, error) {
+	t.Helper()
+	opt := doctor.Options{Client: c, Now: func() time.Time { return now }, SkipSecretReads: true}
+	for _, ck := range doctor.ReadOnlyChecks(opt) {
+		if ck.ID == doctor.IDSecretsStoreHealth {
+			return ck.Probe(context.Background())
+		}
+	}
+	t.Fatalf("check %s not registered", doctor.IDSecretsStoreHealth)
+	return check.Result{}, nil
+}
+
 func esoObject(kind, name string, ready string, extra func(map[string]interface{})) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "external-secrets.io/v1",
@@ -158,6 +172,49 @@ func TestSecretsStoreHealth(t *testing.T) {
 		res, err := probeStoreHealth(t, c, now)
 		if err != nil || res.Status != check.StatusFail || !strings.Contains(res.Message, "target Secret") {
 			t.Fatalf("got %+v, %v — want missing-target fail", res, err)
+		}
+	})
+
+	// The dashboard face runs value-blind: it cannot read the target Secret, so
+	// its absence is undetectable there — a Ready, fresh sync passes, and the
+	// message says existence is CLI-verified only. The same cluster fails when
+	// the knob is off, proving skipping does not change the outcome by itself.
+	t.Run("skip-secret-reads passes an unread missing target and notes the CLI", func(t *testing.T) {
+		c := fakeClient(t,
+			esoObject("SecretStore", "team-vault", "True", nil),
+			freshSync("api-stripe", now, "api-stripe"),
+		)
+		res, err := probeStoreHealthSkip(t, c, now)
+		if err != nil || res.Status != check.StatusPass {
+			t.Fatalf("got %+v, %v — a value-blind run must not fail on an unread target", res, err)
+		}
+		if !strings.Contains(res.Message, "CLI doctor") {
+			t.Errorf("healthy skip message %q should note existence is CLI-verified only", res.Message)
+		}
+		if res, err := probeStoreHealth(t, c, now); err != nil || res.Status != check.StatusFail {
+			t.Fatalf("got %+v, %v — with reads on, the missing target must fail", res, err)
+		}
+	})
+
+	// Skipping the target-Secret read is the ONLY thing value-blind mode changes:
+	// every other failure the CLI would report still fails under the knob.
+	t.Run("skip-secret-reads still fails a stale sync", func(t *testing.T) {
+		stale := esoObject("ExternalSecret", "api-stripe", "True", func(o map[string]interface{}) {
+			o["spec"] = map[string]interface{}{"refreshInterval": "1h"}
+			o["status"].(map[string]interface{})["refreshTime"] = now.Add(-3 * time.Hour).Format(time.RFC3339)
+		})
+		res, err := probeStoreHealthSkip(t, fakeClient(t, stale), now)
+		if err != nil || res.Status != check.StatusFail || !strings.Contains(res.Message, "cannot refresh") {
+			t.Fatalf("got %+v, %v — a stale sync must fail even value-blind", res, err)
+		}
+	})
+
+	t.Run("skip-secret-reads still fails a not-ready sync", func(t *testing.T) {
+		c := fakeClient(t, esoObject("ExternalSecret", "api-stripe", "False", nil))
+		res, err := probeStoreHealthSkip(t, c, now)
+		if err != nil || res.Status != check.StatusFail ||
+			!strings.Contains(res.Message, "api-stripe") || !strings.Contains(res.Message, "not Ready") {
+			t.Fatalf("got %+v, %v — a not-Ready sync must fail even value-blind", res, err)
 		}
 	})
 
