@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"path"
 	"strings"
 	"testing"
@@ -25,6 +27,11 @@ type fakeNode struct {
 	crdWaitFail bool
 	failSecret  string // secret name whose `kubectl apply` fails
 
+	// runErr maps a substring of the RAW command to a transport error, so the
+	// "couldn't run at all" branches (distinct from a non-zero exit, which is a
+	// Result) are reachable from tests.
+	runErr map[string]error
+
 	// readiness scripting, keyed by "ns/kind/name".
 	readyAfter map[string]int  // polls before the workload reports ready
 	pollCount  map[string]int  // polls seen so far
@@ -43,6 +50,11 @@ func newFakeNode() *fakeNode {
 
 func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 	f.cmds = append(f.cmds, raw)
+	for sub, err := range f.runErr {
+		if strings.Contains(raw, sub) {
+			return ssh.Result{}, err
+		}
+	}
 	cmd := strings.ReplaceAll(raw, "sudo ", "") // sudo never appears in a base64 payload
 
 	switch {
@@ -90,8 +102,18 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 		// chunked finalize: `mv PATH.tmp PATH [&& chmod …]`
 		fields := strings.Fields(cmd)
 		src, dst := fields[1], fields[2]
-		f.files[dst] = f.files[src]
+		// Real mv exits 1 on a missing source and creates nothing; modelling it
+		// as success would let a wrong source path pass as an empty file.
+		c, ok := f.files[src]
+		if !ok {
+			return ssh.Result{Stderr: "mv: cannot stat '" + src + "': No such file or directory", ExitStatus: 1}, nil
+		}
+		f.files[dst] = c
 		delete(f.files, src)
+		return ssh.Result{}, nil
+
+	case strings.HasPrefix(cmd, "rm -f "):
+		delete(f.files, strings.TrimPrefix(cmd, "rm -f "))
 		return ssh.Result{}, nil
 
 	case strings.HasPrefix(cmd, "cat "):
@@ -237,7 +259,7 @@ func TestApplyWritesAllStaticManifests(t *testing.T) {
 	// Sanity: a few known manifests landed under their flattened names (CRDs,
 	// namespaces, the platform DB, the registry).
 	for _, want := range []string{
-		"crd-orkano.io_apps.yaml",
+		"crd-orkano-io-apps.yaml",
 		"namespaces-namespaces.yaml",
 		"components-platform-postgres.yaml",
 		"registry-registry.yaml",
@@ -262,11 +284,11 @@ func TestApplyAppliesCRDsBeforeComponents(t *testing.T) {
 
 	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
 	for _, name := range []string{
-		"crd-orkano.io_apps.yaml",
-		"crd-orkano.io_builds.yaml",
-		"crd-orkano.io_domains.yaml",
-		"crd-orkano.io_mongoes.yaml",
-		"crd-orkano.io_postgreses.yaml",
+		"crd-orkano-io-apps.yaml",
+		"crd-orkano-io-builds.yaml",
+		"crd-orkano-io-domains.yaml",
+		"crd-orkano-io-mongoes.yaml",
+		"crd-orkano-io-postgreses.yaml",
 	} {
 		want := path.Join(base, name)
 		found := false
@@ -288,7 +310,7 @@ func TestApplyAppliesCRDsBeforeComponents(t *testing.T) {
 			strings.Contains(c, "crd/postgreses.orkano.io")
 	})
 	operatorWriteIdx := cmdIndex(n.cmds, func(c string) bool {
-		return strings.Contains(c, "operator-deployment.yaml") && strings.Contains(c, "| base64 -d |")
+		return strings.Contains(c, "components-operator-deployment.yaml") && strings.Contains(c, "| base64 -d |")
 	})
 	if waitIdx < 0 {
 		t.Fatal("expected a CRD Established wait")
@@ -311,7 +333,7 @@ func TestApplyFailsWhenCRDsDoNotEstablish(t *testing.T) {
 	if !strings.Contains(err.Error(), "wait for CRDs to be established") {
 		t.Fatalf("expected CRD wait error, got %v", err)
 	}
-	if _, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "operator-deployment.yaml")]; ok {
+	if _, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "components-operator-deployment.yaml")]; ok {
 		t.Fatal("operator manifest should not be written before CRDs are established")
 	}
 }
@@ -413,6 +435,320 @@ func TestApplyIdempotent(t *testing.T) {
 	// a still-converging server). Both are idempotent no-ops on a healthy node.
 	if len(n.appliedCRDs) == 0 {
 		t.Error("expected the CRD apply to converge even on a no-op re-run")
+	}
+}
+
+func TestApplyMigratesCollidingCRDManifestNames(t *testing.T) {
+	n := newFakeNode()
+	files, err := staticManifests()
+	if err != nil {
+		t.Fatalf("staticManifests: %v", err)
+	}
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	var migrated int
+	replacementAlreadyPresent := false
+	for _, f := range files {
+		if f.legacyName == "" {
+			n.files[path.Join(base, f.name)] = string(f.content)
+			continue
+		}
+		n.files[path.Join(base, f.legacyName)] = string(f.content)
+		if !replacementAlreadyPresent {
+			n.files[path.Join(base, f.name)] = string(f.content)
+			replacementAlreadyPresent = true
+		}
+		migrated++
+	}
+	if migrated != 5 {
+		t.Fatalf("expected the five Orkano CRDs to need migration, got %d", migrated)
+	}
+
+	res, err := Apply(context.Background(), n, Config{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected the legacy-name migration to report a change")
+	}
+	for _, f := range files {
+		if f.legacyName == "" {
+			continue
+		}
+		if _, ok := n.files[path.Join(base, f.legacyName)]; ok {
+			t.Errorf("legacy manifest %s remains", f.legacyName)
+		}
+		if got := n.files[path.Join(base, f.name)]; got != string(f.content) {
+			t.Errorf("replacement manifest %s has wrong content", f.name)
+		}
+	}
+	if !hasCmd(n.cmds, func(cmd string) bool { return strings.HasPrefix(cmd, "rm -f ") }) {
+		t.Fatal("expected a partially migrated install to remove the legacy duplicate")
+	}
+
+	res, err = Apply(context.Background(), n, Config{})
+	if err != nil {
+		t.Fatalf("idempotent Apply: %v", err)
+	}
+	if res.Changed {
+		t.Fatal("expected migrated manifests to be idempotent on the next run")
+	}
+}
+
+// TestMigrateLegacyManifests drives the migration directly, where the
+// intermediate state is still observable. Through Apply the following
+// ensureFile overwrites every file with the correct bytes, so an mv that moved
+// the wrong file — or never ran — is indistinguishable from a correct one.
+func TestMigrateLegacyManifests(t *testing.T) {
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	files := []manifestFile{
+		{name: "crd-a.yaml", legacyName: "crd-a.io_x.yaml", content: []byte("new-a")},
+		{name: "crd-b.yaml", legacyName: "crd-b.io_x.yaml", content: []byte("new-b")},
+		{name: "plain.yaml", content: []byte("plain")},
+	}
+
+	for _, sudo := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sudo=%v", sudo), func(t *testing.T) {
+			n := newFakeNode()
+			// crd-a has no replacement yet -> mv; crd-b already has one -> rm.
+			n.files[path.Join(base, "crd-a.io_x.yaml")] = "legacy-a"
+			n.files[path.Join(base, "crd-b.io_x.yaml")] = "legacy-b"
+			n.files[path.Join(base, "crd-b.yaml")] = "stale-b"
+			n.files[path.Join(base, "plain.yaml")] = "plain"
+
+			changed, err := newNode(n, sudo, nil).migrateLegacyManifests(context.Background(), base, files)
+			if err != nil {
+				t.Fatalf("migrateLegacyManifests: %v", err)
+			}
+			if !changed {
+				t.Fatal("expected the migration to report a change")
+			}
+
+			// mv must land the legacy bytes at the RIGHT destination.
+			if got := n.files[path.Join(base, "crd-a.yaml")]; got != "legacy-a" {
+				t.Errorf("crd-a.yaml = %q, want the migrated legacy content", got)
+			}
+			// rm must leave an existing replacement untouched.
+			if got := n.files[path.Join(base, "crd-b.yaml")]; got != "stale-b" {
+				t.Errorf("crd-b.yaml = %q, want the existing replacement preserved", got)
+			}
+			for _, legacy := range []string{"crd-a.io_x.yaml", "crd-b.io_x.yaml"} {
+				if _, ok := n.files[path.Join(base, legacy)]; ok {
+					t.Errorf("legacy manifest %s remains", legacy)
+				}
+			}
+			if got := n.files[path.Join(base, "plain.yaml")]; got != "plain" {
+				t.Errorf("a file with no legacy name must not be touched, got %q", got)
+			}
+
+			// The raw commands carry the sudo prefix: /var/lib/rancher is
+			// root-owned, so a non-root --ssh-user needs it or every upgrade
+			// fails at the rename.
+			wantMv := "mv " + path.Join(base, "crd-a.io_x.yaml") + " " + path.Join(base, "crd-a.yaml")
+			wantRm := "rm -f " + path.Join(base, "crd-b.io_x.yaml")
+			if sudo {
+				wantMv, wantRm = "sudo "+wantMv, "sudo "+wantRm
+			}
+			for _, want := range []string{wantMv, wantRm} {
+				if !hasCmd(n.cmds, func(c string) bool { return c == want }) {
+					t.Errorf("expected the exact command %q, got %v", want, n.cmds)
+				}
+			}
+		})
+	}
+}
+
+// TestMigrateLegacyManifestsSurfacesTransportErrors pins that a connection blip
+// is never mistaken for "no legacy file present". Swallowing it would leave the
+// colliding v0.1.0 filenames in place while Apply reports success — the exact
+// bug this code exists to fix, made silent.
+func TestMigrateLegacyManifestsSurfacesTransportErrors(t *testing.T) {
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	files := []manifestFile{{name: "crd-a.yaml", legacyName: "crd-a.io_x.yaml", content: []byte("new-a")}}
+	boom := errors.New("connection reset")
+
+	tests := map[string]struct {
+		errOn string
+		seed  map[string]string
+	}{
+		"legacy read fails":      {errOn: "cat " + path.Join(base, "crd-a.io_x.yaml")},
+		"replacement read fails": {errOn: "cat " + path.Join(base, "crd-a.yaml"), seed: map[string]string{path.Join(base, "crd-a.io_x.yaml"): "legacy-a"}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			n := newFakeNode()
+			for p, c := range tc.seed {
+				n.files[p] = c
+			}
+			n.runErr = map[string]error{tc.errOn: boom}
+			if _, err := newNode(n, false, nil).migrateLegacyManifests(context.Background(), base, files); !errors.Is(err, boom) {
+				t.Fatalf("expected the transport error to surface, got %v", err)
+			}
+		})
+	}
+
+	t.Run("rename fails", func(t *testing.T) {
+		n := newFakeNode()
+		n.files[path.Join(base, "crd-a.io_x.yaml")] = "legacy-a"
+		n.runErr = map[string]error{"mv ": boom}
+		if _, err := newNode(n, false, nil).migrateLegacyManifests(context.Background(), base, files); !errors.Is(err, boom) {
+			t.Fatalf("expected the rename failure to surface, got %v", err)
+		}
+	})
+}
+
+// TestApplyMigrationAbortsBeforeCRDApply pins that a failed migration stops the
+// install rather than proceeding onto a half-renamed manifest directory.
+func TestApplyMigrationAbortsBeforeCRDApply(t *testing.T) {
+	n := newFakeNode()
+	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
+	files, err := staticManifests()
+	if err != nil {
+		t.Fatalf("staticManifests: %v", err)
+	}
+	for _, f := range files {
+		if f.legacyName != "" {
+			n.files[path.Join(base, f.legacyName)] = string(f.content)
+		}
+	}
+	boom := errors.New("connection reset")
+	n.runErr = map[string]error{"mv ": boom}
+
+	if _, err := Apply(context.Background(), n, Config{}); !errors.Is(err, boom) {
+		t.Fatalf("expected Apply to surface the migration failure, got %v", err)
+	}
+	if len(n.appliedCRDs) != 0 {
+		t.Errorf("no CRD should be applied after a failed migration, got %v", n.appliedCRDs)
+	}
+}
+
+// TestApplyNeverWritesAManifestPathInPlace pins the atomicity of every write.
+// k3s re-reads a manifest on any mtime change, so a `tee` straight onto the
+// live path exposes a truncate-then-write window in which k3s can read an empty
+// document and prune everything that AddOn created.
+func TestApplyNeverWritesAManifestPathInPlace(t *testing.T) {
+	n := newFakeNode()
+	if _, err := Apply(context.Background(), n, Config{Version: "2.0.0", ReceiverHost: "hooks.example.com"}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for _, raw := range n.cmds {
+		cmd := strings.ReplaceAll(raw, "sudo ", "")
+		if !strings.Contains(cmd, "| base64 -d |") || strings.Contains(cmd, "kubectl apply -f -") {
+			continue
+		}
+		target, _, _ := parseWrite(cmd)
+		if !strings.HasSuffix(target, ".tmp") {
+			t.Errorf("write targets %s directly; every write must land on a .tmp and be renamed", target)
+		}
+	}
+}
+
+func TestManifestFilename(t *testing.T) {
+	ok := map[string]string{
+		"crd/orkano.io_apps.yaml":        "crd-orkano-io-apps.yaml",
+		"components/dashboard.yaml":      "components-dashboard.yaml",
+		"netpol/orkano-builds.yaml":      "netpol-orkano-builds.yaml",
+		"cert-manager/cert-manager.yaml": "cert-manager-cert-manager.yaml",
+		"registry/internal-ca.yaml":      "registry-internal-ca.yaml",
+		"external-secrets/external.yaml": "external-secrets-external.yaml",
+		"a/b/c.yaml":                     "a-b-c.yaml",
+		"crd/orkano.io___weird__.yaml":   "crd-orkano-io-weird.yaml",
+	}
+	for in, want := range ok {
+		got, err := manifestFilename(in)
+		if err != nil {
+			t.Errorf("manifestFilename(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("manifestFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// An uppercase letter must be refused, not silently dropped: dropping it
+	// yields a wrong-but-valid AddOn name (crd/orkano.io_Apps.yaml would become
+	// "crd-orkano-io-pps") that nothing downstream can catch.
+	bad := []string{
+		"crd/orkano.io_Apps.yaml",
+		"registry/RÉGISTRY.yaml",
+		"netpol/orkano-builds.yml",
+		"netpol/orkano-builds",
+		"___.yaml",
+	}
+	for _, in := range bad {
+		if got, err := manifestFilename(in); err == nil {
+			t.Errorf("manifestFilename(%q) = %q, want an error", in, got)
+		}
+	}
+}
+
+// TestManifestFilesHaveUniqueK3sSafeAddonNames is the drift guard: every name
+// Apply can write must be k3s-safe and unique. It runs over each gating knob,
+// because a conditionally-rendered file (the receiver Ingress) would otherwise
+// never reach the validator, and component names bypass manifestFilename's
+// folding — which is exactly where an unsafe name gets introduced by hand.
+func TestManifestFilesHaveUniqueK3sSafeAddonNames(t *testing.T) {
+	configs := map[string]Config{
+		"defaults":      {Version: "test"},
+		"receiver host": {Version: "test", ReceiverHost: "hooks.example.com"},
+		"secrets vault": {Version: "test", SecretsVault: true},
+	}
+	for name, cfg := range configs {
+		t.Run(name, func(t *testing.T) {
+			files, err := writeSet(cfg)
+			if err != nil {
+				t.Fatalf("writeSet: %v", err)
+			}
+			if err := validateManifestFiles(files); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range files {
+				// k3s names an AddOn after the basename up to the FIRST dot, so
+				// any dot before .yaml silently truncates the identity.
+				if strings.Count(f.name, ".") != 1 {
+					t.Errorf("manifest %s has punctuation k3s folds into a colliding AddOn name", f.name)
+				}
+				// A single unprefixed segment claims a generic global AddOn name
+				// ("dashboard", "receiver") that any operator-dropped file under
+				// the manifests tree would fight over.
+				if !strings.Contains(strings.TrimSuffix(f.name, ".yaml"), "-") {
+					t.Errorf("manifest %s has an unprefixed AddOn name in a globally shared space", f.name)
+				}
+			}
+		})
+	}
+
+	// The receiver Ingress is the conditional file the guard exists to reach.
+	files, err := writeSet(Config{Version: "test", ReceiverHost: "hooks.example.com"})
+	if err != nil {
+		t.Fatalf("writeSet: %v", err)
+	}
+	found := false
+	for _, f := range files {
+		if f.name == "components-receiver-ingress.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the conditional receiver Ingress never reached the uniqueness guard")
+	}
+}
+
+func TestValidateManifestFilesRejectsK3sAddonCollisions(t *testing.T) {
+	tests := map[string][]manifestFile{
+		"punctuation before extension": {
+			{name: "crd-orkano.io_apps.yaml"},
+		},
+		"duplicate": {
+			{name: "crd-orkano-io-apps.yaml"},
+			{name: "crd-orkano-io-apps.yaml"},
+		},
+	}
+	for name, files := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateManifestFiles(files); err == nil {
+				t.Fatal("expected invalid manifest names to be rejected")
+			}
+		})
 	}
 }
 

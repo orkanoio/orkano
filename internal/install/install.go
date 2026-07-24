@@ -33,8 +33,14 @@ const (
 	// here is applied and reconciled by k3s's deploy controller.
 	DefaultAutoDeployDir = "/var/lib/rancher/k3s/server/manifests"
 
-	// manifestSubdir groups Orkano's manifests under the auto-deploy directory so
-	// they never collide with k3s's own add-ons (traefik, coredns, …).
+	// manifestSubdir groups Orkano's manifests for human legibility ONLY. It
+	// buys no collision resistance: k3s names an AddOn after the file's
+	// basename up to the first dot and discards the directory entirely
+	// (k3s pkg/deploy/controller.go `basename`, k3s-io/k3s#9500), so every
+	// filename written here must be unique across the whole manifests tree —
+	// including k3s's own add-ons and anything an operator drops in by hand.
+	// Believing otherwise is what collapsed all five CRDs onto one AddOn in
+	// v0.1.0; manifestFilename + validateManifestFiles now enforce the rule.
 	manifestSubdir = "orkano"
 
 	// DefaultWaitTimeout bounds how long Apply waits for the critical path.
@@ -208,31 +214,21 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	n := newNode(r, cfg.Sudo, cfg.Logf)
 	res := &Result{}
 
-	files, err := staticManifests()
+	files, err := writeSet(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// The vendored External Secrets Operator joins the write set only on
-	// opt-in (ADR-0018). Its own CRDs are deliberately not routed through the
-	// Established gate below: nothing Orkano runs watches ESO types at startup
-	// (the dashboard's lazy RESTMapper self-heals), matching the cert-manager
-	// precedent.
-	if cfg.SecretsVault {
-		eso, err := externalSecretsManifests()
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, eso...)
-	}
-	// Per-install component manifests (version-tagged images, ACME/allowlist
-	// values) join the static set; both are written and reconciled identically.
-	comps, err := renderComponents(cfg)
-	if err != nil {
+	if err := validateManifestFiles(files); err != nil {
 		return nil, err
 	}
-	files = append(files, comps...)
 
 	base := path.Join(cfg.autoDeployDir(), manifestSubdir)
+	migrated, err := n.migrateLegacyManifests(ctx, base, files)
+	if err != nil {
+		return nil, err
+	}
+	res.Changed = res.Changed || migrated
+
 	crds, rest, err := splitCRDManifests(base, files)
 	if err != nil {
 		return nil, err
@@ -304,14 +300,14 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 	return res, nil
 }
 
-// manifestFile is one manifest to write, named by its flattened path under
-// config/ (slashes become dashes, e.g. "crd-orkano.io_apps.yaml"). Flattening
-// keeps every file a unique name in one auto-deploy directory: k3s derives an
-// AddOn's identity from the filename, so two same-basename files in different
-// config/ subdirs would otherwise collide.
+// manifestFile is one manifest to write, named by a k3s-safe flattening of its
+// path under config/ (e.g. "crd-orkano-io-apps.yaml"). k3s derives an AddOn's
+// identity from the filename, so names must be unique across subdirectories and
+// contain no punctuation besides dashes and the final .yaml extension.
 type manifestFile struct {
-	name    string
-	content []byte
+	name       string
+	legacyName string
+	content    []byte
 }
 
 // crdManifest is a manifestFile plus the applied path and API name. CRDs are
@@ -406,6 +402,7 @@ func externalSecretsManifests() ([]manifestFile, error) {
 
 func manifestsFromFS(fsys fs.FS) ([]manifestFile, error) {
 	var files []manifestFile
+	sources := map[string]string{}
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -417,7 +414,20 @@ func manifestsFromFS(fsys fs.FS) ([]manifestFile, error) {
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", p, err)
 		}
-		files = append(files, manifestFile{name: strings.ReplaceAll(p, "/", "-"), content: content})
+		name, err := manifestFilename(p)
+		if err != nil {
+			return err
+		}
+		if previous, ok := sources[name]; ok {
+			return fmt.Errorf("install: embedded manifests %s and %s both map to %s", previous, p, name)
+		}
+		sources[name] = p
+
+		legacyName := strings.ReplaceAll(p, "/", "-")
+		if legacyName == name {
+			legacyName = ""
+		}
+		files = append(files, manifestFile{name: name, legacyName: legacyName, content: content})
 		return nil
 	})
 	if err != nil {
@@ -428,4 +438,97 @@ func manifestsFromFS(fsys fs.FS) ([]manifestFile, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 	return files, nil
+}
+
+// writeSet assembles every manifest Apply writes for cfg. Apply and the
+// AddOn-name drift guard both call it, so the guard can never validate a
+// different set than the one that actually reaches a node.
+func writeSet(cfg Config) ([]manifestFile, error) {
+	files, err := staticManifests()
+	if err != nil {
+		return nil, err
+	}
+	// The vendored External Secrets Operator joins the write set only on
+	// opt-in (ADR-0018). Its own CRDs are deliberately not routed through the
+	// Established gate: nothing Orkano runs watches ESO types at startup (the
+	// dashboard's lazy RESTMapper self-heals), matching the cert-manager
+	// precedent.
+	if cfg.SecretsVault {
+		eso, err := externalSecretsManifests()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, eso...)
+	}
+	// Per-install component manifests (version-tagged images, ACME/allowlist
+	// values) join the static set; both are written and reconciled identically.
+	comps, err := renderComponents(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, comps...), nil
+}
+
+func manifestFilename(sourcePath string) (string, error) {
+	const extension = ".yaml"
+	if path.Ext(sourcePath) != extension {
+		return "", fmt.Errorf("install: embedded manifest %s must use the %s extension", sourcePath, extension)
+	}
+
+	stem := strings.TrimSuffix(sourcePath, extension)
+	var name strings.Builder
+	pendingDash := false
+	for _, r := range stem {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			if pendingDash && name.Len() > 0 {
+				name.WriteByte('-')
+			}
+			name.WriteRune(r)
+			pendingDash = false
+		case r == '/', r == '.', r == '_', r == '-':
+			// A run of separators collapses to a single dash.
+			pendingDash = name.Len() > 0
+		default:
+			// Anything else — an uppercase letter in particular — would be
+			// dropped silently and yield a wrong-but-valid AddOn name, so
+			// refuse it instead. validateManifestFiles rejects the same
+			// characters; the two halves must agree.
+			return "", fmt.Errorf("install: embedded manifest %s contains %q, which has no k3s-safe filename mapping: use lowercase letters, digits, and the separators / . _ -", sourcePath, r)
+		}
+	}
+	if name.Len() == 0 {
+		return "", fmt.Errorf("install: embedded manifest %s has no k3s-safe filename", sourcePath)
+	}
+	if name.Len() > 253 {
+		return "", fmt.Errorf("install: embedded manifest %s produces an AddOn name longer than 253 characters", sourcePath)
+	}
+	return name.String() + extension, nil
+}
+
+func validateManifestFiles(files []manifestFile) error {
+	seen := map[string]struct{}{}
+	for _, f := range files {
+		if path.Base(f.name) != f.name || path.Ext(f.name) != ".yaml" {
+			return fmt.Errorf("install: invalid k3s manifest filename %q", f.name)
+		}
+		stem := strings.TrimSuffix(f.name, ".yaml")
+		if stem == "" || len(stem) > 253 {
+			return fmt.Errorf("install: invalid k3s AddOn name %q", stem)
+		}
+		for _, r := range stem {
+			valid := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-'
+			if !valid {
+				return fmt.Errorf("install: k3s AddOn name %q contains an unsupported character", stem)
+			}
+		}
+		if stem[0] == '-' || stem[len(stem)-1] == '-' {
+			return fmt.Errorf("install: k3s AddOn name %q must start and end with an alphanumeric character", stem)
+		}
+		if _, ok := seen[stem]; ok {
+			return fmt.Errorf("install: duplicate k3s AddOn name %q", stem)
+		}
+		seen[stem] = struct{}{}
+	}
+	return nil
 }

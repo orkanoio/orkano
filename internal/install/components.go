@@ -41,6 +41,12 @@ var (
 // without one the receiver stays ClusterIP-only and the file is skipped.
 const receiverIngressTemplate = "receiver-ingress.yaml.tmpl"
 
+// componentPrefix namespaces the rendered per-install manifests into the same
+// flat AddOn-name space the embedded config/ tree uses, so a rendered file and
+// an embedded one can never claim the same k3s AddOn identity. It matches
+// config/components/, whose only member (platform-postgres) shares the space.
+const componentPrefix = "components"
+
 // templateData feeds the component templates.
 type templateData struct {
 	OperatorImage    string
@@ -121,10 +127,16 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 		if err := tmpl.Execute(&buf, data); err != nil {
 			return nil, fmt.Errorf("render template %s: %w", e.Name(), err)
 		}
-		files = append(files, manifestFile{
-			name:    strings.TrimSuffix(e.Name(), ".tmpl"),
-			content: buf.Bytes(),
-		})
+		// The rendered name carries the same directory prefix the embedded set
+		// gets. k3s derives an AddOn's identity from the basename alone, so a
+		// bare "dashboard.yaml" would claim the global AddOn name "dashboard"
+		// and fight any same-named file elsewhere under the manifests tree.
+		bare := strings.TrimSuffix(e.Name(), ".tmpl")
+		name, err := manifestFilename(componentPrefix + "/" + bare)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, manifestFile{name: name, legacyName: bare, content: buf.Bytes()})
 	}
 	return files, nil
 }

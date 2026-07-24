@@ -52,27 +52,27 @@ func TestRenderComponentsEmptyVersionRendersNothing(t *testing.T) {
 
 func TestRenderComponentsVersionTagsFirstPartyImages(t *testing.T) {
 	m := renderByName(t, Config{Version: "1.4.2"})
-	for _, name := range []string{"operator-deployment.yaml", "receiver.yaml", "dashboard.yaml", "platform-issuer.yaml", "migration-job.yaml"} {
+	for _, name := range []string{"components-operator-deployment.yaml", "components-receiver.yaml", "components-dashboard.yaml", "components-platform-issuer.yaml", "components-migration-job.yaml"} {
 		if _, ok := m[name]; !ok {
 			t.Errorf("expected %s to be rendered", name)
 		}
 	}
-	if !strings.Contains(m["operator-deployment.yaml"], "ghcr.io/orkanoio/orkano-operator:1.4.2") {
+	if !strings.Contains(m["components-operator-deployment.yaml"], "ghcr.io/orkanoio/orkano-operator:1.4.2") {
 		t.Error("operator deployment should use the version-tagged operator image")
 	}
-	if !strings.Contains(m["migration-job.yaml"], "ghcr.io/orkanoio/orkano-operator:1.4.2") {
+	if !strings.Contains(m["components-migration-job.yaml"], "ghcr.io/orkanoio/orkano-operator:1.4.2") {
 		t.Error("migration job should reuse the version-tagged operator image")
 	}
-	if !strings.Contains(m["receiver.yaml"], "ghcr.io/orkanoio/orkano-receiver:1.4.2") {
+	if !strings.Contains(m["components-receiver.yaml"], "ghcr.io/orkanoio/orkano-receiver:1.4.2") {
 		t.Error("receiver deployment should use the version-tagged receiver image")
 	}
-	if !strings.Contains(m["dashboard.yaml"], "ghcr.io/orkanoio/orkano-dashboard:1.4.2") {
+	if !strings.Contains(m["components-dashboard.yaml"], "ghcr.io/orkanoio/orkano-dashboard:1.4.2") {
 		t.Error("dashboard deployment should use the version-tagged dashboard image")
 	}
 }
 
 func TestRenderComponentsDashboard(t *testing.T) {
-	d := renderByName(t, Config{Version: "1.0.0"})["dashboard.yaml"]
+	d := renderByName(t, Config{Version: "1.0.0"})["components-dashboard.yaml"]
 	if !strings.Contains(d, "serviceAccountName: orkano-dashboard") {
 		t.Error("dashboard should run under the orkano-dashboard ServiceAccount")
 	}
@@ -129,12 +129,12 @@ func TestRenderComponentsDashboard(t *testing.T) {
 // manifest flow needs it); without the flag the variable is absent and the
 // wizard's GitHub step shows the remediation instead.
 func TestRenderComponentsDashboardWebhookURL(t *testing.T) {
-	without := renderByName(t, Config{Version: "1.0.0"})["dashboard.yaml"]
+	without := renderByName(t, Config{Version: "1.0.0"})["components-dashboard.yaml"]
 	if strings.Contains(without, "ORKANO_WEBHOOK_URL") {
 		t.Error("no webhook URL env should render without --receiver-host")
 	}
 
-	with := renderByName(t, Config{Version: "1.0.0", ReceiverHost: "hooks.example.com"})["dashboard.yaml"]
+	with := renderByName(t, Config{Version: "1.0.0", ReceiverHost: "hooks.example.com"})["components-dashboard.yaml"]
 	if !strings.Contains(with, "name: ORKANO_WEBHOOK_URL") ||
 		!strings.Contains(with, `value: "https://hooks.example.com/webhook"`) {
 		t.Errorf("dashboard should carry the receiver webhook URL, got:\n%s", with)
@@ -144,7 +144,7 @@ func TestRenderComponentsDashboardWebhookURL(t *testing.T) {
 func TestRenderComponentsACMEServerAndEmail(t *testing.T) {
 	// Match the server directive line, not the whole manifest (a comment mentions
 	// "staging by default", which would fool a substring check).
-	staging := renderByName(t, Config{Version: "1.0.0"})["platform-issuer.yaml"]
+	staging := renderByName(t, Config{Version: "1.0.0"})["components-platform-issuer.yaml"]
 	if !strings.Contains(staging, "server: "+acmeStagingServer) {
 		t.Error("default issuer should use the Let's Encrypt staging server")
 	}
@@ -152,7 +152,7 @@ func TestRenderComponentsACMEServerAndEmail(t *testing.T) {
 		t.Error("no email line should render without --acme-email")
 	}
 
-	prod := renderByName(t, Config{Version: "1.0.0", ACMEProd: true, ACMEEmail: "ops@example.com"})["platform-issuer.yaml"]
+	prod := renderByName(t, Config{Version: "1.0.0", ACMEProd: true, ACMEEmail: "ops@example.com"})["components-platform-issuer.yaml"]
 	if !strings.Contains(prod, "server: "+acmeProdServer) {
 		t.Error("--acme-prod should select the production ACME server")
 	}
@@ -163,7 +163,7 @@ func TestRenderComponentsACMEServerAndEmail(t *testing.T) {
 
 func TestRenderComponentsAllowlist(t *testing.T) {
 	m := renderByName(t, Config{Version: "1.0.0", RepoAllowlist: []string{"orkanoio/orkano", "acme/widgets"}})
-	if !strings.Contains(m["receiver.yaml"], `value: "orkanoio/orkano,acme/widgets"`) {
+	if !strings.Contains(m["components-receiver.yaml"], `value: "orkanoio/orkano,acme/widgets"`) {
 		t.Error("receiver should carry the comma-joined repo allowlist")
 	}
 }
@@ -174,23 +174,23 @@ func TestRenderComponentsUnsafeFeatures(t *testing.T) {
 		Version:        "1.0.0",
 		UnsafeFeatures: []string{string(features.SourceZip), string(features.BuildNixpacks), string(features.SourceGit), string(features.SourceZip)},
 	})
-	for _, name := range []string{"operator-deployment.yaml", "dashboard.yaml"} {
+	for _, name := range []string{"components-operator-deployment.yaml", "components-dashboard.yaml"} {
 		if !strings.Contains(m[name], "name: ORKANO_UNSAFE_FEATURES") || !strings.Contains(m[name], want) {
 			t.Errorf("%s should carry the canonical unsafe-feature opt-ins", name)
 		}
 	}
-	if !strings.Contains(m["dashboard.yaml"], `orkano.io/source-zip-enabled: "true"`) {
+	if !strings.Contains(m["components-dashboard.yaml"], `orkano.io/source-zip-enabled: "true"`) {
 		t.Error("source.zip should open the dashboard's registry NetworkPolicy peer")
 	}
 
 	without := renderByName(t, Config{Version: "1.0.0"})
-	for _, name := range []string{"operator-deployment.yaml", "dashboard.yaml"} {
+	for _, name := range []string{"components-operator-deployment.yaml", "components-dashboard.yaml"} {
 		if !strings.Contains(without[name], "name: ORKANO_UNSAFE_FEATURES") ||
 			!strings.Contains(without[name], `value: ""`) {
 			t.Errorf("%s should render an explicit empty unsafe-feature set", name)
 		}
 	}
-	if !strings.Contains(without["dashboard.yaml"], `orkano.io/source-zip-enabled: "false"`) {
+	if !strings.Contains(without["components-dashboard.yaml"], `orkano.io/source-zip-enabled: "false"`) {
 		t.Error("the secure default should keep the dashboard's registry NetworkPolicy peer closed")
 	}
 }
@@ -199,12 +199,12 @@ func TestRenderComponentsReceiverIngressOptional(t *testing.T) {
 	// Without --receiver-host the Ingress is skipped entirely (an empty host would
 	// render an invalid Ingress); the receiver stays ClusterIP-only.
 	without := renderByName(t, Config{Version: "1.0.0"})
-	if _, ok := without["receiver-ingress.yaml"]; ok {
+	if _, ok := without["components-receiver-ingress.yaml"]; ok {
 		t.Error("receiver Ingress should not render without --receiver-host")
 	}
 
 	with := renderByName(t, Config{Version: "1.0.0", ReceiverHost: "hooks.example.com"})
-	ing, ok := with["receiver-ingress.yaml"]
+	ing, ok := with["components-receiver-ingress.yaml"]
 	if !ok {
 		t.Fatal("receiver Ingress should render with --receiver-host")
 	}
@@ -261,11 +261,11 @@ func TestApplyWritesComponentsWhenVersioned(t *testing.T) {
 	}
 	base := path.Join(DefaultAutoDeployDir, manifestSubdir)
 	for _, name := range []string{
-		"operator-deployment.yaml",
-		"receiver.yaml",
-		"dashboard.yaml",
-		"platform-issuer.yaml",
-		"migration-job.yaml",
+		"components-operator-deployment.yaml",
+		"components-receiver.yaml",
+		"components-dashboard.yaml",
+		"components-platform-issuer.yaml",
+		"components-migration-job.yaml",
 		"components-platform-postgres.yaml", // static set still written
 	} {
 		if _, ok := n.files[path.Join(base, name)]; !ok {
@@ -274,7 +274,7 @@ func TestApplyWritesComponentsWhenVersioned(t *testing.T) {
 	}
 	// The optional receiver Ingress is the one conditional file: absent here
 	// (no ReceiverHost), present in TestApplyWritesReceiverIngressWhenHostSet.
-	if _, ok := n.files[path.Join(base, "receiver-ingress.yaml")]; ok {
+	if _, ok := n.files[path.Join(base, "components-receiver-ingress.yaml")]; ok {
 		t.Error("receiver Ingress should not deploy without a receiver host")
 	}
 }
@@ -284,7 +284,7 @@ func TestApplyWritesReceiverIngressWhenHostSet(t *testing.T) {
 	if _, err := Apply(context.Background(), n, Config{Version: "2.0.0", ReceiverHost: "hooks.example.com"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	ing, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "receiver-ingress.yaml")]
+	ing, ok := n.files[path.Join(DefaultAutoDeployDir, manifestSubdir, "components-receiver-ingress.yaml")]
 	if !ok {
 		t.Fatal("receiver Ingress was not deployed with a receiver host")
 	}
