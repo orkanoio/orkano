@@ -27,10 +27,21 @@ order: `--kubeconfig`, then `$KUBECONFIG`, then `./orkano.kubeconfig`.
 | `features.unsafe-disabled` | warning | the operator and dashboard agree that no default-off unsafe source or build feature (generic Git, ZIP upload, Nixpacks) is enabled | the operator and dashboard Deployments are not installed |
 | `build.apparmor-profile-loaded` | critical | the `orkano-buildkit` AppArmor profile is loaded in enforce mode on this node (`--local` only, requires root) | not registered without `--local` |
 
-`net.networkpolicy-enforced` is the one check that *creates* resources: three
-short-lived canary pods in `orkano-builds` (a labeled control that must
+`net.networkpolicy-enforced` is the one check that *creates* resources: a batch
+of three short-lived canary pods in `orkano-builds` (a labeled control that must
 connect, and unlabeled canaries that must be blocked). They are removed
 afterwards; leftovers from an interrupted run are swept on the next one.
+
+Because a cluster that booted moments ago may not have programmed its pod
+firewall yet, a leak is not taken at face value. Each canary waits a few seconds
+before its first packet, and a batch that leaks is re-tested with a **fresh**
+batch until either the canaries are blocked (pass) or a settle window of roughly
+90 seconds closes. This never softens the verdict: a leak reproduced across
+independent batches is still a failure, and a run that is still ambiguous when
+the window closes reports **error**, not pass. Two consequences are worth
+knowing — a genuinely unenforcing CNI now takes up to ~3 minutes to report,
+while the most common real breakage (the policies are missing entirely) is
+reported immediately, since there is nothing to wait for.
 
 A check that cannot be determined (an unreachable API, an unreadable resource)
 reports **error**, never pass — unknown state never counts as hardened.

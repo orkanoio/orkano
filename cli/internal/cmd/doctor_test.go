@@ -50,9 +50,16 @@ func doctorScheme(t *testing.T) *runtime.Scheme {
 }
 
 // doctorFakeCluster builds the command tests' cluster: the dashboard Service,
-// the registry Service the netpol canaries target, and a Create interceptor
-// playing the kubelet — the control canary always connects, the deny canary
-// is blocked when netpolEnforced (the healthy case) and connects when not.
+// the registry Service the netpol canaries target, the orkano-builds policy
+// object, and a Create interceptor playing the kubelet — the control canary
+// always connects, the deny canary is blocked when netpolEnforced (the healthy
+// case) and connects when not.
+//
+// NOTE: the netpol probe classifies a canary by its container EXIT CODE, not by
+// the pod phase (0 connected, 42 blocked, anything else unknown), so a fixture
+// must stamp a terminated container status. A phase-only fixture degrades every
+// leg to indeterminate and the check reports a probe error — the safe
+// direction, but it looks like a bug rather than a stale fixture.
 func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, netpolEnforced bool, extra ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
 	objs := append([]ctrlclient.Object{
@@ -69,9 +76,19 @@ func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, netpolEnforced 
 			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, ClusterIP: "10.43.0.1"},
 		},
 	}, extra...)
-	denyPhase := corev1.PodFailed
+	// Deliberately NO NetworkPolicy object: with none present a leak is already
+	// definitive, so the unenforced fixture fails on the first batch instead of
+	// running the settle loop for real minutes. The retry semantics belong to
+	// internal/doctor's own tests; these tests are about command wiring.
+	denyExit := int32(42) // refused: policy held
 	if !netpolEnforced {
-		denyPhase = corev1.PodSucceeded
+		denyExit = 0 // connected: the leak
+	}
+	terminated := func(code int32) []corev1.ContainerStatus {
+		return []corev1.ContainerStatus{{
+			Name:  "probe",
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: code}},
+		}}
 	}
 	return fake.NewClientBuilder().WithScheme(doctorScheme(t)).WithObjects(objs...).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -80,8 +97,14 @@ func doctorFakeCluster(t *testing.T, svcType corev1.ServiceType, netpolEnforced 
 					switch {
 					case strings.Contains(pod.Name, "-control-"):
 						pod.Status.Phase = corev1.PodSucceeded
+						pod.Status.ContainerStatuses = terminated(0)
 					case strings.Contains(pod.Name, "-deny-"):
-						pod.Status.Phase = denyPhase
+						if denyExit == 0 {
+							pod.Status.Phase = corev1.PodSucceeded
+						} else {
+							pod.Status.Phase = corev1.PodFailed
+						}
+						pod.Status.ContainerStatuses = terminated(denyExit)
 					}
 				}
 				return cl.Create(ctx, obj, opts...)
