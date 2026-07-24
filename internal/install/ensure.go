@@ -66,12 +66,65 @@ func (n *node) ensureFile(ctx context.Context, p string, content []byte, mode st
 	return true, nil
 }
 
+// migrateLegacyManifests renames the v0.1.0 filenames whose dots and
+// underscores collapsed all Orkano CRDs onto one k3s AddOn identity. Removing
+// an auto-deploy source file does not remove its resources; the subsequent
+// explicit CRD apply converges them under the unique replacement filenames.
+func (n *node) migrateLegacyManifests(ctx context.Context, base string, files []manifestFile) (bool, error) {
+	changed := false
+	for _, f := range files {
+		if f.legacyName == "" {
+			continue
+		}
+
+		legacyPath := path.Join(base, f.legacyName)
+		legacy, err := n.r.Run(ctx, n.sudo+"cat "+legacyPath)
+		if err != nil {
+			return false, fmt.Errorf("install: read legacy manifest %s: %w", legacyPath, err)
+		}
+		if legacy.ExitStatus != 0 {
+			continue
+		}
+
+		currentPath := path.Join(base, f.name)
+		current, err := n.r.Run(ctx, n.sudo+"cat "+currentPath)
+		if err != nil {
+			return false, fmt.Errorf("install: read replacement manifest %s: %w", currentPath, err)
+		}
+
+		var cmd string
+		if current.ExitStatus == 0 {
+			cmd = fmt.Sprintf("%srm -f %s", n.sudo, legacyPath)
+		} else {
+			cmd = fmt.Sprintf("%smv %s %s", n.sudo, legacyPath, currentPath)
+		}
+		if err := n.runOK(ctx, cmd, "migrate legacy manifest "+f.legacyName); err != nil {
+			return false, err
+		}
+		n.logf("migrated %s to %s", f.legacyName, f.name)
+		changed = true
+	}
+	return changed, nil
+}
+
 // writeInline writes a small payload in one command. base64's alphabet has no
 // shell metacharacters, so the single-quoted payload cannot break out.
+//
+// It writes to PATH.tmp and renames, for the same reason writeChunked does:
+// `tee` opens its target with O_TRUNC, and k3s re-reads a manifest whenever its
+// mtime changes. A poll landing inside the truncate-then-write window would
+// read an empty document, apply an empty object set under that AddOn's owner,
+// and prune everything the AddOn had created — for a CRD file, deleting the CRD
+// and cascading to every custom resource. rename(2) is atomic, so k3s can only
+// ever observe the old file or the new one.
 func (n *node) writeInline(ctx context.Context, p, enc string) error {
+	tmp := p + ".tmp"
 	cmd := fmt.Sprintf("%smkdir -p %s && printf %%s '%s' | base64 -d | %stee %s >/dev/null",
-		n.sudo, path.Dir(p), enc, n.sudo, p)
-	return n.runOK(ctx, cmd, "write "+p)
+		n.sudo, path.Dir(p), enc, n.sudo, tmp)
+	if err := n.runOK(ctx, cmd, "write "+p); err != nil {
+		return err
+	}
+	return n.runOK(ctx, fmt.Sprintf("%smv %s %s", n.sudo, tmp, p), "finalize "+p)
 }
 
 // writeChunked writes a large payload as a sequence of base64 chunks appended to

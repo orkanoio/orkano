@@ -80,6 +80,18 @@ func (f *fakeRegistryNode) Run(_ context.Context, raw string) (ssh.Result, error
 		}
 		return ssh.Result{}, nil
 
+	case strings.HasPrefix(cmd, "mv "):
+		// ensureFile finalizes every write with an atomic rename.
+		fields := strings.Fields(cmd)
+		src, dst := fields[1], fields[2]
+		c, ok := f.files[src]
+		if !ok {
+			return ssh.Result{Stderr: "mv: cannot stat '" + src + "': No such file or directory", ExitStatus: 1}, nil
+		}
+		f.files[dst] = c
+		delete(f.files, src)
+		return ssh.Result{}, nil
+
 	case strings.HasPrefix(cmd, "cat "):
 		p := strings.TrimPrefix(cmd, "cat ")
 		if c, ok := f.files[p]; ok {
