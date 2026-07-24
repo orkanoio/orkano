@@ -24,6 +24,7 @@ const (
 // after the App changes. Retrying means creating a new Build.
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="build spec is immutable; retry by creating a new Build"
+// +kubebuilder:validation:XValidation:rule="has(self.source.image) == (self.strategy.strategy == 'Image')",message="an image source requires strategy Image, and strategy Image requires an image source"
 type BuildSpec struct {
 	// AppName references the App this build belongs to, so it carries the
 	// App's own naming rules (DNS-1123 subdomain). The pattern is also

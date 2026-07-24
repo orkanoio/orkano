@@ -86,7 +86,7 @@ func TestSourceUnionRejectsZeroOrMultipleVariants(t *testing.T) {
 			app := validSourceValidationApp("source-union-" + tc.name)
 			app.Spec.Source = tc.source
 			err := dryRunSourceValidationApp(app)
-			if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "exactly one of github, git, or upload must be set") {
+			if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "exactly one of github, git, upload, or image must be set") {
 				t.Fatalf("invalid source union error = %v", err)
 			}
 		})

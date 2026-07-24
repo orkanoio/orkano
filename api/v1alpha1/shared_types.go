@@ -2,7 +2,11 @@ package v1alpha1
 
 import "k8s.io/apimachinery/pkg/api/resource"
 
-// +kubebuilder:validation:XValidation:rule="has(self.github) ? (!has(self.git) && !has(self.upload)) : (has(self.git) != has(self.upload))",message="exactly one of github, git, or upload must be set"
+// +kubebuilder:validation:XValidation:rule="[has(self.github), has(self.git), has(self.upload), has(self.image)].filter(x, x).size() == 1",message="exactly one of github, git, upload, or image must be set"
+// The size() form avoids an empty string literal on purpose: subPath is a
+// non-pointer string, so an explicitly-supplied empty value still arrives with
+// has() true, and the rule must treat it as unset.
+// +kubebuilder:validation:XValidation:rule="!has(self.image) || !has(self.subPath) || size(self.subPath) == 0",message="subPath does not apply to an image source"
 type Source struct {
 	// +optional
 	GitHub *GitHubSource `json:"github,omitempty"`
@@ -12,6 +16,11 @@ type Source struct {
 
 	// +optional
 	Upload *UploadSource `json:"upload,omitempty"`
+
+	// Image runs a pre-built image instead of building one. It is the only
+	// source that produces no build.
+	// +optional
+	Image *ImageSource `json:"image,omitempty"`
 
 	// SubPath scopes the build context to a directory of the checkout,
 	// like volumeMount.subPath; the Dockerfile path resolves relative
@@ -73,16 +82,45 @@ type UploadSource struct {
 	FileName string `json:"fileName,omitempty"`
 }
 
+// ImageSource runs a pre-built image Orkano did not produce.
+//
+// The reference MUST be digest-pinned. That makes INV-06's digest requirement
+// an APISERVER guarantee for this path — enforced for every client including
+// kubectl — rather than a reconciler-side string check, which is strictly
+// stronger than how built images are guarded. It also keeps Design Principle
+// #2 intact: an immutable revision is the source of truth, and a moving tag is
+// not one. Resolving a human-friendly tag to a digest is a separate, optional
+// concern that belongs above the API, never in the stored object.
+//
+// Running an image Orkano neither built nor signed is a deliberate reduction in
+// hardening, so it sits behind the default-off `source.image` unsafe feature
+// gate (ADR-0021) and `orkano doctor` reports it while enabled.
+type ImageSource struct {
+	// Ref is a digest-pinned image reference whose registry host is explicit:
+	// the host is everything before the first "/" and must contain a dot, so
+	// "nginx" is rejected in favour of "docker.io/library/nginx". There is no
+	// implicit ":latest" and a tag alone is never accepted.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*@sha256:[0-9a-f]{64}$`
+	Ref string `json:"ref"`
+}
+
 // Build strategy values, kept in sync with the Strategy enum below.
 const (
 	StrategyDockerfile = "Dockerfile"
 	StrategyStatic     = "Static"
 	StrategyNixpacks   = "Nixpacks"
+	// StrategyImage is the "nothing is built" strategy: the source already is
+	// an image. It exists as an enum value rather than as an optional
+	// AppSpec.Build so Build stays a required non-pointer field and no Go
+	// consumer breaks.
+	StrategyImage = "Image"
 )
 
-// +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? (!has(self.static) && !has(self.nixpacks)) : (self.strategy == 'Static' ? (has(self.static) && !has(self.dockerfile) && !has(self.nixpacks)) : (has(self.nixpacks) && !has(self.dockerfile) && !has(self.static)))",message="build members must match the chosen strategy"
+// +kubebuilder:validation:XValidation:rule="self.strategy == 'Dockerfile' ? (!has(self.static) && !has(self.nixpacks)) : (self.strategy == 'Static' ? (has(self.static) && !has(self.dockerfile) && !has(self.nixpacks)) : (self.strategy == 'Nixpacks' ? (has(self.nixpacks) && !has(self.dockerfile) && !has(self.static)) : (!has(self.dockerfile) && !has(self.static) && !has(self.nixpacks))))",message="build members must match the chosen strategy"
 type BuildStrategy struct {
-	// +kubebuilder:validation:Enum=Dockerfile;Static;Nixpacks
+	// +kubebuilder:validation:Enum=Dockerfile;Static;Nixpacks;Image
 	Strategy string `json:"strategy"`
 
 	// +optional

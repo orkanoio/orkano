@@ -119,6 +119,7 @@ spec:
                     - Dockerfile
                     - Static
                     - Nixpacks
+                    - Image
                     type: string
                 required:
                 - strategy
@@ -127,8 +128,9 @@ spec:
                 - message: build members must match the chosen strategy
                   rule: 'self.strategy == ''Dockerfile'' ? (!has(self.static) && !has(self.nixpacks))
                     : (self.strategy == ''Static'' ? (has(self.static) && !has(self.dockerfile)
-                    && !has(self.nixpacks)) : (has(self.nixpacks) && !has(self.dockerfile)
-                    && !has(self.static)))'
+                    && !has(self.nixpacks)) : (self.strategy == ''Nixpacks'' ? (has(self.nixpacks)
+                    && !has(self.dockerfile) && !has(self.static)) : (!has(self.dockerfile)
+                    && !has(self.static) && !has(self.nixpacks))))'
               command:
                 description: Command overrides the image entrypoint.
                 items:
@@ -182,6 +184,19 @@ spec:
                 required:
                 - path
                 type: object
+              pinnedBuild:
+                description: |-
+                  PinnedBuild holds this app on one Build's image instead of tracking the
+                  newest successful one — the release selector behind "roll back". It names
+                  a Build, never an image: the digest is only ever read from that Build's
+                  status, so no caller can point an app at an arbitrary image. Clearing it
+                  resumes automatic deploys.
+
+                  Deliberately no MinLength: with omitempty no Go client serializes "", so
+                  the only value it could reject is a hand-written
+                  `kubectl patch -p '{"spec":{"pinnedBuild":""}}'` — the natural unpin.
+                maxLength: 253
+                type: string
               port:
                 description: |-
                   Port the container listens on. No schema default: defaulting here
@@ -217,6 +232,10 @@ spec:
                     x-kubernetes-int-or-string: true
                 type: object
               source:
+                description: |-
+                  The size() form avoids an empty string literal on purpose: subPath is a
+                  non-pointer string, so an explicitly-supplied empty value still arrives with
+                  has() true, and the rule must treat it as unset.
                 properties:
                   git:
                     description: |-
@@ -261,6 +280,24 @@ spec:
                     required:
                     - repo
                     type: object
+                  image:
+                    description: |-
+                      Image runs a pre-built image instead of building one. It is the only
+                      source that produces no build.
+                    properties:
+                      ref:
+                        description: |-
+                          Ref is a digest-pinned image reference whose registry host is explicit:
+                          the host is everything before the first "/" and must contain a dot, so
+                          "nginx" is rejected in favour of "docker.io/library/nginx". There is no
+                          implicit ":latest" and a tag alone is never accepted.
+                        maxLength: 512
+                        minLength: 1
+                        pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*@sha256:[0-9a-f]{64}$
+                        type: string
+                    required:
+                    - ref
+                    type: object
                   subPath:
                     description: |-
                       SubPath scopes the build context to a directory of the checkout,
@@ -293,15 +330,69 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of github, git, or upload must be set
-                  rule: 'has(self.github) ? (!has(self.git) && !has(self.upload))
-                    : (has(self.git) != has(self.upload))'
+                - message: exactly one of github, git, upload, or image must be set
+                  rule: '[has(self.github), has(self.git), has(self.upload), has(self.image)].filter(x,
+                    x).size() == 1'
+                - message: subPath does not apply to an image source
+                  rule: '!has(self.image) || !has(self.subPath) || size(self.subPath)
+                    == 0'
               type:
                 default: Web
                 enum:
                 - Web
                 - Worker
                 type: string
+              volumes:
+                description: |-
+                  Volumes are persistent directories mounted into the app. Declaring any
+                  forces the Deployment to the Recreate strategy and caps replicas at one:
+                  the claims are ReadWriteOnce, and a rolling update's surge pod either
+                  blocks forever on Multi-Attach or — on a node-affine local volume —
+                  successfully mounts the same directory alongside the outgoing pod.
+                items:
+                  description: |-
+                    AppVolume is one persistent directory. The claim is created by the operator
+                    and owned by the App, so deleting the App deletes the data — the same
+                    contract the service catalog states (ADR-0014).
+                  properties:
+                    mountPath:
+                      description: |-
+                        MountPath is the absolute in-container path. It may not be "/", and the
+                        no-".." rule mirrors volumeMount.subPath's.
+                      maxLength: 512
+                      minLength: 2
+                      pattern: ^/[A-Za-z0-9_./-]*[A-Za-z0-9_-]$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: mountPath must not contain '..'
+                        rule: '!self.contains(''..'')'
+                    name:
+                      description: |-
+                        Name identifies the volume within the app and derives its claim name
+                        (`<app>-<name>`), so it carries DNS-1123 label rules.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    size:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      default: 1Gi
+                      description: |-
+                        Size is the requested capacity. It may grow but never shrink — a
+                        PersistentVolumeClaim expands in place and cannot be reduced.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - build
             - source
@@ -310,6 +401,14 @@ spec:
             - message: Worker apps cannot set port or healthCheck
               rule: '!has(self.type) || self.type != ''Worker'' || (!has(self.port)
                 && !has(self.healthCheck))'
+            - message: an image source requires build.strategy Image, and build.strategy
+                Image requires an image source
+              rule: has(self.source.image) == (self.build.strategy == 'Image')
+            - message: 'an app with volumes cannot exceed one replica: the volume
+                is ReadWriteOnce, so a second pod either blocks on Multi-Attach or
+                writes the same data concurrently'
+              rule: '!has(self.volumes) || size(self.volumes) == 0 || !has(self.replicas)
+                || self.replicas <= 1'
           status:
             properties:
               availableReplicas:
@@ -387,6 +486,37 @@ spec:
               url:
                 description: URL derived from Domains pointing at this App.
                 type: string
+              volumes:
+                description: Volumes echoes what was provisioned for spec.volumes.
+                items:
+                  description: |-
+                    AppVolumeStatus echoes what was actually provisioned, so a user can tell a
+                    requested size from a bound one without reading PersistentVolumeClaims.
+                  properties:
+                    capacity:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: Capacity is the bound size, which may exceed the
+                        request.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    claimName:
+                      description: ClaimName is the PersistentVolumeClaim backing
+                        this volume.
+                      type: string
+                    name:
+                      type: string
+                    phase:
+                      type: string
+                  required:
+                  - claimName
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true
