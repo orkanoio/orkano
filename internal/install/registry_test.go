@@ -189,6 +189,38 @@ func TestWireRegistryPublishesCAAndPolicy(t *testing.T) {
 	}
 }
 
+// TestWireRegistryMasksByAddressFamily pins the ipBlock mask to the address
+// family. Nodes on every provider that hands out IPv6 (Hetzner, DigitalOcean,
+// Vultr, Linode) report one InternalIP per family, and "<ipv6>/32" is a
+// well-formed CIDR the apiserver accepts without complaint — it just authorises
+// that address's whole /32 rather than the one node, silently widening the only
+// control keeping everything except build pods off the deliberately
+// unauthenticated registry (accepted risk #9).
+func TestWireRegistryMasksByAddressFamily(t *testing.T) {
+	n := newFakeRegistryNode()
+	n.nodeIPs = "77.42.93.225 2a01:4f9:c013:1285::1"
+
+	if _, err := WireRegistry(context.Background(), n, Config{}); err != nil {
+		t.Fatalf("WireRegistry: %v", err)
+	}
+	np, ok := n.applied["orkano-registry-ingress-nodes"]
+	if !ok {
+		t.Fatal("node-ingress NetworkPolicy was not applied")
+	}
+	assertValidYAML(t, "registry-ingress-nodes", []byte(np))
+	for _, want := range []string{
+		"cidr: 77.42.93.225/32",
+		"cidr: 2a01:4f9:c013:1285::1/128",
+	} {
+		if !strings.Contains(np, want) {
+			t.Errorf("node-ingress policy missing %q:\n%s", want, np)
+		}
+	}
+	if strings.Contains(np, "2a01:4f9:c013:1285::1/32") {
+		t.Errorf("IPv6 InternalIP rendered with an IPv4 /32 mask, authorising the whole /32:\n%s", np)
+	}
+}
+
 func TestWireRegistryRejectsBadInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
