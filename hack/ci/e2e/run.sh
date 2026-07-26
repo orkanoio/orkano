@@ -213,8 +213,16 @@ spec:
           protocol: TCP
       from:
 EOF
+    # Mask by address family, mirroring internal/install/registry.go's hostCIDR:
+    # "<ipv6>/32" is a well-formed CIDR that authorises ~2^96 hosts instead of
+    # one. kind is single-stack today, so this only bites a dual-stack cluster —
+    # but this render is the kind analog of the production one and has to stay
+    # faithful to it.
     for ip in $node_ips; do
-      printf '        - ipBlock:\n            cidr: %s/32\n' "$ip"
+      case "$ip" in
+        *:*) printf '        - ipBlock:\n            cidr: %s/128\n' "$ip" ;;
+        *)   printf '        - ipBlock:\n            cidr: %s/32\n' "$ip" ;;
+      esac
     done
   } | kubectl apply -f - >/dev/null
 }

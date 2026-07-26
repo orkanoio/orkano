@@ -73,7 +73,7 @@ type RegistryInfo struct {
 // publishes the build-pod CA projection ConfigMap (orkano-registry-ca in
 // orkano-builds), and renders the node-ingress NetworkPolicy that lets the
 // nodes' container runtimes reach the registry across the host network
-// (orkano-registry-ingress-nodes — one /32 per node InternalIP, the companion
+// (orkano-registry-ingress-nodes — one single-host ipBlock per node InternalIP, the companion
 // to the static config/netpol ingress policy). It returns the CA + ClusterIP so
 // the caller can write registries.yaml on every node. The registry must be
 // Ready first (Apply waits for it) so the TLS Secret and ClusterIP exist.
@@ -103,7 +103,10 @@ func WireRegistry(ctx context.Context, r Runner, cfg Config) (*RegistryInfo, err
 	if err := n.applyManifest(ctx, "registry node-ingress policy", registryIngressNodesManifest(nodeIPs)); err != nil {
 		return nil, err
 	}
-	n.logf("allowed %d node(s) to reach the registry", len(nodeIPs))
+	// Addresses, not nodes: a dual-stack node reports one InternalIP per family,
+	// so counting entries here once told a single-node install it had "allowed
+	// 2 node(s)".
+	n.logf("allowed %d node address(es) to reach the registry", len(nodeIPs))
 
 	return &RegistryInfo{CA: ca, ClusterIP: clusterIP}, nil
 }
@@ -239,7 +242,9 @@ func (n *node) readRegistryClusterIP(ctx context.Context) (string, error) {
 }
 
 // readNodeInternalIPs reads every node's InternalIP and validates each parses as
-// an IP (they land in the node-ingress policy's /32 ipBlocks).
+// an IP (they land in the node-ingress policy's single-host ipBlocks). A
+// dual-stack node contributes one address per family, so this is a list of
+// addresses, not a list of nodes.
 func (n *node) readNodeInternalIPs(ctx context.Context) ([]string, error) {
 	out, err := n.kubectlOutput(ctx, `get nodes -o 'jsonpath={.items[*].status.addresses[?(@.type=="InternalIP")].address}'`)
 	if err != nil {
@@ -317,7 +322,7 @@ func registryCAConfigMapManifest(ca []byte) []byte {
 }
 
 // registryIngressNodesManifest renders the companion node-ingress NetworkPolicy:
-// one /32 ipBlock per node InternalIP allowed to the registry pod on 5000 (the
+// one single-host ipBlock per node InternalIP allowed to the registry pod on 5000 (the
 // post-DNAT port). Cross-node kubelet pulls originate from the host netns, which
 // pod selectors don't match, so the static config/netpol policy can't express
 // this — node IPs are install-specific (substrate smoke probe 9 rehearses it).
@@ -340,9 +345,22 @@ func registryIngressNodesManifest(nodeIPs []string) []byte {
 	b.WriteString("      from:\n")
 	for _, ip := range nodeIPs {
 		b.WriteString("        - ipBlock:\n")
-		b.WriteString("            cidr: " + ip + "/32\n")
+		b.WriteString("            cidr: " + hostCIDR(ip) + "\n")
 	}
 	return []byte(b.String())
+}
+
+// hostCIDR renders ip as a single-host CIDR, masked by its address family.
+// Getting this wrong fails open and fails quietly: "<ipv6>/32" is a well-formed
+// CIDR that the apiserver accepts without complaint, but it authorises the
+// address's whole /32 — around 2^96 hosts — instead of the one node. Nodes on
+// every provider that hands out IPv6 (Hetzner, DigitalOcean, Vultr, Linode)
+// report both families, so this is the common case, not the exotic one.
+func hostCIDR(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+		return ip + "/128"
+	}
+	return ip + "/32"
 }
 
 // registriesYAML renders k3s's node-side registry config: it trusts the internal

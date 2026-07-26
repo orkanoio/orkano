@@ -457,8 +457,13 @@ spec:
           protocol: TCP
       from:
 EOF
+  # Mask by address family, mirroring internal/install/registry.go's hostCIDR —
+  # see the note in hack/ci/e2e/run.sh's copy of this render.
   for ip in $node_ips; do
-    printf '        - ipBlock:\n            cidr: %s/32\n' "$ip"
+    case "$ip" in
+      *:*) printf '        - ipBlock:\n            cidr: %s/128\n' "$ip" ;;
+      *)   printf '        - ipBlock:\n            cidr: %s/32\n' "$ip" ;;
+    esac
   done
 } | kubectl apply -f -
 outcome="$(run_node_probe)"
