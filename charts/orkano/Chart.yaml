@@ -7,8 +7,8 @@ description: >-
 type: application
 # version is the chart's own release line; appVersion names the Orkano release
 # whose images the component templates default to.
-version: 0.1.0
-appVersion: "0.0.2"
+version: 0.1.1
+appVersion: "0.2.1"
 home: https://github.com/orkanoio/orkano
 sources:
   - https://github.com/orkanoio/orkano
