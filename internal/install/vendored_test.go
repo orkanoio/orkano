@@ -188,15 +188,61 @@ func TestVendoredExternalSecretsParses(t *testing.T) {
 
 // TestVendoredTraefikRedirect confirms the bundled-Traefik HTTP→HTTPS redirect
 // is present and targets the websecure entrypoint (ADR-0006).
+//
+// It parses valuesContent rather than substring-matching it, because the schema
+// path is the whole bug class here: the Traefik chart reads
+// ports.web.HTTP.redirections.entryPoint, Helm ignores values it does not
+// recognise, and a redirect hoisted one level up renders nothing at all while
+// every substring a reader would think to assert ("to: websecure", "scheme:
+// https") is still present. That shape shipped green through v0.2.0. Walk the
+// path or the guard is worthless.
 func TestVendoredTraefikRedirect(t *testing.T) {
 	raw, err := config.StaticManifests.ReadFile("traefik/traefik-redirect.yaml")
 	if err != nil {
 		t.Fatalf("read traefik redirect: %v", err)
 	}
-	manifest := string(raw)
-	for _, want := range []string{"kind: HelmChartConfig", "to: websecure", "scheme: https"} {
-		if !strings.Contains(manifest, want) {
-			t.Errorf("traefik redirect missing %q", want)
-		}
+	var chartConfig struct {
+		Kind string `json:"kind"`
+		Spec struct {
+			ValuesContent string `json:"valuesContent"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &chartConfig); err != nil {
+		t.Fatalf("traefik redirect not parseable: %v", err)
+	}
+	if chartConfig.Kind != "HelmChartConfig" {
+		t.Errorf("traefik redirect kind = %q, want HelmChartConfig", chartConfig.Kind)
+	}
+
+	// Round-trip the block scalar too: an indentation regression inside
+	// valuesContent is invisible to the outer parse.
+	var values struct {
+		Ports struct {
+			Web struct {
+				HTTP struct {
+					Redirections struct {
+						EntryPoint struct {
+							To        string `json:"to"`
+							Scheme    string `json:"scheme"`
+							Permanent bool   `json:"permanent"`
+						} `json:"entryPoint"`
+					} `json:"redirections"`
+				} `json:"http"`
+			} `json:"web"`
+		} `json:"ports"`
+	}
+	if err := yaml.Unmarshal([]byte(chartConfig.Spec.ValuesContent), &values); err != nil {
+		t.Fatalf("traefik valuesContent not parseable: %v", err)
+	}
+	entryPoint := values.Ports.Web.HTTP.Redirections.EntryPoint
+	if entryPoint.To != "websecure" {
+		t.Errorf("ports.web.http.redirections.entryPoint.to = %q, want websecure "+
+			"(a redirect declared outside the http level is silently dropped by the chart)", entryPoint.To)
+	}
+	if entryPoint.Scheme != "https" {
+		t.Errorf("ports.web.http.redirections.entryPoint.scheme = %q, want https", entryPoint.Scheme)
+	}
+	if !entryPoint.Permanent {
+		t.Error("ports.web.http.redirections.entryPoint.permanent = false, want true")
 	}
 }

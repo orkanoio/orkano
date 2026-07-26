@@ -3,6 +3,15 @@
 # kube-system; this HelmChartConfig of the same name layers values onto it
 # without replacing the chart, so the redirect survives a k3s upgrade. This is a
 # cluster-wide entrypoint concern, deliberately not the operator's job.
+#
+# The `http:` level under `web:` is load-bearing: the chart reads
+# ports.<name>.http.redirections.entryPoint, and Helm does not error on values it
+# does not recognise. Hoisting `redirections` one level up (as this file did until
+# v0.2.1) applies cleanly, reaches the Helm release verbatim, and renders NOTHING —
+# a silent no-op that leaves every host answering plain HTTP. Do not "fix" a
+# missing redirect with additionalArguments either: the chart substitutes
+# `exposedPort` here, so a hand-written `to=websecure` redirects to Traefik's
+# container port (8443) instead of 443.
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -12,8 +21,9 @@ spec:
   valuesContent: |-
     ports:
       web:
-        redirections:
-          entryPoint:
-            to: websecure
-            scheme: https
-            permanent: true
+        http:
+          redirections:
+            entryPoint:
+              to: websecure
+              scheme: https
+              permanent: true
