@@ -18,7 +18,7 @@
 #      else in orkano-builds has nothing, the registry accepts ingress only
 #      from build pods plus operator-labeled pods (the digest-resolution
 #      leg, keyed on the label and not the namespace) — and the cross-node
-#      kubelet-pull path works through the per-node /32 allow that init
+#      kubelet-pull path works through the per-node single-host allow that init
 #      renders at install (rehearsed here; kindnet blocks cross-node host
 #      traffic without it — found empirically), while the kubelet's own
 #      health probes keep passing,
@@ -436,7 +436,7 @@ else
   echo "substrate fact: this CNI subjects cross-node host traffic to the ingress policy (node allow is load-bearing)"
 fi
 
-log "rehearse init's node-pull allow (one /32 per node InternalIP — init owns this at install, M1.5)"
+log "rehearse init's node-pull allow (one single-host ipBlock per node InternalIP — init owns this at install, M1.5)"
 node_ips="$(kubectl get nodes -o 'jsonpath={.items[*].status.addresses[?(@.type=="InternalIP")].address}')"
 [ -n "$node_ips" ] || fatal "no node InternalIPs found"
 {

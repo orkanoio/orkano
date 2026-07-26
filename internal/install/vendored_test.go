@@ -202,7 +202,11 @@ func TestVendoredTraefikRedirect(t *testing.T) {
 		t.Fatalf("read traefik redirect: %v", err)
 	}
 	var chartConfig struct {
-		Kind string `json:"kind"`
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
 		Spec struct {
 			ValuesContent string `json:"valuesContent"`
 		} `json:"spec"`
@@ -212,6 +216,13 @@ func TestVendoredTraefikRedirect(t *testing.T) {
 	}
 	if chartConfig.Kind != "HelmChartConfig" {
 		t.Errorf("traefik redirect kind = %q, want HelmChartConfig", chartConfig.Kind)
+	}
+	// k3s's helm-controller layers a HelmChartConfig onto the HelmChart of the
+	// SAME name and namespace. Rename either and the values stop reaching the
+	// chart — silently, exactly like the nesting bug this test now guards.
+	if chartConfig.Metadata.Name != "traefik" || chartConfig.Metadata.Namespace != "kube-system" {
+		t.Errorf("traefik redirect targets %s/%s, want kube-system/traefik — it would no longer overlay k3s's HelmChart",
+			chartConfig.Metadata.Namespace, chartConfig.Metadata.Name)
 	}
 
 	// Round-trip the block scalar too: an indentation regression inside

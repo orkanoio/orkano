@@ -21,7 +21,8 @@
 # policy blocks it — so multi-node kubelet pulls need an explicit allow.
 # That allow cannot live here: node IPs are install-specific. Init contract
 # (M1.5): render a companion policy `orkano-registry-ingress-nodes` with one
-# /32 ipBlock per cluster node InternalIP on port 5000 — the smoke rehearses
+# single-host ipBlock per cluster node InternalIP (/32 or /128, by address
+# family) on port 5000 — the smoke rehearses
 # exactly that and re-probes; whether k3s/kube-router shows node or
 # flannel.1 source IPs is settled by init's own acceptance on real nodes.
 apiVersion: networking.k8s.io/v1
