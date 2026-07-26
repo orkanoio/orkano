@@ -350,14 +350,18 @@ func registryIngressNodesManifest(nodeIPs []string) []byte {
 	return []byte(b.String())
 }
 
-// hostCIDR renders ip as a single-host CIDR, masked by its address family.
-// Getting this wrong fails open and fails quietly: "<ipv6>/32" is a well-formed
-// CIDR that the apiserver accepts without complaint, but it authorises the
-// address's whole /32 — around 2^96 hosts — instead of the one node. Nodes on
-// every provider that hands out IPv6 (Hetzner, DigitalOcean, Vultr, Linode)
-// report both families, so this is the common case, not the exotic one.
+// hostCIDR renders ip as a single-host CIDR. Getting the mask wrong fails open
+// and fails quietly: "<ipv6>/32" is a well-formed CIDR the apiserver accepts
+// without complaint, but it authorises that address's whole /32 — around 2^96
+// hosts — instead of the one node.
+//
+// The test is textual, not net.IP.To4(), because ParseCIDR's bit length follows
+// the WRITTEN form: an IPv4-mapped literal like "::ffff:10.0.0.1" has a non-nil
+// To4() yet parses as 128-bit, so pairing it with /32 yields "::/32" — a wider
+// range than the bug this masking exists to prevent. Colon-presence matches
+// ParseCIDR, and matches the bash mirrors in hack/ci.
 func hostCIDR(ip string) string {
-	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+	if strings.Contains(ip, ":") {
 		return ip + "/128"
 	}
 	return ip + "/32"
