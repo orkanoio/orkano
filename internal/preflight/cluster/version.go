@@ -57,13 +57,13 @@ func versionSupportedCheck(opt Options) check.Check {
 			case major < supportedMajor || (major == supportedMajor && minor < minSupportedMinor):
 				return check.Result{
 					Status: check.StatusFail,
-					Message: fmt.Sprintf("cluster %s (v%d.%d) is older than the supported window %s — upgrade the cluster",
+					Message: fmt.Sprintf("cluster %s (v%d.%d) is older than the supported window %s: upgrade the cluster",
 						info.GitVersion, major, minor, window),
 				}, nil
 			case major > supportedMajor || minor > maxSupportedMinor:
 				return check.Result{
 					Status: check.StatusFail,
-					Message: fmt.Sprintf("cluster %s (v%d.%d) is newer than this Orkano release's tested window %s — upgrade Orkano",
+					Message: fmt.Sprintf("cluster %s (v%d.%d) is newer than this Orkano release's tested window %s: upgrade Orkano",
 						info.GitVersion, major, minor, window),
 				}, nil
 			}

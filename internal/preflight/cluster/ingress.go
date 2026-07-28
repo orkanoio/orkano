@@ -40,7 +40,7 @@ func ingressClassPresentCheck(opt Options) check.Check {
 			if len(classes.Items) == 0 {
 				return check.Result{
 					Status: check.StatusFail,
-					Message: "no IngressClass exists — no tested ingress controller is detectable, so Domain routing, " +
+					Message: "no IngressClass exists: no tested ingress controller is detectable, so Domain routing, " +
 						"TLS and receiver exposure for GitHub webhooks cannot be relied on (Apps still deploy and build)",
 				}, nil
 			}
@@ -55,7 +55,7 @@ func ingressClassPresentCheck(opt Options) check.Check {
 			if len(defaults) == 0 {
 				return check.Result{
 					Status: check.StatusPass,
-					Message: fmt.Sprintf("IngressClasses exist (%s) but none is default — Domain Ingresses name no "+
+					Message: fmt.Sprintf("IngressClasses exist (%s) but none is default: Domain Ingresses name no "+
 						"class, so mark one default or set ingress.className at install", strings.Join(names, ", ")),
 				}, nil
 			}

@@ -46,7 +46,7 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 		ID:       IDSecretsStoreHealth,
 		Severity: check.SeverityWarning,
 		Summary:  "external secret stores and syncs are healthy (ADR-0018)",
-		Remediation: "inspect `kubectl get secretstores,externalsecrets -n orkano-apps` — a store that is not Ready " +
+		Remediation: "inspect `kubectl get secretstores,externalsecrets -n orkano-apps`: a store that is not Ready " +
 			"usually means a bad or expired credential (rotate it from the dashboard) or an unreachable server; " +
 			"a stale or missing sync means ESO cannot refresh: `kubectl describe externalsecret <name> -n orkano-apps`",
 		Probe: func(ctx context.Context) (check.Result, error) {
@@ -60,7 +60,7 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 				// carries both CRDs, so one missing means both are.
 				return check.Result{
 					Status:  check.StatusSkip,
-					Message: "External Secrets Operator not installed — enable external vaults with `orkano init --secrets-vault`",
+					Message: "External Secrets Operator not installed; enable external vaults with `orkano init --secrets-vault`",
 				}, nil
 			case err != nil:
 				return check.Result{}, fmt.Errorf("list SecretStores in %s: %w", appsNamespace, err)
@@ -71,7 +71,7 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 				if meta.IsNoMatchError(err) {
 					return check.Result{
 						Status:  check.StatusSkip,
-						Message: "External Secrets Operator not installed — enable external vaults with `orkano init --secrets-vault`",
+						Message: "External Secrets Operator not installed; enable external vaults with `orkano init --secrets-vault`",
 					}, nil
 				}
 				return check.Result{}, fmt.Errorf("list ExternalSecrets in %s: %w", appsNamespace, err)
@@ -113,7 +113,7 @@ func secretsStoreHealthCheck(opt Options) check.Check {
 			if opt.SkipSecretReads {
 				return check.Result{
 					Status: check.StatusPass,
-					Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) healthy — target-Secret existence is verified only by the CLI doctor",
+					Message: fmt.Sprintf("%d store(s) Ready, %d sync(s) healthy; target-Secret existence is verified only by the CLI doctor",
 						len(stores.Items), len(syncs.Items)),
 				}, nil
 			}
@@ -170,7 +170,7 @@ func checkExternalSecret(ctx context.Context, opt Options, es *unstructured.Unst
 			return "", fmt.Errorf("ExternalSecret %s: parse status.refreshTime %q: %w", name, refreshRaw, err)
 		}
 		if age := now.Sub(refreshed); age > time.Duration(esoRefreshGraceFactor)*interval {
-			return fmt.Sprintf("ExternalSecret %s last synced %s ago (interval %s) — ESO cannot refresh it",
+			return fmt.Sprintf("ExternalSecret %s last synced %s ago (interval %s): ESO cannot refresh it",
 				name, fmtDuration(age), interval), nil
 		}
 	}

@@ -297,7 +297,7 @@ func TestDoctorFixFlow(t *testing.T) {
 	if err := runDoctor(context.Background(), &out, &doctorOptions{fix: true}); err != nil {
 		t.Fatalf("runDoctor --fix: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "fix test.toggle: applied — the check now passes") {
+	if !strings.Contains(out.String(), "fix test.toggle: applied, the check now passes") {
 		t.Errorf("output missing the resolved fix line:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "Hardening score: 100%") {

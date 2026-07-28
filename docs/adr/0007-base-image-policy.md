@@ -9,7 +9,7 @@ Every product image Orkano publishes runs inside user clusters, so its base is p
 
 ## Decision
 
-Every product image is built `FROM gcr.io/distroless/static-debian12:nonroot`, **pinned by digest** (Renovate keeps the pin fresh), runs as UID 65532 with `readOnlyRootFilesystem: true` in its manifests, and contains no shell, package manager, or libc. Dockerfiles contain `COPY` of the prebuilt binary and nothing executable — no `RUN` steps, per the supply-chain policy.
+Every product image is built `FROM gcr.io/distroless/static-debian12:nonroot`, **pinned by digest** (Renovate keeps the pin fresh), runs as UID 65532 with `readOnlyRootFilesystem: true` in its manifests, and contains no shell, package manager, or libc. Dockerfiles contain `COPY` of the prebuilt binary and nothing executable: no `RUN` steps, per the supply-chain policy.
 
 Debugging story: there is deliberately nothing to shell into; `kubectl debug` with an ephemeral container is the documented path.
 
@@ -21,7 +21,7 @@ Debugging story: there is deliberately nothing to shell into; `kubectl debug` wi
 
 ## Alternatives considered
 
-- **Chainguard static** — excellent images, but the free tier now publishes only `:latest`/`:latest-dev` (versioned tags moved to the paid catalog, verified 2026-06-11). Digest-pinning a latest-only stream means uncontrolled version jumps on every Renovate run, and depending on a vendor's paid tier for reproducible builds violates the open-source-friendly principle.
-- **alpine** — a shell and a package manager we'd ship solely so attackers can use them.
-- **scratch** — saves nothing over distroless static but loses CA certs, tzdata, and the nonroot passwd entry, each of which we'd reinvent.
-- **distroless `base-debian12`** — carries libc the static binaries don't need.
+- **Chainguard static**: excellent images, but the free tier now publishes only `:latest`/`:latest-dev` (versioned tags moved to the paid catalog, verified 2026-06-11). Digest-pinning a latest-only stream means uncontrolled version jumps on every Renovate run, and depending on a vendor's paid tier for reproducible builds violates the open-source-friendly principle.
+- **alpine**, a shell and a package manager we'd ship solely so attackers can use them.
+- **scratch** saves nothing over distroless static but loses CA certs, tzdata, and the nonroot passwd entry, each of which we'd reinvent.
+- **distroless `base-debian12`** carries libc the static binaries don't need.

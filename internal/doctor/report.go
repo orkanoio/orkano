@@ -45,7 +45,7 @@ func WriteText(w io.Writer, run *checks.Run, attempts []checks.FixAttempt, minSc
 		case a.Err != nil:
 			line = fmt.Sprintf("fix %s: %v", a.ID, a.Err)
 		case a.Resolved:
-			line = fmt.Sprintf("fix %s: applied — the check now passes", a.ID)
+			line = fmt.Sprintf("fix %s: applied, the check now passes", a.ID)
 		default:
 			line = fmt.Sprintf("fix %s: applied, but the check still does not pass", a.ID)
 		}
@@ -55,7 +55,7 @@ func WriteText(w io.Writer, run *checks.Run, attempts []checks.FixAttempt, minSc
 	}
 
 	if n := fixableFailing(run); n > 0 {
-		if _, err := fmt.Fprintf(w, "%d failing check(s) have an automatic fix — run `orkano doctor --fix`\n", n); err != nil {
+		if _, err := fmt.Fprintf(w, "%d failing check(s) have an automatic fix; run `orkano doctor --fix`\n", n); err != nil {
 			return err
 		}
 	}

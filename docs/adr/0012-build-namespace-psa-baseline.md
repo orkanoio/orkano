@@ -11,12 +11,12 @@ INV-02 originally demanded the `restricted` Pod Security level for build pods. T
 
 The `orkano-builds` namespace enforces **PSA `baseline`**, and build pods run rootless BuildKit with exactly four deviations from `restricted` (spike attempt F2, the minimal admittable configuration):
 
-1. seccomp field omitted (nil — unconfined on stock k3s),
+1. seccomp field omitted (nil: unconfined on stock k3s),
 2. `allowPrivilegeEscalation: true`,
 3. `capabilities: {drop: [ALL], add: [SETUID, SETGID]}`,
-4. `appArmorProfile: Localhost/orkano-buildkit` — a dedicated profile granting `userns` and `mount` while keeping the rest of the default confinement.
+4. `appArmorProfile: Localhost/orkano-buildkit`, a dedicated profile granting `userns` and `mount` while keeping the rest of the default confinement.
 
-Compensating controls, all capability-probed live in the spike: no ServiceAccount token (`automountServiceAccountToken: false`), default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (enforced by k3s's embedded kube-router — verified by deleting the allowlist and watching the build actually die at the base-image fetch), hard resource limits, `activeDeadlineSeconds` from `Build.spec.timeoutSeconds`, `backoffLimit: 0`, ephemeral Jobs.
+Compensating controls, all capability-probed live in the spike: no ServiceAccount token (`automountServiceAccountToken: false`), default-deny NetworkPolicy with a DNS/registry/443 egress allowlist (enforced by k3s's embedded kube-router; verified by deleting the allowlist and watching the build actually die at the base-image fetch), hard resource limits, `activeDeadlineSeconds` from `Build.spec.timeoutSeconds`, `backoffLimit: 0`, ephemeral Jobs.
 
 Operational consequences the spike surfaced, adopted here:
 
@@ -33,7 +33,7 @@ Operational consequences the spike surfaced, adopted here:
 
 ## Alternatives considered
 
-- **Privileged or root builds / Docker socket** — the failure mode this project exists to avoid.
-- **kaniko** — unmaintained; rejected already in planning.
-- **gVisor/Kata as the baseline requirement** — heavy node prerequisites for every install to solve a problem the AppArmor profile solves; kept optional.
-- **Custom seccomp profile now** — promising hardening (could remove deviation 1), but untested in the spike; deferred rather than shipped unproven.
+- **Privileged or root builds / Docker socket**: the failure mode this project exists to avoid.
+- **kaniko**: unmaintained; rejected already in planning.
+- **gVisor/Kata as the baseline requirement**. Heavy node prerequisites for every install to solve a problem the AppArmor profile solves; kept optional.
+- **Custom seccomp profile now**: promising hardening (could remove deviation 1), but untested in the spike; deferred rather than shipped unproven.

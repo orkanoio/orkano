@@ -1,4 +1,4 @@
-# Spike 2 — controller-runtime scaffold: findings
+# Spike 2, controller-runtime scaffold: findings
 
 Date: 2026-06-11. Machine: macOS arm64 (darwin/arm64), Go 1.26.4. Code in this directory is throwaway; this file is the deliverable.
 
@@ -40,8 +40,8 @@ All observed in the passing envtest suite (`internal/controller/suite_test.go`, 
 
 - **Manager metrics options changed vs older docs**: `Options.MetricsBindAddress` (string) is long gone; it's `Metrics: metricsserver.Options{...}` from `pkg/metrics/server`. In current kubebuilder scaffolds the metrics endpoint is **disabled by default** (`--metrics-bind-address=0`) and, when enabled, served via HTTPS with optional authn/authz (`SecureServing`, `FilterProvider: filters.WithAuthenticationAndAuthorization`). The spike sets `BindAddress: "0"` in tests to avoid port clashes; do the same in the real operator's test suite.
 - Pin controller-gen and setup-envtest as `tool` directives in the operator's go.mod (works on Go ≥1.24; clean on 1.26.4). No `hack/tools.go` pattern, no global installs, versions live in go.mod/go.sum.
-- `client.IgnoreNotFound` on the initial Get, `logf.FromContext(ctx)` for per-reconcile structured logging (controller/namespace/name/reconcileID come for free) — both work as currently documented.
+- `client.IgnoreNotFound` on the initial Get, `logf.FromContext(ctx)` for per-reconcile structured logging (controller/namespace/name/reconcileID come for free); both work as currently documented.
 - `app.DeletionTimestamp.IsZero()` gates the delete path; remember reconcile still fires for objects with a deletion timestamp as long as finalizers remain.
-- k8s.io/api ended up indirect here (the spike only needs apimachinery + client-go); the real operator will import it directly for Deployments/Services — keep it pinned to the same v0.36.x as the rest.
+- k8s.io/api ended up indirect here (the spike only needs apimachinery + client-go); the real operator will import it directly for Deployments/Services. Keep it pinned to the same v0.36.x as the rest.
 - Plain `testing` + `wait.PollUntilContextTimeout` was enough for envtest assertions; ginkgo/gomega is not a forced dependency of the pattern. Decide deliberately in Phase 1.
 - Run the manager in a goroutine and wait on `mgr.GetCache().WaitForCacheSync(ctx)` before asserting, otherwise early Gets race the watch startup.

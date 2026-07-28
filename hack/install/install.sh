@@ -4,7 +4,7 @@
 # Downloads the signed orkano CLI, VERIFIES it, and runs `orkano init --local` to
 # install a hardened single-node cluster on THIS machine. The heavy, audited work
 # lives in the Go binary (ADR-0017); this script only fetches, verifies, and execs
-# it — keep it thin.
+# it: keep it thin.
 #
 #   curl -fsSL https://get.orkano.io | sh
 #
@@ -47,7 +47,7 @@ os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
 	x86_64 | amd64) arch="amd64" ;;
 	aarch64 | arm64) arch="arm64" ;;
-	*) fail "unsupported architecture $(uname -m) — Orkano supports amd64 and arm64" ;;
+	*) fail "unsupported architecture $(uname -m): Orkano supports amd64 and arm64" ;;
 esac
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
@@ -77,7 +77,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
 	fail "need sha256sum or shasum to verify the download"
 fi
-[ "$actual" = "$expected" ] || fail "checksum mismatch (want $expected, got $actual) — refusing to run"
+[ "$actual" = "$expected" ] || fail "checksum mismatch (want $expected, got $actual), refusing to run"
 log "checksum verified"
 
 # Verify the cosign signature over checksums.txt when cosign is available and
@@ -87,7 +87,7 @@ log "checksum verified"
 if command -v cosign >/dev/null 2>&1; then
 	if curl -fsSL "${dl}/checksums.txt.sigstore.json" -o "$tmp/checksums.bundle" 2>/dev/null; then
 		# The identity is pinned past the repo-name boundary to the release
-		# workflow and a tag ref — a bare "^…/orkano" prefix would also accept a
+		# workflow and a tag ref; a bare "^…/orkano" prefix would also accept a
 		# hostile sibling repo like orkanoio/orkano-evil.
 		if cosign verify-blob \
 			--bundle "$tmp/checksums.bundle" \
@@ -96,13 +96,13 @@ if command -v cosign >/dev/null 2>&1; then
 			"$tmp/checksums" >/dev/null 2>&1; then
 			log "cosign signature verified"
 		else
-			fail "cosign signature verification failed — refusing to run"
+			fail "cosign signature verification failed, refusing to run"
 		fi
 	else
-		log "no cosign signature published for this release — verified by checksum only"
+		log "no cosign signature published for this release: verified by checksum only"
 	fi
 else
-	log "cosign not found — verified by checksum only (install cosign for signature verification)"
+	log "cosign not found: verified by checksum only (install cosign for signature verification)"
 fi
 
 # shellcheck disable=SC2086 # $SUDO is intentionally unquoted so an empty value drops the word.

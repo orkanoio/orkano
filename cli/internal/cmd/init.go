@@ -50,10 +50,10 @@ func newInitCommand(version string) *cobra.Command {
 			"the install preflight, write the hardening configuration (embedded etcd, " +
 			"secrets encryption, audit logging, scheduled etcd snapshots), install k3s, " +
 			"and retrieve a kubeconfig. Pass --node once for a single node or three " +
-			"times for an HA cluster — the first node initialises the embedded-etcd " +
+			"times for an HA cluster; the first node initialises the embedded-etcd " +
 			"cluster and the rest join it. Use --local to install on the machine you " +
-			"are running on instead (single node, no SSH) — the get.orkano.io one-liner. " +
-			"Safe to re-run — it converges every node.",
+			"are running on instead (single node, no SSH): the get.orkano.io one-liner. " +
+			"Safe to re-run; it converges every node.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runInit(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opt)
 		},
@@ -77,7 +77,7 @@ func newInitCommand(version string) *cobra.Command {
 	f.StringArrayVar(&opt.unsafeFeatures, "enable-unsafe-feature", nil,
 		fmt.Sprintf("UNSAFE: enable a security-sensitive capability; repeat for %s, %s, or %s", features.SourceGit, features.SourceZip, features.BuildNixpacks))
 	f.StringVar(&opt.receiverHost, "receiver-host", "", "public hostname to expose the webhook receiver on over HTTPS (optional; without it the receiver stays cluster-internal)")
-	f.BoolVar(&opt.secretsVault, "secrets-vault", false, "install the External Secrets Operator for external secret stores (Vault etc.); opt-in — re-run init with this flag to add it later")
+	f.BoolVar(&opt.secretsVault, "secrets-vault", false, "install the External Secrets Operator for external secret stores (Vault etc.); opt-in: re-run init with this flag to add it later")
 
 	return cmd
 }
@@ -649,13 +649,13 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 	if len(opt.nodes) > 1 {
 		writef(out, "\nThe kubeconfig points at the first server (%s). The cluster keeps serving\n"+
 			"if another server fails, but API access through this kubeconfig needs the\n"+
-			"first server reachable — for failure-tolerant access put a load balancer in\n"+
+			"first server reachable; for failure-tolerant access put a load balancer in\n"+
 			"front of all servers and re-point the kubeconfig at it.\n", first)
 	}
 	// ADR-0003: the install token is printed exactly once. On a re-run it has
 	// already been generated (only its hash is stored), so there is nothing to show.
 	if bootstrapToken != "" {
-		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+		writef(out, "\nBootstrap token (shown once; store it now):\n  %s\n"+
 			"Redeem it at first dashboard login to create the admin account (Phase 2).\n", bootstrapToken)
 	} else {
 		// The SSH-path reader is at their workstation, where the kubeconfig this
@@ -691,7 +691,7 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	writef(out, "  secrets encryption: %s\n", res.SecretsEncryption)
 	writef(out, "  audit logging:      %s\n", presentLabel(res.AuditLogPresent))
 	writef(out, "  build confinement:  AppArmor %s (enforce)\n", nodeprep.ProfileName)
-	writef(out, "  nodes:              1 (single node — not highly available)\n")
+	writef(out, "  nodes:              1 (single node, not highly available)\n")
 	writef(out, "  components:         deployed\n")
 	writef(out, "  registry:           wired\n")
 	if opt.secretsVault {
@@ -710,7 +710,7 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	// ADR-0003: the install token is printed exactly once. On a re-run it has
 	// already been generated (only its hash is stored), so there is nothing to show.
 	if bootstrapToken != "" {
-		writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+		writef(out, "\nBootstrap token (shown once; store it now):\n  %s\n"+
 			"Redeem it at first dashboard login to create the admin account.\n", bootstrapToken)
 	} else {
 		// --local runs as root on the box itself, so the node's own k3s kubectl
@@ -723,14 +723,14 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 	// one-command `orkano proxy` will replace this (ADR-0004).
 	// The k3s path is absolute for the same reason internal/k3s uses it: RHEL-family
 	// sudo secure_path (and a non-interactive sshd PATH) may exclude /usr/local/bin.
-	writef(out, "\nReach the dashboard — it is private, never exposed to the internet.\n"+
+	writef(out, "\nReach the dashboard. It is private, never exposed to the internet.\n"+
 		"From your laptop, open one SSH tunnel that also port-forwards it:\n\n"+
 		"  ssh -L 9090:127.0.0.1:9090 root@%s \\\n"+
 		"    '/usr/local/bin/k3s kubectl -n orkano-system port-forward --address 127.0.0.1 svc/orkano-dashboard 9090:80'\n\n"+
 		"then open http://localhost:9090 and redeem the bootstrap token above.\n"+
 		"(Connecting as a non-root user? Prefix the remote command with sudo.)\n", addr)
 
-	writef(out, "\nThis is a single node — if it fails, the cluster is down. For high\n"+
+	writef(out, "\nThis is a single node: if it fails, the cluster is down. For high\n"+
 		"availability, install three servers over SSH instead:\n"+
 		"  orkano init --node A --node B --node C --ssh-key <key>\n")
 }
@@ -739,7 +739,7 @@ func printBootstrapTokenAfterFailure(out io.Writer, bootstrapToken string) {
 	if bootstrapToken == "" {
 		return
 	}
-	writef(out, "\nBootstrap token (shown once — store it now):\n  %s\n"+
+	writef(out, "\nBootstrap token (shown once; store it now):\n  %s\n"+
 		"The install hit an error after creating this token. Re-run `orkano init` after fixing the error;\n"+
 		"this token will not be shown again, but it will work once the dashboard is ready.\n", bootstrapToken)
 }

@@ -6,13 +6,13 @@ them into the dashboard. Under the hood this is the
 scoped so it can only write Secrets in `orkano-apps` (ADR-0018): a connected
 store is an ESO `SecretStore`, each sync is an `ExternalSecret`, and what the
 UI shows is exactly what `kubectl get secretstores,externalsecrets -n
-orkano-apps` shows. Secret values never touch Orkano's database (INV-03) —
-they flow from your vault into ordinary Kubernetes Secrets that apps
+orkano-apps` shows. Secret values never touch Orkano's database (INV-03).
+They flow from your vault into ordinary Kubernetes Secrets that apps
 reference by name.
 
 ## Enabling it
 
-Vault support is opt-in. Re-run the installer with the flag — the re-run
+Vault support is opt-in. Re-run the installer with the flag; the re-run
 converges an existing install, it does not reinstall:
 
 ```sh
@@ -23,14 +23,14 @@ Until then the dashboard's Vault page, the wizard's secrets step, and
 `orkano doctor` all print exactly that one-liner. Disabling is deliberately
 manual: k3s re-applies auto-deploy manifests on every restart and upgrade
 but never removes resources when a file disappears, so `kubectl delete`
-alone silently comes back on the next restart. The order matters —
+alone silently comes back on the next restart. The order matters.
 ExternalSecrets carry a finalizer only the live controller can clear, so
 the namespace goes last:
 
 1. Remove the manifest on the first (cluster-init) server node:
    `/var/lib/rancher/k3s/server/manifests/orkano/external-secrets-external-secrets.yaml`.
 2. `kubectl delete` the ESO CRDs. This cascades through every store, every
-   sync, and **every synced Secret** — treat it as data loss and detach
+   sync, and **every synced Secret**. Treat it as data loss and detach
    apps from their synced Secrets first.
 3. `kubectl delete` the `external-secrets` namespace.
 
@@ -39,11 +39,11 @@ the namespace goes last:
 Vault is the flagship, UI-connectable provider. On the **Vault** page,
 *Connect a store* asks for:
 
-- **Vault server** — `https://` only; the credential travels over this
+- **Vault server**: `https://` only; the credential travels over this
   connection.
-- **Mount path** — the KV secrets engine's mount, usually `secret`.
-- **KV version** — v2 (versioned, the default) or v1.
-- **Token** — stored write-only in the Kubernetes Secret
+- **Mount path**: the KV secrets engine's mount, usually `secret`.
+- **KV version**: v2 (versioned, the default) or v1.
+- **Token**: stored write-only in the Kubernetes Secret
   `<store>-credentials`, which the dashboard can rotate but never read back.
 
 *Rotate* on a connected store updates the endpoint or token (an empty token
@@ -59,7 +59,7 @@ credential reaches (threat-model accepted risk #10), so scope the token to a
 dedicated prefix and put only the secrets Orkano should sync under it.
 
 ```hcl
-# orkano-read.hcl — read-only on the orkano/ prefix of a KV v2 mount
+# orkano-read.hcl: read-only on the orkano/ prefix of a KV v2 mount
 path "secret/data/orkano/*" {
   capabilities = ["read"]
 }
@@ -74,7 +74,7 @@ vault token create -policy=orkano-read -orphan -period=768h -display-name=orkano
 
 Two details that matter:
 
-- **Keep the default policy attached** (the command above does — don't pass
+- **Keep the default policy attached** (the command above does; don't pass
   `-no-default-policy`). ESO health-checks the credential with a token
   self-lookup, which the default policy grants; without it every read would
   still work but the store would report not-Ready.
@@ -92,12 +92,12 @@ Two details that matter:
 
 *New sync* pulls up to 64 named keys out of a store into one Kubernetes
 Secret, re-read on the refresh interval (default 1h). The sync's name **is**
-the produced Secret's name. Each row maps a vault key — a path under the
-mount, like `orkano/api/stripe` — to an environment-style key in the Secret.
+the produced Secret's name. Each row maps a vault key (a path under the
+mount, like `orkano/api/stripe`) to an environment-style key in the Secret.
 
 To use it from an app: env editor → *Add variable* → kind *Secret
 reference* → the sync's name and key. Removing a sync removes its Secret
-(ESO owns what it creates and never writes into a Secret it didn't —
+(ESO owns what it creates and never writes into a Secret it didn't:
 `creationPolicy: Owner`), so remove the app references first.
 
 ## Other providers
@@ -112,8 +112,8 @@ proven for you:
 | Alpha (community-maintained upstream) | Keeper, 1Password, Doppler | author the `SecretStore` with `kubectl` |
 
 A `kubectl`-authored store follows the same pair as
-[`docs/examples/07-secretstore-vault.yaml`](examples/07-secretstore-vault.yaml)
-— swap the `provider` block and the credential Secret's keys per
+[`docs/examples/07-secretstore-vault.yaml`](examples/07-secretstore-vault.yaml).
+Swap the `provider` block and the credential Secret's keys per
 [ESO's provider docs](https://external-secrets.io/latest/provider/aws-secrets-manager/).
 Keep the credentials in a Secret named `<store>-credentials`: it matches what
 the dashboard writes and what future admission policy will pin. Every store

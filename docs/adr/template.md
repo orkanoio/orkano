@@ -17,4 +17,4 @@ What becomes easier, what becomes harder, and what we consciously accept. List t
 
 ## Alternatives considered
 
-- **Alternative** — one-line reason it was rejected.
+- **Alternative**: one-line reason it was rejected.

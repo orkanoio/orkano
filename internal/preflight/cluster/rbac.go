@@ -104,7 +104,7 @@ func rbacSufficientCheck(opt Options) check.Check {
 		Severity: check.SeverityCritical,
 		Summary:  "the kubeconfig identity can create everything the install writes",
 		Remediation: "install with an identity holding create on the denied resources (cluster-admin, or an " +
-			"equivalently broad role — RBAC escalation prevention also requires the grants Orkano's own Roles contain)",
+			"equivalently broad role; RBAC escalation prevention also requires the grants Orkano's own Roles contain)",
 		Probe: func(ctx context.Context) (check.Result, error) {
 			tuples := installAccessSet()
 			var denied []string

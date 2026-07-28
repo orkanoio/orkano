@@ -1,6 +1,6 @@
 # Supply-chain policy
 
-Orkano's installer and images are an attack vector for every downstream user (PLANNING constraint), so this hygiene exists before any real user does. This document is where thresholds live — configs reference it; nothing here is tribal knowledge.
+Orkano's installer and images are an attack vector for every downstream user (PLANNING constraint), so this hygiene exists before any real user does. This document is where thresholds live: configs reference it; nothing here is tribal knowledge.
 
 ## Scanning thresholds
 
@@ -12,9 +12,9 @@ Orkano's installer and images are an attack vector for every downstream user (PL
 
 Every release from v0.0.1 ships:
 
-- **cosign keyless signatures** on images and the checksums file (Sigstore, CI OIDC identity — no long-lived signing keys to steal, consistent with INV-07's spirit).
+- **cosign keyless signatures** on images and the checksums file (Sigstore, CI OIDC identity: no long-lived signing keys to steal, consistent with INV-07's spirit).
 - **syft SBOMs** (SPDX) per archive and per image.
-- **SLSA provenance** at **Build L2** via GitHub native artifact attestations (`actions/attest-build-provenance`). The L3 upgrade (slsa-github-generator's isolated builder, or its successor) is a Phase 5 launch-hardening task — L2 now is one first-party step; L3 today is multi-job choreography with a history of breaking releases, the maintenance a solo project cannot pay.
+- **SLSA provenance** at **Build L2** via GitHub native artifact attestations (`actions/attest-build-provenance`). The L3 upgrade (slsa-github-generator's isolated builder, or its successor) is a Phase 5 launch-hardening task: L2 now is one first-party step; L3 today is multi-job choreography with a history of breaking releases, the maintenance a solo project cannot pay.
 
 Verification commands users can run (exercised for real against v0.0.1):
 
@@ -53,8 +53,8 @@ Renovate because, for one reviewer: PR grouping and weekly scheduling cap review
 
 `shell` guards the on-box installer: `hack/install/install.sh` is served to every downstream user and piped into a shell, so it is shellcheck-linted like product code (ADR-0017).
 
-`chart` guards the BYO install path (ADR-0019): helm lint plus the golden-render drift guard that keeps the chart's component templates byte-identical to `orkano init`'s render, run on the Makefile's sha256-pinned helm — the golden test skips everywhere else, so this job is the only place it executes.
+`chart` guards the BYO install path (ADR-0019): helm lint plus the golden-render drift guard that keeps the chart's component templates byte-identical to `orkano init`'s render, run on the Makefile's sha256-pinned helm. The golden test skips everywhere else, so this job is the only place it executes.
 
 ## Throwaway-release runbook (deferred until the repo is on GitHub)
 
-Tag `v0.0.1` → release workflow runs goreleaser (build, archives, multi-arch images, SBOMs) → Trivy gates → cosign signs keylessly → provenance attested → verify both commands above from a clean machine. Note: keyless signing logs to Rekor permanently — the artifacts of a throwaway tag can be deleted, the transparency-log entry cannot. Acceptable.
+Tag `v0.0.1` → release workflow runs goreleaser (build, archives, multi-arch images, SBOMs) → Trivy gates → cosign signs keylessly → provenance attested → verify both commands above from a clean machine. Note: keyless signing logs to Rekor permanently: the artifacts of a throwaway tag can be deleted, the transparency-log entry cannot. Acceptable.

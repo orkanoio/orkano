@@ -8,7 +8,7 @@ import "github.com/spf13/cobra"
 func NewRootCommand(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "orkano",
-		Short:         "Orkano — open-source, self-hosted PaaS on Kubernetes",
+		Short:         "Orkano: open-source, self-hosted PaaS on Kubernetes",
 		Version:       version,
 		SilenceUsage:  true, // a runtime error is not a usage error
 		SilenceErrors: true, // main prints the error once

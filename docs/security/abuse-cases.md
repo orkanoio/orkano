@@ -1,8 +1,8 @@
 # Abuse cases
 
-This catalogue is a set of concrete attacker stories checked against the architecture — it is append-only, and IDs are permanent once assigned. Where [threat-model.md](threat-model.md) works systematically per component, this document works end-to-end per attack: one attacker, one goal, one kill chain at a time.
+This catalogue is a set of concrete attacker stories checked against the architecture; it is append-only, and IDs are permanent once assigned. Where [threat-model.md](threat-model.md) works systematically per component, this document works end-to-end per attack: one attacker, one goal, one kill chain at a time.
 
-## AC-01 — Malicious Dockerfile in a connected repo
+## AC-01: Malicious Dockerfile in a connected repo
 
 **Attacker & precondition:** Anyone who can push to a connected repository (including a compromised contributor account) controls the contents of a Dockerfile that Orkano will execute.
 
@@ -17,15 +17,15 @@ This catalogue is a set of concrete attacker stories checked against the archite
 
 **Mitigations**
 
-- INV-02: build pods mount no ServiceAccount token, run rootless at PSA `baseline` confined by the dedicated AppArmor profile (ADR-0012), and can egress only to their source and the registry — there are no cluster credentials to steal and nowhere else to send data.
+- INV-02: build pods mount no ServiceAccount token, run rootless at PSA `baseline` confined by the dedicated AppArmor profile (ADR-0012), and can egress only to their source and the registry. There are no cluster credentials to steal and nowhere else to send data.
 - Hard CPU/memory/time limits time-box mining to one bounded Job.
 - Rootless BuildKit, never a Docker socket (no daemon to pivot through).
 
-**Verdict:** Partially mitigated — the sandbox is now proven live (M0.5 spike: no token, egress allowlist capability-probed both ways, limits + deadline enforced; ADR-0012 records the baseline-not-restricted concession); the remaining residual is container escape via kernel bug, with gVisor/Kata documented but unbuilt.
+**Verdict:** Partially mitigated. The sandbox is now proven live (M0.5 spike: no token, egress allowlist capability-probed both ways, limits + deadline enforced; ADR-0012 records the baseline-not-restricted concession); the remaining residual is container escape via kernel bug, with gVisor/Kata documented but unbuilt.
 
 **Detection:** The doctor's NetworkPolicy probe verifies the build-namespace egress deny actually blocks traffic; repeated `Build` CRs killed at the CPU or time ceiling surface in deploy history and the audit log.
 
-## AC-02 — Stolen admin session cookie
+## AC-02: Stolen admin session cookie
 
 **Attacker & precondition:** Attacker holds a valid admin session cookie, stolen off-platform (malware or physical access on the admin's machine).
 
@@ -34,50 +34,50 @@ This catalogue is a set of concrete attacker stories checked against the archite
 1. Attacker replays the cookie against the dashboard API from their own machine.
 2. They browse app configuration and deploy history as the admin.
 3. They deploy a malicious app by writing an `App` CR (contained by admission policy and the dashboard's narrow RBAC).
-4. They attempt a destructive action — delete app, rotate secrets — and hit step-up re-authentication, which they cannot pass.
+4. They attempt a destructive action (delete app, rotate secrets) and hit step-up re-authentication, which they cannot pass.
 
 **Impact if unmitigated:** Full, persistent admin control of the platform for as long as the session would have lived.
 
 **Mitigations**
 
-- ADR-0003: sessions are opaque and server-side, so the admin can revoke them instantly — deliberately not stateless JWTs.
+- ADR-0003: sessions are opaque and server-side, so the admin can revoke them instantly, deliberately not stateless JWTs.
 - Step-up re-auth gates destructive actions; a cookie alone is not enough.
 - INV-01 bounds the blast radius: even a fully hijacked dashboard session cannot exec into pods or dump cluster secrets.
 - INV-08: every privileged action lands in the append-only audit log.
 
-**Verdict:** Partially mitigated — preventing cookie theft on the admin's endpoint is out of scope; what Orkano controls (instant revocation, step-up gates, bounded blast radius) is in place.
+**Verdict:** Partially mitigated: preventing cookie theft on the admin's endpoint is out of scope; what Orkano controls (instant revocation, step-up gates, bounded blast radius) is in place.
 
-**Detection:** Audit-log entries tied to the session — actions from an unfamiliar IP or at unusual hours are the signal. In Phase 1 the dashboard's Kubernetes calls land in the cluster audit log under the dashboard SA; once Phase 2 reintroduces impersonation (ADR-0013), reads land there under the human identity.
+**Detection:** Audit-log entries tied to the session: actions from an unfamiliar IP or at unusual hours are the signal. In Phase 1 the dashboard's Kubernetes calls land in the cluster audit log under the dashboard SA; once Phase 2 reintroduces impersonation (ADR-0013), reads land there under the human identity.
 
-## AC-03 — Compromised npm dependency in the dashboard frontend
+## AC-03: Compromised npm dependency in the dashboard frontend
 
 **Attacker & precondition:** Attacker publishes a malicious version of a package in the dashboard frontend's dependency tree, and it gets built into a shipped release.
 
-**Kill chain** — two distinct execution points:
+**Kill chain** (two distinct execution points):
 
 *In the shipped bundle (runtime):*
 
 1. The malicious version is pulled in via a lockfile update and bundled into the dashboard's JavaScript.
 2. The payload runs in the admin's browser with a live session.
-3. It silently drives the dashboard API as the admin — reading app config, writing `App` CRs.
+3. It silently drives the dashboard API as the admin: reading app config, writing `App` CRs.
 4. It attempts to escalate to the cluster and stops at the dashboard's own RBAC: no cluster-admin, and secret values can be written but never read back.
 
-*At build time (release CI):* the SPA is built by `npm ci && vite build` inside the release job — the job that holds a `packages:write`/`contents:write` `GITHUB_TOKEN` and the cosign OIDC identity. Code that executes there runs *before* signing, so a payload could tamper with any artifact and the signatures would attest to the compromised build.
+*At build time (release CI):* the SPA is built by `npm ci && vite build` inside the release job, the job that holds a `packages:write`/`contents:write` `GITHUB_TOKEN` and the cosign OIDC identity. Code that executes there runs *before* signing, so a payload could tamper with any artifact and the signatures would attest to the compromised build.
 
-**Impact if unmitigated:** Everything the admin can do in the UI, done silently — including deploying attacker-controlled apps. Via the build-time path: tampered, validly-signed release artifacts (a supply-chain compromise of every downstream install).
+**Impact if unmitigated:** Everything the admin can do in the UI, done silently, including deploying attacker-controlled apps. Via the build-time path: tampered, validly-signed release artifacts (a supply-chain compromise of every downstream install).
 
 **Mitigations**
 
 - INV-01: the dashboard holds no cluster-admin and only value-blind RBAC on secrets (ADR-0013), so even total frontend compromise cannot read secret values or touch workloads directly.
 - Lockfiles plus Renovate keep the dependency tree pinned (npm integrity hashes) and current; npm updates are grouped for review, never automerged.
-- npm lifecycle scripts are disabled at install (`npm ci --ignore-scripts` in `make web`), so a compromised package cannot execute arbitrary code at install time — build-time execution is limited to code the Vite build actually imports (and to Vite/Rolldown themselves).
+- npm lifecycle scripts are disabled at install (`npm ci --ignore-scripts` in `make web`), so a compromised package cannot execute arbitrary code at install time; build-time execution is limited to code the Vite build actually imports (and to Vite/Rolldown themselves).
 - A Content-Security-Policy to constrain exfiltration is planned for Phase 2.
 
-**Verdict:** Partially mitigated — the server-side blast radius is bounded by INV-01, but until CSP ships, a malicious bundle can act freely within the admin's session; and code imported by the build (not just installed) still executes in the release job.
+**Verdict:** Partially mitigated: the server-side blast radius is bounded by INV-01, but until CSP ships, a malicious bundle can act freely within the admin's session; and code imported by the build (not just installed) still executes in the release job.
 
-**Detection:** Renovate's vulnerability alerts flag known-bad versions in the lockfile; Trivy gates the published images (it cannot see the JS bundled inside the Go binary — the lockfile is the npm scan surface). Audit-log entries for CRD writes the admin did not make are the runtime signal.
+**Detection:** Renovate's vulnerability alerts flag known-bad versions in the lockfile; Trivy gates the published images (it cannot see the JS bundled inside the Go binary; the lockfile is the npm scan surface). Audit-log entries for CRD writes the admin did not make are the runtime signal.
 
-## AC-04 — Dashboard exposed to the internet by the user
+## AC-04: Dashboard exposed to the internet by the user
 
 **Attacker & precondition:** An internet-wide scanner (Shodan-class) finds the dashboard after the user has deliberately exposed it.
 
@@ -97,6 +97,6 @@ This catalogue is a set of concrete attacker stories checked against the archite
 - ADR-0003: bootstrap admin has forced TOTP, lockout, and rate limits even if exposure happens anyway.
 - The doctor's dashboard-exposed-without-SSO runtime check penalizes the hardening score.
 
-**Verdict:** Mitigated by default — a user who dismantles the safeguards by hand has made an explicit, flagged choice, which is the accepted residual.
+**Verdict:** Mitigated by default. A user who dismantles the safeguards by hand has made an explicit, flagged choice, which is the accepted residual.
 
 **Detection:** The doctor's dashboard-exposed-without-SSO check (and the resulting hardening-score drop); failed-login bursts in the audit log confirm active probing.

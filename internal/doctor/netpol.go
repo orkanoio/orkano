@@ -179,7 +179,7 @@ func networkPolicyEnforcedCheck(opt Options) check.Check {
 		ID:       IDNetworkPolicyEnforced,
 		Severity: check.SeverityCritical,
 		Summary:  "the CNI enforces NetworkPolicy (capability-probed, INV-02 substrate)",
-		Remediation: "run `kubectl get networkpolicy -n orkano-builds` — if the policies are missing, re-apply config/netpol/; " +
+		Remediation: "run `kubectl get networkpolicy -n orkano-builds`: if the policies are missing, re-apply config/netpol/; " +
 			"if they exist, the CNI is not enforcing them: on the stock k3s install kube-router's netpol controller must be running " +
 			"(re-run `orkano init`), on a custom CNI install one that enforces NetworkPolicy",
 		Probe: func(ctx context.Context) (check.Result, error) {
@@ -233,7 +233,7 @@ func probeNetworkPolicy(ctx context.Context, opt Options) (check.Result, error) 
 		// simply be down), so the result is indeterminate.
 		if b.control != legConnected {
 			return check.Result{}, fmt.Errorf(
-				"the allowed control path (build-labeled pod -> registry %s:443) did not connect (%s) — cannot attribute the deny results to policy; "+
+				"the allowed control path (build-labeled pod -> registry %s:443) did not connect (%s): cannot attribute the deny results to policy; "+
 					"check the registry's health, and whether the canary image %s is pullable on the nodes (air-gapped or rate-limited installs need it preloaded)",
 				registryVIP, b.controlDetail, CanaryImage)
 		}
@@ -242,7 +242,7 @@ func probeNetworkPolicy(ctx context.Context, opt Options) (check.Result, error) 
 			return check.Result{
 				Status: check.StatusPass,
 				Message: fmt.Sprintf("both unlabeled canaries were blocked (registry %s:443 and apiserver %s:443) while the build-labeled "+
-					"control connected — the CNI enforces NetworkPolicy in both directions", registryVIP, apiVIP),
+					"control connected: the CNI enforces NetworkPolicy in both directions", registryVIP, apiVIP),
 			}, nil
 		}
 
@@ -252,7 +252,7 @@ func probeNetworkPolicy(ctx context.Context, opt Options) (check.Result, error) 
 			// will start enforcement.
 			if policiesKnown && !policiesPresent {
 				return netpolFailResult(b, registryVIP, apiVIP,
-					" — no NetworkPolicy exists in "+buildNamespace+", so nothing is being enforced; re-apply config/netpol/"), nil
+					"; no NetworkPolicy exists in "+buildNamespace+", so nothing is being enforced; re-apply config/netpol/"), nil
 			}
 		}
 
@@ -274,11 +274,11 @@ func probeNetworkPolicy(ctx context.Context, opt Options) (check.Result, error) 
 	// hardened.
 	if leaks >= netpolTiming.MinLeakBatches && last.leaked() {
 		return netpolFailResult(last, registryVIP, apiVIP,
-			fmt.Sprintf(" — reproduced across %d independent canary batches over %s", leaks, netpolTiming.SettleBudget)), nil
+			fmt.Sprintf(", reproduced across %d independent canary batches over %s", leaks, netpolTiming.SettleBudget)), nil
 	}
 	return check.Result{}, fmt.Errorf(
 		"could not reach a confident verdict within %s: last batch saw the registry leg %s and the apiserver leg %s (control connected); "+
-			"if the cluster booted moments ago the policy controller may still be programming the pod firewall — re-run `orkano doctor`%s",
+			"if the cluster booted moments ago the policy controller may still be programming the pod firewall; re-run `orkano doctor`%s",
 		netpolTiming.WaitBudget, last.denyRegistry, last.denyEgress, policyControllerNote)
 }
 
@@ -289,10 +289,10 @@ func netpolFailResult(b *batchResult, registryVIP, apiVIP, suffix string) check.
 	var msg string
 	switch b.denyEgress {
 	case legConnected:
-		msg = fmt.Sprintf("an unlabeled pod in %s connected to the apiserver ClusterIP %s:443 — the default-deny egress policy "+
+		msg = fmt.Sprintf("an unlabeled pod in %s connected to the apiserver ClusterIP %s:443: the default-deny egress policy "+
 			"is not being enforced (policy missing or the CNI ignores it)", buildNamespace, apiVIP)
 	default:
-		msg = fmt.Sprintf("an unlabeled pod in %s connected to the registry %s:443 even though its apiserver egress was blocked — "+
+		msg = fmt.Sprintf("an unlabeled pod in %s connected to the registry %s:443 even though its apiserver egress was blocked: "+
 			"policy evaluation is partial (the registry ingress allowlist or the egress rule set is broken)", buildNamespace, registryVIP)
 	}
 	return check.Result{Status: check.StatusFail, Message: msg + suffix + policyControllerNote}

@@ -79,7 +79,7 @@ func etcdSnapshotAgeCheck(opt Options) check.Check {
 				// check), that is legitimately inapplicable, so skip.
 				return check.Result{
 					Status:  check.StatusSkip,
-					Message: "the k3s ETCDSnapshotFile CRD is not installed (non-k3s cluster, or k3s too old to record snapshots as CRs) — snapshot age is not observable via the API",
+					Message: "the k3s ETCDSnapshotFile CRD is not installed (non-k3s cluster, or k3s too old to record snapshots as CRs): snapshot age is not observable via the API",
 				}, nil
 			case err != nil:
 				return check.Result{}, fmt.Errorf("list ETCDSnapshotFiles: %w", err)
@@ -126,14 +126,14 @@ func etcdSnapshotAgeCheck(opt Options) check.Check {
 				if lastErr != "" {
 					// A sample, not "the latest": list order carries no
 					// chronology and failed records may lack timestamps.
-					msg += " — sample error: " + lastErr
+					msg += "; sample error: " + lastErr
 				}
 				return check.Result{Status: check.StatusFail, Message: msg}, nil
 			}
 			if age := now.Sub(newest); age > maxAge {
 				return check.Result{
 					Status: check.StatusFail,
-					Message: fmt.Sprintf("newest usable etcd snapshot %s (node %s) is %s old — older than the %s limit, the schedule has stopped working",
+					Message: fmt.Sprintf("newest usable etcd snapshot %s (node %s) is %s old: older than the %s limit, the schedule has stopped working",
 						newestName, newestNode, fmtDuration(age), fmtDuration(maxAge)),
 				}, nil
 			}
@@ -163,7 +163,7 @@ func noSnapshotsResult(ctx context.Context, opt Options, now time.Time, maxAge t
 	if etcdMembers == 0 {
 		return check.Result{
 			Status:  check.StatusSkip,
-			Message: "no node runs an embedded-etcd member — there is no etcd to snapshot",
+			Message: "no node runs an embedded-etcd member: there is no etcd to snapshot",
 		}, nil
 	}
 
@@ -176,12 +176,12 @@ func noSnapshotsResult(ctx context.Context, opt Options, now time.Time, maxAge t
 	if age := now.Sub(kubeSystem.CreationTimestamp.Time); age <= maxAge {
 		return check.Result{
 			Status:  check.StatusSkip,
-			Message: fmt.Sprintf("no snapshots yet, but the cluster is only %s old — the first scheduled window has not elapsed", fmtDuration(age)),
+			Message: fmt.Sprintf("no snapshots yet, but the cluster is only %s old: the first scheduled window has not elapsed", fmtDuration(age)),
 		}, nil
 	}
 	return check.Result{
 		Status: check.StatusFail,
-		Message: fmt.Sprintf("%d embedded-etcd member(s) and zero snapshots on a cluster older than %s — scheduled snapshots are not running",
+		Message: fmt.Sprintf("%d embedded-etcd member(s) and zero snapshots on a cluster older than %s: scheduled snapshots are not running",
 			etcdMembers, fmtDuration(maxAge)),
 	}, nil
 }
