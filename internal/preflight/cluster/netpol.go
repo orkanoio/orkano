@@ -36,7 +36,7 @@ func networkPolicyEnforcedCheck(opt Options) check.Check {
 		ID:       IDNetworkPolicyEnforced,
 		Severity: check.SeverityCritical,
 		Summary:  "the CNI enforces default-deny egress (capability-probed)",
-		Remediation: "install or enable a CNI that enforces Kubernetes NetworkPolicy; a policy object alone is not proof — " +
+		Remediation: "install or enable a CNI that enforces Kubernetes NetworkPolicy; a policy object alone is not proof: " +
 			"the probe's fresh denied TCP canary must be unable to reach an in-namespace server. Run the preflight with an identity " +
 			"that can list nodes; create, get and delete its labeled scratch namespaces and pods; and create NetworkPolicies",
 		Probe: func(ctx context.Context) (check.Result, error) {
@@ -134,7 +134,7 @@ func networkPolicyEnforcedCheck(opt Options) check.Check {
 						if lastAllControlsConnected && len(lastDenyConnectedNodes) > 0 {
 							return check.Result{
 								Status:  check.StatusFail,
-								Message: fmt.Sprintf("egress-denied canaries on %s kept reaching %s:8080 after %d fresh attempt(s) while every allowlisted control connected — the CNI is not enforcing default-deny egress", strings.Join(lastDenyConnectedNodes, ", "), server.Status.PodIP, attempts),
+								Message: fmt.Sprintf("egress-denied canaries on %s kept reaching %s:8080 after %d fresh attempt(s) while every allowlisted control connected: the CNI is not enforcing default-deny egress", strings.Join(lastDenyConnectedNodes, ", "), server.Status.PodIP, attempts),
 							}, nil
 						}
 						return check.Result{}, fmt.Errorf("the latest NetworkPolicy canary batch did not prove a healthy allowlisted control and blocked denied source from every Linux build node before %w", probeCtx.Err())
@@ -188,7 +188,7 @@ func requireNetworkCanariesConnected(ctx context.Context, c client.Client, names
 		return err
 	}
 	if !allConnected {
-		return fmt.Errorf("%s canary could not reach %s:8080 from every Linux build node — another policy or network control is already blocking a source, so NetworkPolicy enforcement cannot be attributed", role, serverIP)
+		return fmt.Errorf("%s canary could not reach %s:8080 from every Linux build node: another policy or network control is already blocking a source, so NetworkPolicy enforcement cannot be attributed", role, serverIP)
 	}
 	return nil
 }

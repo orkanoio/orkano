@@ -6,10 +6,10 @@ Thanks for considering a contribution. Orkano is maintained by one person in the
 
 ```sh
 git clone https://github.com/orkanoio/orkano && cd orkano
-make all   # lint + test + build — must be green before you start
+make all   # lint + test + build; must be green before you start
 ```
 
-The pinned Go toolchain downloads automatically; golangci-lint installs into `./bin`. Alternatively, open the repo in the provided [devcontainer](.devcontainer/devcontainer.json) — it runs `make all` on create.
+The pinned Go toolchain downloads automatically; golangci-lint installs into `./bin`. Alternatively, open the repo in the provided [devcontainer](.devcontainer/devcontainer.json); it runs `make all` on create.
 
 ## DCO sign-off (required)
 
@@ -19,7 +19,7 @@ Every commit must carry a `Signed-off-by` line certifying the [Developer Certifi
 git commit -s
 ```
 
-PRs with unsigned commits cannot be merged. No CLA — see [ADR-0002](docs/adr/0002-license-agpl-3-0-only-and-dco.md).
+PRs with unsigned commits cannot be merged. No CLA. See [ADR-0002](docs/adr/0002-license-agpl-3-0-only-and-dco.md).
 
 ## Pull requests
 
@@ -27,7 +27,7 @@ PRs with unsigned commits cannot be merged. No CLA — see [ADR-0002](docs/adr/0
 - Reference the issue in the description, and note any implementation calls you made.
 - Prefer integration tests over heavily mocked unit tests, especially around the Kubernetes API.
 - Match the existing code style: idiomatic Go, `gofmt`, errors wrapped with `%w`, contexts threaded through, comments only where the *why* is non-obvious.
-- Anything touching architecture, public API, security posture, or scope needs an ADR — open an issue to discuss before writing code.
+- Anything touching architecture, public API, security posture, or scope needs an ADR. Open an issue to discuss before writing code.
 
 ## Where to start
 
@@ -35,10 +35,10 @@ Doctor checks are the designated good-first-issue surface: each check is a small
 
 ## Before you file an issue
 
-1. Check ["What Orkano is not"](README.md#what-orkano-is-not) — feature requests outside v1 scope will be closed with a pointer there.
+1. Check the out-of-scope list at the end of ["What you get"](README.md#what-you-get); feature requests outside v1 scope will be closed with a pointer there.
 2. Search existing issues, including closed ones.
 3. For bugs: include the Orkano commit/version, platform (k3s or BYO, amd64/arm64), and what you expected.
-4. For security issues: **never open a public issue** — see [SECURITY.md](SECURITY.md).
+4. For security issues: **never open a public issue**. See [SECURITY.md](SECURITY.md).
 
 ## Labels
 

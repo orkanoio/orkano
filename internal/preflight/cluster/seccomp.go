@@ -84,7 +84,7 @@ func seccompDefaultDisabledCheck(opt Options) check.Check {
 					return check.Result{
 						Status: check.StatusFail,
 						Message: "nil-seccomp canaries observed a nonzero Seccomp mode on " + strings.Join(failures, ", ") +
-							" — kubelet seccompDefault or equivalent runtime defaulting would break ADR-0012 rootless builds",
+							": kubelet seccompDefault or equivalent runtime defaulting would break ADR-0012 rootless builds",
 					}, nil
 				}
 				return check.Result{

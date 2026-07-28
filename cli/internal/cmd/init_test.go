@@ -816,7 +816,7 @@ func TestInitLocalHappyPath(t *testing.T) {
 	s := out.String()
 	for _, want := range []string{
 		"Installed k3s",
-		"single node — not highly available",
+		"single node, not highly available",
 		"build confinement:  AppArmor orkano-buildkit (enforce)",
 		"components:         deployed",
 		"registry:           wired",

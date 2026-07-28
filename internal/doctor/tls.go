@@ -87,7 +87,7 @@ func certificateExpiryCheck(opt Options) check.Check {
 					// the score.
 					return check.Result{
 						Status:  check.StatusFail,
-						Message: "cert-manager's Certificate CRD is not installed — the install's TLS subsystem is missing; re-run `orkano init` to restore it",
+						Message: "cert-manager's Certificate CRD is not installed: the install's TLS subsystem is missing; re-run `orkano init` to restore it",
 					}, nil
 				case err != nil:
 					return check.Result{}, fmt.Errorf("list Certificates in %s: %w", ns, err)
@@ -101,7 +101,7 @@ func certificateExpiryCheck(opt Options) check.Check {
 				// never completed), not that the check is inapplicable.
 				return check.Result{
 					Status: check.StatusFail,
-					Message: fmt.Sprintf("no Certificates found in %s or %s — the platform PKI (internal CA, registry cert) should always exist; re-run `orkano init`",
+					Message: fmt.Sprintf("no Certificates found in %s or %s: the platform PKI (internal CA, registry cert) should always exist; re-run `orkano init`",
 						systemNamespace, appsNamespace),
 				}, nil
 			}

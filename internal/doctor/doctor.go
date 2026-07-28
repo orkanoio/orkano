@@ -149,7 +149,7 @@ func dashboardNotPublicCheck(opt Options) check.Check {
 			case apierrors.IsNotFound(err):
 				return check.Result{
 					Status:  check.StatusSkip,
-					Message: fmt.Sprintf("Service %s/%s not found — dashboard not installed, nothing to expose", systemNamespace, dashboardName),
+					Message: fmt.Sprintf("Service %s/%s not found: dashboard not installed, nothing to expose", systemNamespace, dashboardName),
 				}, nil
 			case err != nil:
 				return check.Result{}, fmt.Errorf("read Service %s/%s: %w", systemNamespace, dashboardName, err)
@@ -158,7 +158,7 @@ func dashboardNotPublicCheck(opt Options) check.Check {
 			if t := svc.Spec.Type; t == corev1.ServiceTypeNodePort || t == corev1.ServiceTypeLoadBalancer {
 				return check.Result{
 					Status:  check.StatusFail,
-					Message: fmt.Sprintf("dashboard Service is type %s — it must stay ClusterIP (INV-05)", t),
+					Message: fmt.Sprintf("dashboard Service is type %s; it must stay ClusterIP (INV-05)", t),
 				}, nil
 			}
 			// externalIPs make even a ClusterIP Service reachable on those
@@ -167,7 +167,7 @@ func dashboardNotPublicCheck(opt Options) check.Check {
 			if len(svc.Spec.ExternalIPs) > 0 {
 				return check.Result{
 					Status:  check.StatusFail,
-					Message: fmt.Sprintf("dashboard Service carries externalIPs %v — it is reachable outside the cluster (INV-05)", svc.Spec.ExternalIPs),
+					Message: fmt.Sprintf("dashboard Service carries externalIPs %v; it is reachable outside the cluster (INV-05)", svc.Spec.ExternalIPs),
 				}, nil
 			}
 

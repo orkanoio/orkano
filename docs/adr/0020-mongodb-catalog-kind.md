@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-19
-- Amended: 2026-07-19 — optional authenticated Mongo Express development UI
+- Amended: 2026-07-19 (optional authenticated Mongo Express development UI)
 
 ## Context
 
@@ -35,9 +35,9 @@ MongoDB now publishes both long-lived major release lines and faster-moving mino
 
 ## Alternatives considered
 
-- **Generic `Database` with an engine enum** — rejected by ADR-0014: engine-specific lifecycle, workload, and Secret semantics do not fit an honest lowest-common-denominator resource.
-- **MongoDB minor release track (8.2/8.3)** — rejected because it requires more frequent sequential upgrades; the major 8.0 line gives a predictable support window and manual upgrade control.
-- **A validating admission webhook for global names** — rejected because it would reverse ADR-0010 and add an availability-critical component for a dashboard-detectable usability issue.
-- **Unauthenticated MongoDB inside the namespace** — rejected because any compromised app pod could read or mutate every database with no credential boundary.
-- **A public Mongo Express Ingress or credentials embedded in the launch URL** — rejected because either would violate Orkano's private-by-default dashboard posture and leak a long-lived database credential into browser history, logs, or referrers.
-- **Dashboard-created Deployment/Service objects** — rejected because the dashboard never mutates workloads. The toggle writes desired state to the Mongo CR; the narrow-RBAC operator reconciles it.
+- **Generic `Database` with an engine enum**. Rejected by ADR-0014: engine-specific lifecycle, workload, and Secret semantics do not fit an honest lowest-common-denominator resource.
+- **MongoDB minor release track (8.2/8.3)**: rejected because it requires more frequent sequential upgrades; the major 8.0 line gives a predictable support window and manual upgrade control.
+- **A validating admission webhook for global names**. Rejected because it would reverse ADR-0010 and add an availability-critical component for a dashboard-detectable usability issue.
+- **Unauthenticated MongoDB inside the namespace**: rejected because any compromised app pod could read or mutate every database with no credential boundary.
+- **A public Mongo Express Ingress or credentials embedded in the launch URL**. Rejected because either would violate Orkano's private-by-default dashboard posture and leak a long-lived database credential into browser history, logs, or referrers.
+- **Dashboard-created Deployment/Service objects**: rejected because the dashboard never mutates workloads. The toggle writes desired state to the Mongo CR; the narrow-RBAC operator reconciles it.

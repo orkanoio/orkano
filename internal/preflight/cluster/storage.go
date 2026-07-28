@@ -37,7 +37,7 @@ func storageClassDefaultCheck(opt Options) check.Check {
 			if len(scs.Items) == 0 {
 				return check.Result{
 					Status: check.StatusFail,
-					Message: "no StorageClass exists — the in-cluster registry, the platform Postgres and every " +
+					Message: "no StorageClass exists: the in-cluster registry, the platform Postgres and every " +
 						"catalog database claim PersistentVolumes and would stay Pending forever",
 				}, nil
 			}
@@ -55,7 +55,7 @@ func storageClassDefaultCheck(opt Options) check.Check {
 			if len(defaults) == 0 {
 				return check.Result{
 					Status: check.StatusFail,
-					Message: fmt.Sprintf("%d StorageClass(es) exist but none is marked default — the install's "+
+					Message: fmt.Sprintf("%d StorageClass(es) exist but none is marked default: the install's "+
 						"PersistentVolumeClaims name no class and would stay Pending", len(scs.Items)),
 				}, nil
 			}

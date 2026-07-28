@@ -274,7 +274,8 @@ func parseResourcesCell(t *testing.T, cell string) []matrixResource {
 func parseVerbsCell(t *testing.T, cell string) []string {
 	t.Helper()
 	cell = strings.ReplaceAll(cell, "**", "")
-	cell, _, _ = strings.Cut(cell, "—")
+	// A parenthetical after the verbs is commentary, not grants.
+	cell, _, _ = strings.Cut(cell, "(")
 	var verbs []string
 	for _, v := range strings.Split(cell, ",") {
 		v = strings.TrimSpace(v)

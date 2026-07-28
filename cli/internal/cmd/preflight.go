@@ -29,7 +29,7 @@ func newPreflightCommand() *cobra.Command {
 		Use:   "preflight",
 		Short: "Probe an existing cluster's capabilities before installing Orkano",
 		Long: "Run the bring-your-own-cluster preflight against the cluster the kubeconfig " +
-			"points at — the mandatory gate before installing Orkano onto a cluster you " +
+			"points at: the mandatory gate before installing Orkano onto a cluster you " +
 			"already run (ADR-0019). Read-only checks cover the Kubernetes version window, " +
 			"a default StorageClass, an IngressClass, and whether the kubeconfig identity " +
 			"holds the RBAC the install needs; the capability probes then create short-lived " +
@@ -37,7 +37,7 @@ func newPreflightCommand() *cobra.Command {
 			"NetworkPolicy, Pod Security Admission is active, and every build-eligible node " +
 			"runs AppArmor-confined, seccomp-unconfined build canaries. Scratch namespaces " +
 			"and canaries are deleted afterwards. Run it as the same identity that will " +
-			"perform the install — the RBAC verdict answers for whoever the kubeconfig " +
+			"perform the install; the RBAC verdict answers for whoever the kubeconfig " +
 			"authenticates. Exit codes gate CI: 0 all critical checks passed, 1 a " +
 			"critical check failed, 2 a critical check could not be determined.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -106,8 +106,8 @@ func runClusterPreflight(ctx context.Context, out io.Writer, opt *preflightOptio
 	case checks.ExitOK:
 		return nil
 	case checks.ExitCritical:
-		return &exitCodeError{code: code, msg: "the cluster failed a preflight check — do not install until it is resolved (see the report above)"}
+		return &exitCodeError{code: code, msg: "the cluster failed a preflight check; do not install until it is resolved (see the report above)"}
 	default:
-		return &exitCodeError{code: code, msg: "a preflight check could not be determined — do not install until it can (see the report above)"}
+		return &exitCodeError{code: code, msg: "a preflight check could not be determined; do not install until it can (see the report above)"}
 	}
 }

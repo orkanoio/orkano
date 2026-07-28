@@ -125,15 +125,15 @@ mechanically upgradable.
 
 ## Alternatives considered
 
-- **Treat all three as ordinary v1 options** — hides materially weaker provenance and expands every
+- **Treat all three as ordinary v1 options**: hides materially weaker provenance and expands every
   installation's attack surface even when unused.
-- **One `unsafeFeatures=true` switch** — too easy to cargo-cult and impossible for doctor or the UI
+- **One `unsafeFeatures=true` switch** is too easy to cargo-cult and impossible for doctor or the UI
   to explain precisely; future additions would silently activate on existing installs.
-- **Validate gates only in the dashboard** — `kubectl`, the dispatcher, and already-stored Builds
+- **Validate gates only in the dashboard**: `kubectl`, the dispatcher, and already-stored Builds
   bypass it; a compromised or skewed component could still create work.
-- **Store ZIP bytes in PostgreSQL, a ConfigMap, or a Secret** — makes the metadata/control plane a
+- **Store ZIP bytes in PostgreSQL, a ConfigMap, or a Secret** makes the metadata/control plane a
   blob store, pressures etcd, and violates the small-surface and secret-separation architecture.
-- **Create `v1alpha2` solely for the Source pointer** — wire conversion is unnecessary, while a
+- **Create `v1alpha2` solely for the Source pointer**: wire conversion is unnecessary, while a
   conversion webhook becomes a new certificate and availability dependency for every CR access.
-- **Run `pack` against a Docker socket** — directly violates the hostile-build invariant; rejected
+- **Run `pack` against a Docker socket** directly violates the hostile-build invariant; rejected
   regardless of convenience.

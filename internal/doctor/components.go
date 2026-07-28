@@ -40,7 +40,7 @@ func componentsReadyCheck(opt Options) check.Check {
 		Severity: check.SeverityCritical,
 		Summary:  "the platform control-plane components are running",
 		Remediation: "inspect the workloads with `kubectl -n orkano-system get deploy,statefulset` and the failing pod's " +
-			"events and logs; a component stuck unready is usually a missing Secret or an image pull failure — re-run `orkano init` to repair a partial install",
+			"events and logs; a component stuck unready is usually a missing Secret or an image pull failure; re-run `orkano init` to repair a partial install",
 		Probe: func(ctx context.Context) (check.Result, error) {
 			var problems []string
 			for _, name := range componentDeployments {

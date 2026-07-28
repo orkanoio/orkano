@@ -5,7 +5,7 @@
 
 ## Context
 
-An App needs zero or more routable hostnames, each with a certificate. Certificate issuance is asynchronous and failure-prone (Let's Encrypt rate limits, DNS misconfiguration), so per-domain state needs a home. The obvious sugar — a `domains:` list on App — creates exactly the kind of two-writer object this architecture avoids.
+An App needs zero or more routable hostnames, each with a certificate. Certificate issuance is asynchronous and failure-prone (Let's Encrypt rate limits, DNS misconfiguration), so per-domain state needs a home. The obvious sugar (a `domains:` list on App) creates exactly the kind of two-writer object this architecture avoids.
 
 ## Decision
 
@@ -17,14 +17,14 @@ An App needs zero or more routable hostnames, each with a certificate. Certifica
 
 ## Consequences
 
-- Single writer per object: the user writes Domain spec, the operator writes Domain status — no ownership ambiguity, no sync loops.
+- Single writer per object: the user writes Domain spec, the operator writes Domain status. No ownership ambiguity, no sync loops.
 - Per-domain failure states (rate-limited, DNS broken) live on the Domain, not in a growing blob on App.status; `App.status.url` is derived for the common case.
 - Slightly more YAML for the simple case (two documents instead of one). Inline sugar on App can be added compatibly later; the reverse migration could not.
 - ingress-shim over explicit Certificate objects: less code to own, cert-manager's most-traveled path.
 
 ## Alternatives considered
 
-- **`app.spec.domains` list materializing Domain CRs** — two-way sync and ownership ambiguity; the worst kind of 11pm bug.
-- **Domains inline with no Domain CR** — per-domain conditions inside App.status grow unboundedly and churn the App object on every cert renewal.
-- **Explicit Certificate objects managed by the operator** — more control, more code to own; ingress-shim already does it.
-- **A `tls.enabled` knob** — a dial whose only safe value is the default; omitted entirely.
+- **`app.spec.domains` list materializing Domain CRs**: two-way sync and ownership ambiguity; the worst kind of 11pm bug.
+- **Domains inline with no Domain CR**. Per-domain conditions inside App.status grow unboundedly and churn the App object on every cert renewal.
+- **Explicit Certificate objects managed by the operator**: more control, more code to own; ingress-shim already does it.
+- **A `tls.enabled` knob**, a dial whose only safe value is the default; omitted entirely.
