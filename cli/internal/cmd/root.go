@@ -16,5 +16,6 @@ func NewRootCommand(version string) *cobra.Command {
 	root.AddCommand(newInitCommand(version))
 	root.AddCommand(newPreflightCommand())
 	root.AddCommand(newDoctorCommand())
+	root.AddCommand(newBootstrapTokenCommand())
 	return root
 }

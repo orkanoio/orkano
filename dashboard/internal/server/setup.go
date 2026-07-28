@@ -18,6 +18,7 @@ import (
 	"github.com/orkanoio/orkano/dashboard/internal/oidc"
 	"github.com/orkanoio/orkano/internal/checks"
 	"github.com/orkanoio/orkano/internal/db"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
 
 // The onboarding wizard's server side (M2.6): a setup-status endpoint that runs
@@ -65,12 +66,10 @@ var accessModes = map[string]bool{
 	"public":    true,
 }
 
-// oidcSecretName is the Secret dashboard.yaml.tmpl mounts via per-key refs;
-// the install pre-creates an empty placeholder so the wizard's value-blind
-// UPDATE (no create — it cannot be resourceNames-pinned) has an object to
-// replace. MUST stay byte-identical to internal/install (secretOIDC) and the
-// template's secretKeyRef names.
-const oidcSecretName = "orkano-oidc" //nolint:gosec // G101: a Secret object name, not a credential.
+// The OIDC Secret this file writes is platformsecrets.NameOIDC: both install
+// paths pre-create it as an empty placeholder, so the wizard's value-blind
+// UPDATE (no create: it cannot be resourceNames-pinned) has an object to
+// replace. Its keys must match dashboard.yaml.tmpl's per-key secretKeyRefs.
 
 // oidcDiscoveryTimeout bounds the live issuer-discovery probe the OIDC connect
 // step performs, well inside main's 30s WriteTimeout.
@@ -566,7 +565,7 @@ func (s *Server) handleSetupOIDC(w http.ResponseWriter, r *http.Request) {
 			data[k] = []byte(v)
 		}
 	}
-	if err := s.blindUpdateSecret(ctx, oidcSecretName, data); err != nil {
+	if err := s.blindUpdateSecret(ctx, platformsecrets.NameOIDC, data); err != nil {
 		s.log.Error("oidc secret write failed", "err", err)
 		s.auditResult(r, user, "setup.oidc_configure", env[oidc.EnvIssuer], err)
 		s.writeK8sError(w, "update oidc secret", err)

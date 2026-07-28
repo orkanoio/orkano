@@ -12,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -21,7 +23,9 @@ import (
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/internal/db"
 	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 	"github.com/orkanoio/orkano/internal/sourcearchive"
+	"github.com/orkanoio/orkano/operator/internal/bootstrap"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
 	"github.com/orkanoio/orkano/operator/internal/controller"
 	"github.com/orkanoio/orkano/operator/internal/dispatcher"
@@ -75,8 +79,53 @@ func main() {
 		fmt.Println("migrations applied and role passwords set")
 		return
 	}
+	// `orkano-operator bootstrap-secrets` is the Helm chart's one-shot seeder
+	// (ADR-0019 decision 6): create the platform's generate-once Secrets, then
+	// exit. It is what `orkano init` does over SSH, done from inside the cluster.
+	if len(os.Args) > 1 && os.Args[1] == platformsecrets.SeedSubcommand {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := runBootstrapSecrets(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, platformsecrets.SeedSubcommand+":", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	runOperator()
+}
+
+// runBootstrapSecrets seeds the platform Secrets from inside the cluster. It
+// prints Secret NAMES only: the seeder returns nothing else, so no credential
+// and no usable bootstrap token can ever reach this Job's logs (ADR-0019).
+func runBootstrapSecrets(ctx context.Context) error {
+	// Deliberately not ctrl.GetConfig(), whose fallback chain ends at
+	// $HOME/.kube/config: this subcommand WRITES platform Secrets, so an
+	// accidental workstation run must fail instead of seeding a developer's
+	// current context.
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("bootstrap-secrets runs as an in-cluster Job: %w", err)
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("build cluster client: %w", err)
+	}
+
+	res, err := bootstrap.SeedSecrets(ctx, cs.CoreV1().Secrets(platformsecrets.Namespace))
+	if res != nil {
+		for _, name := range res.Created {
+			fmt.Println("created secret", name)
+		}
+		for _, name := range res.Existed {
+			fmt.Printf("secret %s already exists, preserved\n", name)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("platform secrets ready: %d created, %d preserved\n", len(res.Created), len(res.Existed))
+	return nil
 }
 
 func runSourceFetch(ctx context.Context, args []string) error {

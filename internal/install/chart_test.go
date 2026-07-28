@@ -5,10 +5,16 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
+	"sigs.k8s.io/yaml"
+
 	"github.com/orkanoio/orkano/config"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
 
 // The chart mirrors the embedded manifest set as verbatim copies (ADR-0019
@@ -134,6 +140,120 @@ func TestChartCoversEveryEmbeddedManifest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("walk chart %s: %v", dir, err)
 		}
+	}
+}
+
+// bootstrapIdentity is the shared name of the chart-only seeder's
+// ServiceAccount, Role, RoleBinding and Job.
+const bootstrapIdentity = "orkano-bootstrap"
+
+// chartTemplateComment matches a {{- /* ... */ -}} block so a header comment
+// does not make the document carrying it look templated.
+var chartTemplateComment = regexp.MustCompile(`(?s)\{\{-? */\*.*?\*/ *-?\}\}`)
+
+// TestChartBootstrapJobIsChartOnly pins the one chart-only workload. `helm
+// template` under make verify-chart only proves it parses; the content that
+// matters is the Role, whose create-only grant is the whole least-privilege
+// argument (a silently added get/update/patch would make generate-once a
+// convention again instead of something the grant makes unrepresentable).
+func TestChartBootstrapJobIsChartOnly(t *testing.T) {
+	const rel = "templates/bootstrap-job.yaml"
+	raw, err := os.ReadFile(filepath.Join(chartRoot, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	if strings.Contains(string(raw), chartComponentSource) {
+		t.Errorf("%s carries the components/ Source header string; the golden compare matches it against whole documents and would enroll this chart-only file", rel)
+	}
+	if _, err := os.Stat(filepath.Join(chartRoot, "templates/components/bootstrap-job.yaml")); err == nil {
+		t.Error("the bootstrap Job must not live under templates/components/, which is strictly the renderComponents mirror set")
+	}
+
+	// The Job document is not parseable YAML on its own (`image: {{ ... }}`
+	// opens a flow mapping), so its two pins are string checks. The args value
+	// shares one exported const with the operator's dispatch: a typo there would
+	// fall through and start the controller manager under this Job's SA instead.
+	// The serviceAccountName is the link that makes the create-only Role below
+	// the Job's ACTUAL reach; pointed at orkano-operator instead, the Job would
+	// silently inherit secret reads, registry deployment writes and job creates.
+	for _, want := range []string{
+		`args: ["` + platformsecrets.SeedSubcommand + `"]`,
+		"serviceAccountName: " + bootstrapIdentity,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s should carry %s", rel, want)
+		}
+	}
+
+	// The leading {{- /* ... */ -}} header would otherwise make the whole first
+	// document (the ServiceAccount) look templated and skip it.
+	docs := strings.Split(chartTemplateComment.ReplaceAllString(string(raw), ""), "\n---\n")
+	var (
+		sa      bool
+		role    *rbacv1.Role
+		binding *rbacv1.RoleBinding
+	)
+	for _, doc := range docs {
+		if strings.Contains(doc, "{{") {
+			continue // templated: not parseable without a render
+		}
+		var meta struct {
+			Kind string `json:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
+			t.Fatalf("parse a %s document: %v", rel, err)
+		}
+		switch meta.Kind {
+		case "ServiceAccount":
+			var got struct {
+				Metadata struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+				} `json:"metadata"`
+			}
+			if err := yaml.Unmarshal([]byte(doc), &got); err != nil {
+				t.Fatalf("parse the bootstrap ServiceAccount: %v", err)
+			}
+			sa = got.Metadata.Name == bootstrapIdentity && got.Metadata.Namespace == platformsecrets.Namespace
+		case "Role":
+			role = &rbacv1.Role{}
+			if err := yaml.Unmarshal([]byte(doc), role); err != nil {
+				t.Fatalf("parse the bootstrap Role: %v", err)
+			}
+		case "RoleBinding":
+			binding = &rbacv1.RoleBinding{}
+			if err := yaml.Unmarshal([]byte(doc), binding); err != nil {
+				t.Fatalf("parse the bootstrap RoleBinding: %v", err)
+			}
+		}
+	}
+
+	if !sa {
+		t.Errorf("%s carries no ServiceAccount %s/%s", rel, platformsecrets.Namespace, bootstrapIdentity)
+	}
+	if role == nil {
+		t.Fatalf("%s carries no Role", rel)
+	}
+	if role.Name != bootstrapIdentity || role.Namespace != platformsecrets.Namespace {
+		t.Errorf("bootstrap Role is %s/%s, want %s/%s", role.Namespace, role.Name, platformsecrets.Namespace, bootstrapIdentity)
+	}
+	want := []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}}}
+	if !reflect.DeepEqual(role.Rules, want) {
+		t.Errorf("bootstrap Role grants %+v, want exactly %+v — create-plus-AlreadyExists IS generate-once; any other verb lets a helm upgrade rotate a live credential", role.Rules, want)
+	}
+
+	// The third link: without it the Role above binds to nobody and the Job runs
+	// on whatever the bound identity happens to hold.
+	if binding == nil {
+		t.Fatalf("%s carries no RoleBinding", rel)
+	}
+	wantRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: bootstrapIdentity}
+	if !reflect.DeepEqual(binding.RoleRef, wantRef) {
+		t.Errorf("bootstrap RoleBinding points at %+v, want %+v", binding.RoleRef, wantRef)
+	}
+	wantSubjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: bootstrapIdentity, Namespace: platformsecrets.Namespace}}
+	if !reflect.DeepEqual(binding.Subjects, wantSubjects) {
+		t.Errorf("bootstrap RoleBinding binds %+v, want exactly %+v", binding.Subjects, wantSubjects)
 	}
 }
 

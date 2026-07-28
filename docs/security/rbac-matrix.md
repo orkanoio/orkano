@@ -4,6 +4,8 @@ The security architecture made reviewable: the exact permission set of every ide
 
 Namespaces (ADR-0005): user apps live in `orkano-apps`, builds run in `orkano-builds`, Orkano's own components in `orkano-system`.
 
+Scope: this matrix covers the identities in `config/rbac`, which is what both install paths deploy. The Helm chart additionally ships one chart-only identity with no `orkano init` counterpart: ServiceAccount `orkano-bootstrap` in `orkano-system`, holding `secrets: create` and nothing else, used by the one-shot bootstrap Job (`charts/orkano/templates/bootstrap-job.yaml`, which carries the reasoning including what unpinned `create` leaves reachable).
+
 ## Dashboard ServiceAccount
 
 | Resource (API group) | Verbs | Scope |

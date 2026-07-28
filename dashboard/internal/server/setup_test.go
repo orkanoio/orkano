@@ -22,6 +22,7 @@ import (
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/internal/db"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
 
 // --- fakeStore settings methods (migration 00007) ---
@@ -126,7 +127,7 @@ func checkByID(t *testing.T, resp setupStatusResponse, id string) setupCheckJSON
 
 // oidcPlaceholder is the empty orkano-oidc Secret the install pre-creates; the
 // wizard's value-blind UPDATE needs it to exist (github_test's helper).
-func oidcPlaceholder() *corev1.Secret { return placeholderSecret(oidcSecretName) }
+func oidcPlaceholder() *corev1.Secret { return placeholderSecret(platformsecrets.NameOIDC) }
 
 // validOIDCBody is a wizard OIDC form that passes LoadConfig.
 func validOIDCBody() map[string]string {
@@ -518,7 +519,7 @@ func TestSetupOIDCWritesSecret(t *testing.T) {
 	}
 
 	var secret corev1.Secret
-	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: oidcSecretName}, &secret); err != nil {
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: platformsecrets.NameOIDC}, &secret); err != nil {
 		t.Fatalf("get secret: %v", err)
 	}
 	want := map[string]string{
@@ -574,7 +575,7 @@ func TestSetupOIDCWritesOptionalKeys(t *testing.T) {
 	}
 
 	var secret corev1.Secret
-	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: oidcSecretName}, &secret); err != nil {
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: platformsecrets.NameOIDC}, &secret); err != nil {
 		t.Fatalf("get secret: %v", err)
 	}
 	if len(secret.Data) != 7 {
@@ -698,7 +699,7 @@ func TestGitHubCallbackSettingsFailureDoesNotFailConnect(t *testing.T) {
 func assertNoOIDCWrite(t *testing.T, k8s client.Client, store *fakeStore) {
 	t.Helper()
 	var secret corev1.Secret
-	err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: oidcSecretName}, &secret)
+	err := k8s.Get(context.Background(), client.ObjectKey{Namespace: systemNamespace, Name: platformsecrets.NameOIDC}, &secret)
 	if err == nil && len(secret.Data) != 0 {
 		t.Fatalf("secret was written despite the refusal: %v", keysOf(secret.Data))
 	}

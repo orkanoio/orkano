@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
 
 const testWebhookURL = "https://hooks.orkano.example/webhook"
@@ -52,7 +53,7 @@ func githubServer(t *testing.T, store *fakeStore, ex ManifestExchanger, seedSecr
 	t.Helper()
 	builder := fakeclient.NewClientBuilder().WithScheme(testScheme(t))
 	if seedSecrets {
-		builder = builder.WithObjects(placeholderSecret(githubAppSecretName), placeholderSecret(webhookSecretName))
+		builder = builder.WithObjects(placeholderSecret(githubAppSecretName), placeholderSecret(platformsecrets.NameWebhook))
 	}
 	k8s := builder.Build()
 	s, err := New(Config{
@@ -254,9 +255,9 @@ func TestGitHubCallbackSuccess(t *testing.T) {
 	if string(appData[githubAppPrivateKeyKey]) != testCreds().PEM {
 		t.Errorf("private key not written verbatim")
 	}
-	hookData := getSecretData(t, s, webhookSecretName)
-	if string(hookData[webhookSecretKey]) != testCreds().WebhookSecret {
-		t.Errorf("webhook secret = %q, want %q", hookData[webhookSecretKey], testCreds().WebhookSecret)
+	hookData := getSecretData(t, s, platformsecrets.NameWebhook)
+	if string(hookData[platformsecrets.KeyWebhookSecret]) != testCreds().WebhookSecret {
+		t.Errorf("webhook secret = %q, want %q", hookData[platformsecrets.KeyWebhookSecret], testCreds().WebhookSecret)
 	}
 
 	assertAudited(t, store, "github.app_connect", "success")
@@ -356,7 +357,7 @@ func TestGitHubCredentialWriteNeverReadsSecret(t *testing.T) {
 	}
 	k8s := fakeclient.NewClientBuilder().
 		WithScheme(testScheme(t)).
-		WithObjects(placeholderSecret(githubAppSecretName), placeholderSecret(webhookSecretName)).
+		WithObjects(placeholderSecret(githubAppSecretName), placeholderSecret(platformsecrets.NameWebhook)).
 		WithInterceptorFuncs(failRead).
 		Build()
 	s, err := New(Config{

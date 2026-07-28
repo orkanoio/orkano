@@ -1,0 +1,125 @@
+{{- /*
+Chart-only. This file has no `orkano init` counterpart (the SSH path seeds the
+same Secrets over kubectl), so it lives OUTSIDE templates/components/, which is
+strictly the golden-mirrored set. Never write the components/ Source header
+string into this file: the golden test matches that substring against a whole
+rendered document, so a comment quoting it would enroll this file into a
+byte-exact compare it can never satisfy.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orkano-bootstrap
+  namespace: orkano-system
+---
+# The Job's entire reach: create Secrets in orkano-system. Create-plus-tolerate-
+# AlreadyExists IS the generate-once primitive, so no other verb is needed and
+# none is granted: without update/patch/delete a helm upgrade or a GitOps
+# re-sync cannot rotate a live credential even if the seeder code were wrong,
+# and without get it can never read one back.
+#
+# `create` cannot be resourceNames-pinned in Kubernetes RBAC (a create request
+# carries no object name at authorization time), so ADR-0019's "RBAC-pinned to
+# the orkano-system Secrets it seeds" holds at NAMESPACE granularity only. What
+# that leaves reachable, stated plainly: this ServiceAccount can create any
+# Secret name in orkano-system, including ones the Job never seeds and that do
+# not exist at first render, notably orkano-internal-ca and orkano-registry-tls.
+# Pre-creating a Secret cert-manager would otherwise issue is an adoption
+# vector, and a forged internal CA is a registry MITM. Exposure is bounded to a
+# principal who can already create pods in orkano-system (already game over),
+# and ttlSecondsAfterFinished below removes the completed pod's projected token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orkano-bootstrap
+  namespace: orkano-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orkano-bootstrap
+  namespace: orkano-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orkano-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: orkano-bootstrap
+    namespace: orkano-system
+---
+# One-shot seeder for the platform's generate-once Secrets (ADR-0019 decision
+# 6): the in-cluster equivalent of what `orkano init` writes over SSH.
+#
+# It deliberately does NOT also run `migrate`, even though the ADR's prose reads
+# as one Job. Container environment is resolved at container start, and migrate
+# needs four values (the superuser DSN plus three role passwords) that do not
+# exist when this pod starts on a first install; a pod cannot consume a Secret
+# it is about to create. Folding them together would instead force the seeder to
+# read those Secrets back, forfeiting the create-only Role above. So this pod
+# carries no `env:` at all, which is exactly what lets it start before any
+# platform Secret exists, and orkano-migrate keeps its own ordering mechanism:
+# a pod blocked on an unresolvable secretKeyRef stays Pending in
+# CreateContainerConfigError and burns no backoffLimit while it waits.
+#
+# It seeds orkano-bootstrap-token with the sha256 of a random token it discards
+# immediately, so the dashboard boots with a valid-shaped hash that nobody holds
+# the preimage of. The usable token is minted afterwards with
+# `orkano bootstrap-token`, which prints it exactly once.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orkano-bootstrap
+  namespace: orkano-system
+spec:
+  # RBAC propagation is not synchronous with helm's kind-ordered apply, so the
+  # first pod may hit a Forbidden; OnFailure retries absorb that.
+  backoffLimit: 10
+  # Removes the completed pod and its projected ServiceAccount token an hour
+  # after success rather than leaving them in the namespace.
+  #
+  # It also means that ONCE THE TTL HAS ELAPSED the next helm upgrade creates
+  # this Job fresh instead of patching it. Inside the window it does not: a Job
+  # pod spec is immutable, so an upgrade that changes images.tag or
+  # images.repository (a chart version bump does, via orkano.imageTag falling
+  # back to .Chart.AppVersion) is rejected with "spec.template: field is
+  # immutable" and leaves the release FAILED until the Job is deleted by hand.
+  # That is a chart-wide shape, not specific to this Job: orkano-migrate carries
+  # it permanently, having no TTL at all. `orkano upgrade` (Phase 5) owns the
+  # upgrade story for both.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: orkano-bootstrap
+      # Unlike orkano-migrate, this Job writes through the Kubernetes API and so
+      # needs its token; explicit rather than defaulted.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ .Values.images.repository }}/orkano-operator:{{ include "orkano.imageTag" . }}
+          args: ["bootstrap-secrets"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

@@ -5,54 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
-)
 
-func TestGenerateSecretValues(t *testing.T) {
-	v, err := generateSecretValues()
-	if err != nil {
-		t.Fatalf("generateSecretValues: %v", err)
-	}
-	hexRe := regexp.MustCompile(`^[0-9a-f]+$`)
-	for name, val := range map[string]string{
-		"superuser":  v.superuserPassword,
-		"receiver":   v.receiverPassword,
-		"dispatcher": v.dispatcherPassword,
-		"dashboard":  v.dashboardPassword,
-		"webhook":    v.webhookSecret,
-	} {
-		if val == "" {
-			t.Errorf("%s value is empty", name)
-		}
-		if !hexRe.MatchString(val) {
-			t.Errorf("%s value %q is not hex (must satisfy db.SetupRoles's safe charset)", name, val)
-		}
-	}
-	if v.bootstrapToken == "" {
-		t.Error("bootstrap token is empty")
-	}
-	// The dashboard encryption key is base64 of exactly 32 bytes (AES-256).
-	key, err := base64.StdEncoding.DecodeString(v.dashboardEncKey)
-	if err != nil {
-		t.Errorf("dashboard enc key %q is not std-base64: %v", v.dashboardEncKey, err)
-	}
-	if len(key) != 32 {
-		t.Errorf("dashboard enc key decodes to %d bytes, want 32", len(key))
-	}
-	// All role passwords distinct (no pointer in the generate loop reused another's
-	// draw) — checked all-pairs via a set, so no collision slips through a chain.
-	rolePasswords := []string{v.superuserPassword, v.receiverPassword, v.dispatcherPassword, v.dashboardPassword}
-	seen := make(map[string]struct{}, len(rolePasswords))
-	for _, p := range rolePasswords {
-		seen[p] = struct{}{}
-	}
-	if len(seen) != len(rolePasswords) {
-		t.Error("expected distinct role passwords")
-	}
-}
+	"github.com/orkanoio/orkano/internal/platformsecrets"
+)
 
 func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 	n := newFakeNode()
@@ -61,7 +19,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp, secretOIDC} {
+	for _, name := range []string{platformsecrets.NameSuperuser, platformsecrets.NameOperatorDB, platformsecrets.NameReceiverDB, platformsecrets.NameDashboardDB, platformsecrets.NameDashboardEncKey, platformsecrets.NameWebhook, platformsecrets.NameBootstrapToken, platformsecrets.NameGitHubApp, platformsecrets.NameOIDC} {
 		if _, ok := n.secrets[name]; !ok {
 			t.Errorf("expected secret %s to be created", name)
 		}
@@ -73,33 +31,33 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 	// The stored value is the sha256 hash of the returned token, never the token.
 	sum := sha256.Sum256([]byte(res.BootstrapToken))
 	wantData := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(sum[:])))
-	if !strings.Contains(n.secrets[secretBootstrap], "token-sha256: "+wantData) {
+	if !strings.Contains(n.secrets[platformsecrets.NameBootstrapToken], "token-sha256: "+wantData) {
 		t.Error("bootstrap-token Secret should store the sha256 of the returned token")
 	}
-	if strings.Contains(n.secrets[secretBootstrap], res.BootstrapToken) {
+	if strings.Contains(n.secrets[platformsecrets.NameBootstrapToken], res.BootstrapToken) {
 		t.Error("bootstrap-token Secret must not store the plaintext token")
 	}
 
 	// The GitHub App and OIDC Secrets are empty placeholders — no credential
 	// value, just targets for the M2.6 wizard's value-blind updates. An empty
 	// orkano-oidc resolves nothing through the Deployment's per-key refs.
-	for _, name := range []string{secretGitHubApp, secretOIDC} {
+	for _, name := range []string{platformsecrets.NameGitHubApp, platformsecrets.NameOIDC} {
 		if got := n.secrets[name]; !strings.Contains(got, "data: {}") {
 			t.Errorf("%s placeholder should carry empty data, got: %s", name, got)
 		}
 	}
-	if strings.Contains(n.secrets[secretGitHubApp], "private-key.pem") {
+	if strings.Contains(n.secrets[platformsecrets.NameGitHubApp], "private-key.pem") {
 		t.Error("github-app placeholder must not carry a private key at install time")
 	}
 
 	// The role DSNs embed the matching roles and the platform Postgres host.
-	if !strings.Contains(decodeSecretData(t, n.secrets[secretReceiver], "dsn"), "postgres://orkano_receiver:") {
+	if !strings.Contains(decodeSecretData(t, n.secrets[platformsecrets.NameReceiverDB], "dsn"), "postgres://orkano_receiver:") {
 		t.Error("receiver DSN should use the orkano_receiver role")
 	}
-	if !strings.Contains(decodeSecretData(t, n.secrets[secretOperator], "dsn"), "postgres://orkano_dispatcher:") {
+	if !strings.Contains(decodeSecretData(t, n.secrets[platformsecrets.NameOperatorDB], "dsn"), "postgres://orkano_dispatcher:") {
 		t.Error("operator DSN should use the orkano_dispatcher role")
 	}
-	if !strings.Contains(decodeSecretData(t, n.secrets[secretDashboard], "dsn"), "postgres://orkano_dashboard:") {
+	if !strings.Contains(decodeSecretData(t, n.secrets[platformsecrets.NameDashboardDB], "dsn"), "postgres://orkano_dashboard:") {
 		t.Error("dashboard DSN should use the orkano_dashboard role")
 	}
 }
@@ -107,7 +65,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
 	// Pre-existing secrets (a prior install): mark all present.
-	for _, name := range []string{secretSuperuser, secretOperator, secretReceiver, secretDashboard, secretDashboardEncKey, secretWebhook, secretBootstrap, secretGitHubApp, secretOIDC} {
+	for _, name := range []string{platformsecrets.NameSuperuser, platformsecrets.NameOperatorDB, platformsecrets.NameReceiverDB, platformsecrets.NameDashboardDB, platformsecrets.NameDashboardEncKey, platformsecrets.NameWebhook, platformsecrets.NameBootstrapToken, platformsecrets.NameGitHubApp, platformsecrets.NameOIDC} {
 		n.secrets[name] = "preexisting"
 	}
 
@@ -122,7 +80,7 @@ func TestApplyPreservesExistingSecrets(t *testing.T) {
 		t.Error("no secret should be re-applied when all already exist")
 	}
 	// Untouched.
-	if n.secrets[secretSuperuser] != "preexisting" {
+	if n.secrets[platformsecrets.NameSuperuser] != "preexisting" {
 		t.Error("existing superuser secret must be preserved untouched")
 	}
 }
