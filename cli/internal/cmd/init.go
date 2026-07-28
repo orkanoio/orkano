@@ -659,9 +659,9 @@ func printSummary(out io.Writer, opt *initOptions, res *k3s.Result, anyFresh, an
 			"Redeem it at first dashboard login to create the admin account (Phase 2).\n", bootstrapToken)
 	} else {
 		// The SSH-path reader is at their workstation, where the kubeconfig this
-		// run just wrote already reaches the cluster (the "Try it" line below) —
+		// run just wrote already reaches the cluster (the "Try it" line below):
 		// no node-picking, no sudo, and it works uniformly across HA members.
-		printBootstrapTokenRecovery(out, "KUBECONFIG=\""+opt.kubeconfig+"\" kubectl")
+		printBootstrapTokenRecovery(out, opt.kubeconfig)
 	}
 	writef(out, "\nTry it: KUBECONFIG=%s kubectl get nodes\n", opt.kubeconfig)
 }
@@ -713,9 +713,12 @@ func printLocalSummary(out io.Writer, opt *initOptions, res *k3s.Result, fresh, 
 		writef(out, "\nBootstrap token (shown once; store it now):\n  %s\n"+
 			"Redeem it at first dashboard login to create the admin account.\n", bootstrapToken)
 	} else {
-		// --local runs as root on the box itself, so the node's own k3s kubectl
-		// is the reader's working command (absolute path: RHEL sudo secure_path).
-		printBootstrapTokenRecovery(out, "/usr/local/bin/k3s kubectl")
+		// --local runs as root on the box itself, so k3s's own kubeconfig is the
+		// one that works there. Absolute, not opt.kubeconfig: that default is
+		// relative, and install.sh execs `orkano init --local` from whatever
+		// directory the curl|sh ran in, so a relative path would produce a
+		// command that only works from one place.
+		printBootstrapTokenRecovery(out, "/etc/rancher/k3s/k3s.yaml")
 	}
 
 	// The dashboard is ClusterIP-only and never exposed to the internet (INV-05).
@@ -744,21 +747,14 @@ func printBootstrapTokenAfterFailure(out io.Writer, bootstrapToken string) {
 		"this token will not be shown again, but it will work once the dashboard is ready.\n", bootstrapToken)
 }
 
-// printBootstrapTokenRecovery prints the rotate-the-secret recipe for a re-run
-// whose token was generated (and possibly never seen) on an earlier run. kubectl
-// is the caller's working command base — the SSH path passes a KUBECONFIG-scoped
-// kubectl for the workstation, --local the node's own k3s kubectl — so the
-// recipe is copy-pasteable exactly where the reader is sitting. The digest goes
-// through openssl (already required for the rand step) so the recipe works on
-// macOS workstations too, which ship no sha256sum.
-func printBootstrapTokenRecovery(out io.Writer, kubectl string) {
+// printBootstrapTokenRecovery points a re-run whose token was generated (and
+// possibly never seen) on an earlier run at `orkano bootstrap-token`, which
+// productizes what used to be printed here as a shell recipe. kubeconfig is the
+// path that works where the reader is sitting: the SSH path passes the one this
+// run just wrote to their workstation, --local the node's own absolute k3s path.
+func printBootstrapTokenRecovery(out io.Writer, kubeconfig string) {
 	writef(out, "\nBootstrap token already generated on a previous run (not shown again).\n"+
-		"If that first run failed before you copied it, the plaintext token cannot be recovered because\n"+
-		"only its sha256 hash is stored. Rotate it:\n\n"+
-		"  TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')\n"+
-		"  HASH=$(printf %%s \"$TOKEN\" | openssl dgst -sha256 | awk '{print $NF}')\n"+
-		"  %s -n orkano-system create secret generic orkano-bootstrap-token \\\n"+
-		"    --from-literal=token-sha256=\"$HASH\" --dry-run=client -o yaml | %s apply -f -\n"+
-		"  %s -n orkano-system rollout restart deploy/orkano-dashboard\n"+
-		"  printf 'Bootstrap token: %%s\\n' \"$TOKEN\"\n", kubectl, kubectl, kubectl)
+		"If that first run failed before you copied it, the plaintext token cannot be recovered\n"+
+		"because only its sha256 hash is stored. Mint a new one:\n\n"+
+		"  orkano bootstrap-token --kubeconfig %s\n", kubeconfig)
 }

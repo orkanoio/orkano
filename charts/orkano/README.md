@@ -6,17 +6,10 @@ your own nodes and want the batteries-included install instead, use
 `orkano init`; it bootstraps a hardened k3s and deploys the same manifest
 set this chart carries.
 
-> **Under construction (M4.2).** This chart deploys the static substrate:
-> namespaces, RBAC, NetworkPolicies, the build registry and its internal CA,
-> BuildKit config, the platform Postgres, (values-gated) cert-manager and the
-> External Secrets Operator, plus the Orkano components (operator, receiver,
-> dashboard, migration Job, the orkano-platform ACME issuer). The
-> bootstrap-secrets Job is not templated yet, so a `helm install` does not
-> produce a working PaaS until that sub-commit lands: every component (and
-> `platform-postgres-0`, in `CreateContainerConfigError`) stays unready until
-> the generate-once Secrets it references exist (`orkano-postgres-superuser`,
-> the role DSNs, `orkano-webhook-secret`, `orkano-bootstrap-token`, and the
-> empty `orkano-github-app`/`orkano-oidc` placeholders).
+> **Under construction (M4.2).** The opt-in node-prep DaemonSet (AppArmor
+> profile load, containerd registry CA drop-in, per-node registry
+> NetworkPolicy) is not templated yet; until it lands, prepare build nodes
+> manually or install with `orkano init`.
 
 ## Before installing: run the preflight
 
@@ -32,6 +25,32 @@ build-eligible node can run AppArmor-confined builds. Exit code 0 means
 install; 1 or 2 means fix the named problem first. Skipping it changes when
 you learn about a gap, not whether: the same probes resurface as
 `orkano doctor` checks.
+
+## After installing: mint the bootstrap token
+
+`helm install` seeds every generate-once platform Secret through the
+`orkano-bootstrap` Job, including `orkano-bootstrap-token`. That seeded token is
+deliberately unusable: the Job derives the stored sha256 from a token it
+immediately discards, so the dashboard starts but nobody can log in. Mint a real
+one after the install, from a machine with the cluster's kubeconfig:
+
+```
+orkano bootstrap-token --kubeconfig <kubeconfig>
+```
+
+The plaintext is printed exactly once; only its sha256 is stored. The command
+also restarts `deploy/orkano-dashboard`, because the dashboard reads the hash
+from its environment once at startup, and waits for that rollout: the new token
+is rejected until the restarted pod is Ready. Run it again any time you need a
+fresh token; the previous one stops working.
+
+Run it after `helm install`, not before: the command writes into `orkano-system`,
+which the chart creates.
+
+The restart is an out-of-band `kubectl.kubernetes.io/restartedAt` annotation on a
+Helm-managed Deployment. Helm's three-way merge drops it on the next upgrade and
+an ArgoCD self-heal reverts it; each causes one extra harmless rollout and, for
+GitOps users, a brief OutOfSync report. That is expected, not a bug.
 
 ## Values
 
@@ -74,6 +93,13 @@ golden-render comparison (`internal/install/chart_golden_test.go`, run by
 `helm template` must render byte-identical documents to the Go path. Keep
 that directory strictly the mirror set; chart-only extras (the bootstrap
 Job, node prep) live outside it.
+
+The bootstrap Job and its ServiceAccount, Role and RoleBinding live in
+`templates/bootstrap-job.yaml`, outside `templates/components/`, because they
+are chart-only: `orkano init` seeds the same Secrets over SSH and has no
+counterpart workload. Their content guard is
+`internal/install/chart_test.go`'s `TestChartBootstrapJobIsChartOnly`, which
+pins the Role to exactly `secrets: create`.
 
 Two Helm-semantics notes: Orkano's own CRDs live in `crds/`, which Helm
 installs once and **never upgrades**. CRD schema migrations are owned by

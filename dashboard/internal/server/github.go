@@ -18,6 +18,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
 
 // The GitHub App manifest flow (ADR-0003 onboarding, M2.6). The wizard hands a
@@ -37,16 +39,15 @@ const (
 	// dashboard's orkano-apps namespace, so the manifest flow needs the
 	// orkano-system update grant (config/rbac/dashboard.yaml).
 	//
-	// They MUST stay byte-identical to their authorities:
-	//   githubAppSecretName / *Key  → operator/internal/githubapp (Default*/...Key)
-	//   webhookSecretName / ...Key  → internal/install secretWebhook + its "secret" key
-	//   systemNamespace             → githubapp.SecretNamespace
-	// Renaming any of these without updating the reader breaks the deploy path.
-	githubAppSecretName    = "orkano-github-app"     //nolint:gosec // G101: a Secret object name, not a credential.
-	githubAppIDKey         = "app-id"                //
-	githubAppPrivateKeyKey = "private-key.pem"       //
-	webhookSecretName      = "orkano-webhook-secret" //nolint:gosec // G101: a Secret object name, not a credential.
-	webhookSecretKey       = "secret"                //
+	// The GitHub App coordinates MUST stay byte-identical to their authority,
+	// operator/internal/githubapp (Default*/...Key), which this module cannot
+	// import (Go internal visibility). The webhook Secret's name and key have no
+	// such barrier, so they come straight from internal/platformsecrets, the
+	// single definition both install paths seed from. systemNamespace's
+	// authority is githubapp.SecretNamespace.
+	githubAppSecretName    = "orkano-github-app" //nolint:gosec // G101: a Secret object name, not a credential.
+	githubAppIDKey         = "app-id"
+	githubAppPrivateKeyKey = "private-key.pem"
 	systemNamespace        = "orkano-system"
 
 	// githubCookie is the short-lived sealed flow cookie carrying the CSRF state
@@ -284,10 +285,10 @@ func (s *Server) writeGitHubSecrets(ctx context.Context, creds *GitHubAppCredent
 	}); err != nil {
 		return fmt.Errorf("write %s: %w", githubAppSecretName, err)
 	}
-	if err := s.blindUpdateSecret(ctx, webhookSecretName, map[string][]byte{
-		webhookSecretKey: []byte(creds.WebhookSecret),
+	if err := s.blindUpdateSecret(ctx, platformsecrets.NameWebhook, map[string][]byte{
+		platformsecrets.KeyWebhookSecret: []byte(creds.WebhookSecret),
 	}); err != nil {
-		return fmt.Errorf("write %s: %w", webhookSecretName, err)
+		return fmt.Errorf("write %s: %w", platformsecrets.NameWebhook, err)
 	}
 	return nil
 }

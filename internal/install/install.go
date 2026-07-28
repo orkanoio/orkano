@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/orkanoio/orkano/config"
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
 
@@ -280,7 +281,7 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 		// not yet exist; ensureSecrets preserves any already present (generate-
 		// once), so a re-run discards these in memory and never rotates a live
 		// credential. The bootstrap token is returned only if it was just created.
-		vals, err := generateSecretValues()
+		vals, err := platformsecrets.Generate()
 		if err != nil {
 			return nil, err
 		}

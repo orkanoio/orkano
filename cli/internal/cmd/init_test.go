@@ -430,16 +430,15 @@ func TestInitSkipPreflightProceeds(t *testing.T) {
 	if err := runInit(context.Background(), &out, &errw, opt); err != nil {
 		t.Fatalf("runInit with --skip-preflight: %v", err)
 	}
-	// The empty deploy token marks a re-run: the summary must print the recovery
-	// recipe built on the WORKSTATION-side kubeconfig — the SSH-path reader is
-	// not on the server, so an on-box k3s kubectl recipe would strand them.
+	// The empty deploy token marks a re-run: the summary must point at
+	// `orkano bootstrap-token` with the WORKSTATION-side kubeconfig — the
+	// SSH-path reader is not on the server, so an on-box path would strand them.
 	s := out.String()
-	if !strings.Contains(s, "plaintext token cannot be recovered") ||
-		!strings.Contains(s, "rollout restart deploy/orkano-dashboard") {
-		t.Errorf("SSH-path summary missing the bootstrap token recovery recipe:\n%s", s)
+	if !strings.Contains(s, "plaintext token cannot be recovered") {
+		t.Errorf("SSH-path summary missing the bootstrap token recovery note:\n%s", s)
 	}
-	if !strings.Contains(s, "KUBECONFIG=\""+opt.kubeconfig+"\" kubectl") {
-		t.Errorf("SSH-path recovery recipe must use the local kubeconfig, not an on-box k3s kubectl:\n%s", s)
+	if !strings.Contains(s, "orkano bootstrap-token --kubeconfig "+opt.kubeconfig) {
+		t.Errorf("SSH-path recovery must name the local kubeconfig, not an on-box path:\n%s", s)
 	}
 }
 
@@ -942,9 +941,13 @@ func TestInitLocalSkipPreflight(t *testing.T) {
 	if !strings.Contains(out.String(), "already generated on a previous run") {
 		t.Errorf("summary missing the re-run token notice:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "plaintext token cannot be recovered") ||
-		!strings.Contains(out.String(), "rollout restart deploy/orkano-dashboard") {
-		t.Errorf("summary missing the bootstrap token recovery recipe:\n%s", out.String())
+	if !strings.Contains(out.String(), "plaintext token cannot be recovered") {
+		t.Errorf("summary missing the bootstrap token recovery note:\n%s", out.String())
+	}
+	// Absolute: --local runs from whatever directory the curl|sh installer used,
+	// so the relative default kubeconfig would strand the reader.
+	if !strings.Contains(out.String(), "orkano bootstrap-token --kubeconfig /etc/rancher/k3s/k3s.yaml") {
+		t.Errorf("--local recovery must name k3s's own absolute kubeconfig:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "Redeem it at first dashboard login") {
 		t.Errorf("re-run summary must not print token redemption instructions:\n%s", out.String())

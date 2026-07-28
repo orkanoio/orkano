@@ -3,7 +3,21 @@ package auth
 import (
 	"encoding/base64"
 	"testing"
+
+	"github.com/orkanoio/orkano/internal/platformsecrets"
 )
+
+// TestHashTokenMatchesPlatformSecrets pins the two independent definitions of
+// the bootstrap token's stored form together. `orkano bootstrap-token` writes
+// platformsecrets.HashToken's output; the redeem path compares this one. A
+// silent divergence would mint tokens that always 401 and read as user error.
+func TestHashTokenMatchesPlatformSecrets(t *testing.T) {
+	for _, in := range []string{"", "orkano", "a-token-with-symbols_-", "0123456789"} {
+		if got, want := HashToken(in), platformsecrets.HashToken(in); got != want {
+			t.Errorf("HashToken(%q) = %q, platformsecrets.HashToken = %q", in, got, want)
+		}
+	}
+}
 
 func TestNewSessionToken(t *testing.T) {
 	raw, hash, err := NewSessionToken()

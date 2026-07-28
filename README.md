@@ -52,7 +52,7 @@ The preflight works today, checking an existing cluster for a supported Kubernet
 orkano preflight --kubeconfig <path>
 ```
 
-The [Helm chart](charts/orkano/README.md) deploys the substrate, but the in-cluster bootstrap Job that completes it is still being built. Use `orkano init` until then.
+The [Helm chart](charts/orkano/README.md) installs onto an existing cluster: run `orkano preflight`, `helm install`, then `orkano bootstrap-token` to mint the dashboard login. Node preparation for builds (AppArmor) is not yet templated; `orkano init` still does it for you.
 
 ## What you get
 
