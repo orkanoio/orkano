@@ -1,9 +1,18 @@
 # Receiver Deployment + ClusterIP Service, mirroring internal/install/templates/
 # receiver.yaml.tmpl (orkano-receiver SA, automountServiceAccountToken false,
 # restricted SC, env from orkano-webhook-secret + orkano-receiver-db). The
-# allowlist is the in-cluster fixture repo; the image is the locally-built
-# receiver (kind-loaded, IfNotPresent). No Ingress: run.sh reaches /webhook via
-# kubectl port-forward (INV-05 — nothing public).
+# allowlist is projected from the same runtime ConfigMap as production; the
+# image is the locally-built receiver (kind-loaded, IfNotPresent). No Ingress:
+# run.sh reaches /webhook via kubectl port-forward (INV-05 — nothing public).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orkano-repo-allowlist
+  namespace: orkano-system
+data:
+  repositories: |
+    orkanoio/orkano-e2e
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,8 +55,12 @@ spec:
                 secretKeyRef:
                   name: orkano-receiver-db
                   key: dsn
-            - name: ORKANO_REPO_ALLOWLIST
-              value: "orkanoio/orkano-e2e"
+            - name: ORKANO_REPO_ALLOWLIST_FILE
+              value: "/etc/orkano/repo-allowlist/repositories"
+          volumeMounts:
+            - name: repo-allowlist
+              mountPath: /etc/orkano/repo-allowlist
+              readOnly: true
           ports:
             - name: http
               containerPort: 8080
@@ -74,6 +87,15 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+      volumes:
+        - name: repo-allowlist
+          configMap:
+            name: orkano-repo-allowlist
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: repositories
+                path: repositories
 ---
 apiVersion: v1
 kind: Service

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // The golden-render half of the ADR-0019 fork-b drift guard: for equivalent
@@ -104,6 +105,39 @@ func TestChartComponentGoldenRender(t *testing.T) {
 	}
 }
 
+// Helm deletes null keys while coalescing, before schema validation, so a bare
+// `repoAllowlist:` reaches the template as nil and no `type: array` constraint
+// can catch it — null is the one empty form the schema cannot reject (`{}` and
+// `""` both fail it). sprig's sortAlpha renders nil as the literal "<nil>",
+// which the seeder rejects as an invalid repository: the Job then fails
+// permanently and the ConfigMap is never created. Null must mean deny-all.
+func TestChartRepoAllowlistSeedToleratesNull(t *testing.T) {
+	helm := helmForGolden(t)
+
+	for name, args := range map[string][]string{
+		"unset":    nil,
+		"set null": {"--set", "repoAllowlist=null"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), helm,
+				append([]string{"template", "orkano", chartRoot}, args...)...)
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("helm template: %v\nstderr: %s", err, stderr.String())
+			}
+			if strings.Contains(string(out), "<nil>") {
+				t.Fatalf("rendered chart contains the sprig nil literal \"<nil>\"; "+
+					"guard the value with `| default list`\n%s", stderr.String())
+			}
+			if want := `value: ""`; !strings.Contains(string(out), want) {
+				t.Errorf("seed env not rendered as an empty deny-all policy (want a %s line)", want)
+			}
+		})
+	}
+}
+
 func TestValuesSchemaUnsafeFeatureEnum(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(chartRoot, "values.schema.json"))
 	if err != nil {
@@ -155,12 +189,21 @@ func TestValuesSchemaMirrorsGoValidation(t *testing.T) {
 		{[]string{"images", "tag"}, optional(versionRe)},
 		{[]string{"acme", "email"}, optional(emailRe)},
 		{[]string{"receiver", "host"}, optional(hostRe)},
-		{[]string{"repoAllowlist"}, repoNameRe.String()},
+		{[]string{"repoAllowlist"}, repoallowlist.RepositoryPattern},
 	} {
 		if got := schemaPattern(t, schema, tc.path...); got != tc.want {
 			t.Errorf("values.schema.json %s pattern %q != components.go regex %q — keep the two validators in sync",
 				strings.Join(tc.path, "."), got, tc.want)
 		}
+	}
+	properties := schema["properties"].(map[string]any)
+	repositories := properties["repoAllowlist"].(map[string]any)
+	if got := int(repositories["maxItems"].(float64)); got != repoallowlist.MaxRepositories {
+		t.Errorf("values.schema.json repoAllowlist.maxItems = %d, want %d", got, repoallowlist.MaxRepositories)
+	}
+	repository := repositories["items"].(map[string]any)
+	if got := int(repository["maxLength"].(float64)); got != repoallowlist.MaxRepositoryLength {
+		t.Errorf("values.schema.json repoAllowlist.items.maxLength = %d, want %d", got, repoallowlist.MaxRepositoryLength)
 	}
 }
 

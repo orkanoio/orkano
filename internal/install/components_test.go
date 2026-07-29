@@ -161,10 +161,24 @@ func TestRenderComponentsACMEServerAndEmail(t *testing.T) {
 	}
 }
 
-func TestRenderComponentsAllowlist(t *testing.T) {
+func TestRenderComponentsAllowlistFile(t *testing.T) {
 	m := renderByName(t, Config{Version: "1.0.0", RepoAllowlist: []string{"orkanoio/orkano", "acme/widgets"}})
-	if !strings.Contains(m["components-receiver.yaml"], `value: "orkanoio/orkano,acme/widgets"`) {
-		t.Error("receiver should carry the comma-joined repo allowlist")
+	receiver := m["components-receiver.yaml"]
+	for _, want := range []string{
+		"name: ORKANO_REPO_ALLOWLIST_FILE",
+		`value: "/etc/orkano/repo-allowlist/repositories"`,
+		"name: orkano-repo-allowlist",
+		"mountPath: /etc/orkano/repo-allowlist",
+	} {
+		if !strings.Contains(receiver, want) {
+			t.Errorf("receiver should mount the runtime allowlist, missing %q", want)
+		}
+	}
+	if strings.Contains(receiver, "orkanoio/orkano,acme/widgets") {
+		t.Error("receiver Deployment must not embed the install-time seed")
+	}
+	if strings.Contains(m["components-dashboard.yaml"], "ORKANO_REPO_ALLOWLIST") {
+		t.Error("dashboard must read the live ConfigMap through its pinned API grant")
 	}
 }
 

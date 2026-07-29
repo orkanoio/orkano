@@ -26,6 +26,7 @@ import (
 
 	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
 
@@ -78,7 +79,8 @@ type Config struct {
 	ACMEEmail string
 	// ACMEProd selects Let's Encrypt production; false uses staging (default).
 	ACMEProd bool
-	// RepoAllowlist seeds the receiver's ORKANO_REPO_ALLOWLIST (owner/name).
+	// RepoAllowlist seeds the runtime repository allowlist ConfigMap once.
+	// Setup and Settings own subsequent edits; installer re-runs preserve them.
 	RepoAllowlist []string
 	// UnsafeFeatures is the explicit allowlist of security-sensitive source and
 	// build capabilities enabled for this installation. Empty is fail-closed.
@@ -223,6 +225,35 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 		return nil, err
 	}
 
+	// Normalize before the gate, never after: Normalize drops blank entries, so
+	// a degenerate --allow-repo "" carries slice length 1 while meaning nothing
+	// at all. Gating on the raw length would read that as an explicit seed,
+	// skip the legacy migration, and replace a live policy with deny-all.
+	repoAllowlistSeed, err := repoallowlist.Normalize(cfg.RepoAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("install: repository allowlist: %w", err)
+	}
+	repoAllowlistReady := false
+	if cfg.Version != "" && len(repoAllowlistSeed) == 0 {
+		var legacyReceiverFound bool
+		repoAllowlistSeed, legacyReceiverFound, err = legacyReceiverRepoAllowlist(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		if legacyReceiverFound {
+			// Persist the legacy policy before changing the Deployment. Keeping
+			// it only in this process until the end of Apply would leave a crash
+			// window where the rollout removes the old env and a re-run can no
+			// longer recover it.
+			allowlistChanged, err := ensureRepoAllowlist(ctx, n, repoAllowlistSeed)
+			res.Changed = res.Changed || allowlistChanged
+			if err != nil {
+				return res, err
+			}
+			repoAllowlistReady = true
+		}
+	}
+
 	base := path.Join(cfg.autoDeployDir(), manifestSubdir)
 	migrated, err := n.migrateLegacyManifests(ctx, base, files)
 	if err != nil {
@@ -269,10 +300,10 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 		}
 	}
 
-	// The generated Secrets the component workloads reference are created
-	// imperatively (into etcd, encrypted at rest), generate-once, after k3s has
-	// created their namespace — never written to disk in the auto-deploy dir.
-	// This is the component path; the static-only path (no Version) skips it.
+	// Generated Secrets and the initial repository allowlist are created
+	// imperatively, generate-once, after k3s has created their namespace —
+	// never written to the auto-deploy dir, where a re-run could reset runtime
+	// Settings edits. This is the component path; the static-only path skips it.
 	if cfg.Version != "" {
 		if err := n.waitNamespace(ctx, systemNS, cfg.waitTimeout()); err != nil {
 			return nil, err
@@ -290,6 +321,13 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 		res.Changed = res.Changed || secChanged
 		if err != nil {
 			return res, err
+		}
+		if !repoAllowlistReady {
+			allowlistChanged, err := ensureRepoAllowlist(ctx, n, repoAllowlistSeed)
+			res.Changed = res.Changed || allowlistChanged
+			if err != nil {
+				return res, err
+			}
 		}
 	}
 

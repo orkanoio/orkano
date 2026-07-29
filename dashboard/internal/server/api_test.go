@@ -12,8 +12,10 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -23,6 +25,7 @@ import (
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // --- M2.4 CRUD test harness ---
@@ -52,12 +55,40 @@ func testScheme(t *testing.T) *runtime.Scheme {
 // operator-owned status the way the real apiserver does.
 func apiServer(t *testing.T, store *fakeStore, objs ...client.Object) *Server {
 	t.Helper()
+	objs = withRepoAllowlistFixture(t, objs)
 	k8s := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
 		WithStatusSubresource(&orkanov1alpha1.App{}, &orkanov1alpha1.Build{}, &orkanov1alpha1.Domain{}, &orkanov1alpha1.Postgres{}, &orkanov1alpha1.Mongo{}).
 		WithObjects(objs...).
 		Build()
 	return serverWith(t, store, k8s)
+}
+
+func repoAllowlistFixture(t *testing.T, repositories ...string) *corev1.ConfigMap {
+	t.Helper()
+	formatted, err := repoallowlist.Format(repositories)
+	if err != nil {
+		t.Fatalf("format repository allowlist fixture: %v", err)
+	}
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:       repoallowlist.Namespace,
+			Name:            repoallowlist.ConfigMapName,
+			ResourceVersion: "1",
+		},
+		Data: map[string]string{repoallowlist.DataKey: formatted},
+	}
+}
+
+func withRepoAllowlistFixture(t *testing.T, objs []client.Object) []client.Object {
+	t.Helper()
+	for _, obj := range objs {
+		if obj.GetNamespace() == repoallowlist.Namespace &&
+			obj.GetName() == repoallowlist.ConfigMapName {
+			return objs
+		}
+	}
+	return append(objs, repoAllowlistFixture(t))
 }
 
 // serverWith builds a server over a caller-supplied K8s client — for tests that

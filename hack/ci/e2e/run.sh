@@ -459,6 +459,54 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' \
   --data-binary @"$TMP/body.json" \
   http://127.0.0.1:18080/webhook)"
 [ "$code" = "202" ] || fatal "receiver answered $code (expected 202)"
+
+log "prove the receiver reloads the projected repository allowlist without a rollout"
+receiver_pod="$(kubectl get pod -n orkano-system -l app.kubernetes.io/name=orkano-receiver -o 'jsonpath={.items[0].metadata.name}')"
+receiver_uid="$(kubectl get pod "$receiver_pod" -n orkano-system -o 'jsonpath={.metadata.uid}')"
+kubectl patch configmap orkano-repo-allowlist -n orkano-system --type=merge \
+  -p '{"data":{"repositories":""}}' >/dev/null
+# Updating pod metadata asks kubelet to refresh projected ConfigMaps promptly;
+# it does not recreate the pod. Production also converges on kubelet's normal
+# projection interval without this test-only nudge.
+kubectl annotate pod "$receiver_pod" -n orkano-system \
+  "orkano.io/e2e-allowlist-refresh=$(date +%s)" --overwrite >/dev/null
+removed=""
+for i in $(seq 1 60); do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H 'X-GitHub-Event: push' \
+    -H 'X-GitHub-Delivery: e2e-policy-reload' \
+    -H "X-Hub-Signature-256: $SIG" \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$TMP/body.json" \
+    http://127.0.0.1:18080/webhook)"
+  [ "$code" = "403" ] && { removed=yes; break; }
+  [ "$code" = "202" ] || fatal "receiver answered $code while waiting for deny-all policy (want old 202 or new 403)"
+  sleep 1
+done
+[ -n "$removed" ] || fatal "receiver did not observe repository removal from the projected ConfigMap"
+
+kubectl patch configmap orkano-repo-allowlist -n orkano-system --type=merge \
+  -p "{\"data\":{\"repositories\":\"$REPO\\n\"}}" >/dev/null
+kubectl annotate pod "$receiver_pod" -n orkano-system \
+  "orkano.io/e2e-allowlist-refresh=$(date +%s)-restore" --overwrite >/dev/null
+restored=""
+for i in $(seq 1 60); do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H 'X-GitHub-Event: push' \
+    -H 'X-GitHub-Delivery: e2e-policy-reload' \
+    -H "X-Hub-Signature-256: $SIG" \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$TMP/body.json" \
+    http://127.0.0.1:18080/webhook)"
+  [ "$code" = "202" ] && { restored=yes; break; }
+  [ "$code" = "403" ] || fatal "receiver answered $code while waiting for restored policy (want old 403 or new 202)"
+  sleep 1
+done
+[ -n "$restored" ] || fatal "receiver did not observe repository restoration from the projected ConfigMap"
+[ "$(kubectl get pod "$receiver_pod" -n orkano-system -o 'jsonpath={.metadata.uid}')" = "$receiver_uid" ] \
+  || fatal "receiver pod restarted during allowlist reload"
+echo "OK: repository removal denied, restoration accepted, receiver pod UID unchanged"
+
 kill "$PF_PID" 2>/dev/null; PF_PID=""
 echo "OK: receiver accepted the signed push (202)"
 

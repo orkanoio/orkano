@@ -1,0 +1,65 @@
+{{- /*
+Chart-only repository-allowlist seeder. It deliberately stays outside
+templates/components/, which is strictly the golden-mirrored manifest set.
+
+The Job name fingerprints every value that can change its pod template:
+chart version (covering template/security-policy changes), image location, and
+the canonicalized seed. Kubernetes Job pod templates are immutable, so a
+changed Helm release must create a new Job rather than patching an old one.
+SeedRepoAllowlist uses create-plus-tolerate-AlreadyExists, so every later Job is
+a harmless no-op once Setup or Settings owns the live ConfigMap.
+*/ -}}
+{{- /*
+`| default list` is load-bearing: a values file carrying a bare `repoAllowlist:`
+and `--set repoAllowlist=null` both leave the key null, and sprig's sortAlpha
+renders that as the literal "<nil>" — which the seeder rejects as an invalid
+repository, failing the Job permanently and leaving the ConfigMap uncreated.
+Null is the natural way to spell "no repositories", so it must mean deny-all.
+*/ -}}
+{{- $seed := join "," (sortAlpha (.Values.repoAllowlist | default list)) -}}
+{{- $fingerprintInput := printf "%s|%s|%s|%s" .Chart.Version .Values.images.repository (include "orkano.imageTag" .) $seed -}}
+{{- $fingerprint := sha256sum $fingerprintInput | trunc 12 -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orkano-repo-allowlist-bootstrap-{{ $fingerprint }}
+  namespace: orkano-system
+  labels:
+    app.kubernetes.io/name: orkano-repo-allowlist-bootstrap
+spec:
+  # RBAC propagation is not synchronous with helm's kind-ordered apply, so the
+  # first pod may hit a Forbidden; OnFailure retries absorb that.
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orkano-repo-allowlist-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: orkano-bootstrap
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ .Values.images.repository }}/orkano-operator:{{ include "orkano.imageTag" . }}
+          args: ["bootstrap-repo-allowlist"]
+          env:
+            - name: ORKANO_REPO_ALLOWLIST
+              value: {{ $seed | quote }}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

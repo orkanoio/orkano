@@ -45,9 +45,17 @@ spec:
                 secretKeyRef:
                   name: orkano-receiver-db
                   key: dsn
-            # The allowlist is not a secret; it is a plain comma-separated value.
-            - name: ORKANO_REPO_ALLOWLIST
-              value: "{{ join "," .Values.repoAllowlist }}"
+            # The non-secret ConfigMap is projected by kubelet, not read through
+            # the Kubernetes API. The receiver reopens this path on every push,
+            # so policy updates need no rollout and INV-04 remains intact.
+            - name: ORKANO_REPO_ALLOWLIST_FILE
+              value: "/etc/orkano/repo-allowlist/repositories"
+          volumeMounts:
+            # Mount the whole projected directory, never subPath: kubelet's
+            # atomic symlink swaps then expose ConfigMap updates in place.
+            - name: repo-allowlist
+              mountPath: /etc/orkano/repo-allowlist
+              readOnly: true
           ports:
             - name: http
               containerPort: 8080
@@ -74,6 +82,15 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+      volumes:
+        - name: repo-allowlist
+          configMap:
+            name: orkano-repo-allowlist
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: repositories
+                path: repositories
 ---
 # ClusterIP: the receiver is reached through its Ingress (rendered when a
 # receiver host is configured), never directly. INV-05: nothing public except

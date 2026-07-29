@@ -19,13 +19,18 @@ import (
 // command, decodes base64 writes into a files map, answers `cat`, and answers
 // the readiness `kubectl get … jsonpath` polls from a scriptable state.
 type fakeNode struct {
-	files       map[string]string
-	cmds        []string
-	secrets     map[string]string // applied secret name -> rendered manifest
-	appliedCRDs []string
-	noNS        bool // when true, `get namespace` reports not-found
-	crdWaitFail bool
-	failSecret  string // secret name whose `kubectl apply` fails
+	files         map[string]string
+	cmds          []string
+	secrets       map[string]string // applied secret name -> rendered manifest
+	configMaps    map[string]string // applied ConfigMap name -> rendered manifest
+	appliedCRDs   []string
+	noNS          bool // when true, `get namespace` reports not-found
+	crdWaitFail   bool
+	failSecret    string // secret name whose `kubectl apply` fails
+	failConfigMap string // ConfigMap name whose `kubectl create` fails
+
+	legacyReceiverDeployment  string
+	receiverDeploymentFailure string
 
 	// runErr maps a substring of the RAW command to a transport error, so the
 	// "couldn't run at all" branches (distinct from a non-zero exit, which is a
@@ -42,6 +47,7 @@ func newFakeNode() *fakeNode {
 	return &fakeNode{
 		files:      map[string]string{},
 		secrets:    map[string]string{},
+		configMaps: map[string]string{},
 		readyAfter: map[string]int{},
 		pollCount:  map[string]int{},
 		notFound:   map[string]bool{},
@@ -58,12 +64,26 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 	cmd := strings.ReplaceAll(raw, "sudo ", "") // sudo never appears in a base64 payload
 
 	switch {
-	case strings.Contains(cmd, "| base64 -d |") && strings.Contains(cmd, "kubectl apply -f -"):
-		name, manifest := parseSecretApply(cmd)
-		if name != "" && name == f.failSecret {
+	case strings.Contains(cmd, "| base64 -d |") &&
+		(strings.Contains(cmd, "kubectl apply -f -") || strings.Contains(cmd, "kubectl create -f -")):
+		kind, name, manifest := parseObjectApply(cmd)
+		if kind == "Secret" && name != "" && name == f.failSecret {
 			return ssh.Result{Stderr: "apply refused", ExitStatus: 1}, nil
 		}
-		f.secrets[name] = manifest
+		switch kind {
+		case "Secret":
+			f.secrets[name] = manifest
+		case "ConfigMap":
+			if strings.Contains(cmd, "kubectl create -f -") {
+				if name == f.failConfigMap {
+					return ssh.Result{Stderr: "create refused", ExitStatus: 1}, nil
+				}
+				if _, exists := f.configMaps[name]; exists {
+					return ssh.Result{Stderr: `Error from server (AlreadyExists): configmaps "` + name + `" already exists`, ExitStatus: 1}, nil
+				}
+			}
+			f.configMaps[name] = manifest
+		}
 		return ssh.Result{}, nil
 
 	case strings.Contains(cmd, "kubectl apply -f "):
@@ -86,6 +106,20 @@ func (f *fakeNode) Run(_ context.Context, raw string) (ssh.Result, error) {
 		name := secretNameArg(cmd)
 		if _, ok := f.secrets[name]; ok {
 			return ssh.Result{Stdout: "secret/" + name + "\n"}, nil
+		}
+		return ssh.Result{Stderr: "NotFound", ExitStatus: 1}, nil
+
+	case strings.Contains(cmd, "kubectl -n") &&
+		strings.Contains(cmd, "get deployment "+receiverDeploymentName):
+		if f.receiverDeploymentFailure != "" {
+			return ssh.Result{Stderr: f.receiverDeploymentFailure, ExitStatus: 1}, nil
+		}
+		return ssh.Result{Stdout: f.legacyReceiverDeployment}, nil
+
+	case strings.Contains(cmd, "kubectl -n") && strings.Contains(cmd, "get configmap "):
+		name := resourceNameArg(cmd, "configmap")
+		if _, ok := f.configMaps[name]; ok {
+			return ssh.Result{Stdout: "configmap/" + name + "\n"}, nil
 		}
 		return ssh.Result{Stderr: "NotFound", ExitStatus: 1}, nil
 
@@ -160,24 +194,38 @@ func parseWrite(cmd string) (string, string, bool) {
 // parseSecretApply decodes the secret manifest piped into `kubectl apply -f -`
 // and returns the Secret's name and the rendered manifest.
 func parseSecretApply(cmd string) (string, string) {
+	_, name, manifest := parseObjectApply(cmd)
+	return name, manifest
+}
+
+func parseObjectApply(cmd string) (string, string, string) {
 	const marker = "printf %s '"
 	start := strings.Index(cmd, marker) + len(marker)
 	end := strings.Index(cmd, "' | base64 -d")
 	dec, _ := base64.StdEncoding.DecodeString(cmd[start:end])
 	manifest := string(dec)
+	var kind string
 	for _, line := range strings.Split(manifest, "\n") {
-		if s := strings.TrimSpace(line); strings.HasPrefix(s, "name:") {
-			return strings.TrimSpace(strings.TrimPrefix(s, "name:")), manifest
+		s := strings.TrimSpace(line)
+		if strings.HasPrefix(s, "kind:") {
+			kind = strings.TrimSpace(strings.TrimPrefix(s, "kind:"))
+		}
+		if strings.HasPrefix(s, "name:") {
+			return kind, strings.TrimSpace(strings.TrimPrefix(s, "name:")), manifest
 		}
 	}
-	return "", manifest
+	return kind, "", manifest
 }
 
 // secretNameArg parses the name from `kubectl -n NS get secret NAME -o name`.
 func secretNameArg(cmd string) string {
+	return resourceNameArg(cmd, "secret")
+}
+
+func resourceNameArg(cmd, resource string) string {
 	fields := strings.Fields(cmd)
 	for i, f := range fields {
-		if f == "secret" && i+1 < len(fields) {
+		if f == resource && i+1 < len(fields) {
 			return fields[i+1]
 		}
 	}
@@ -632,7 +680,9 @@ func TestApplyNeverWritesAManifestPathInPlace(t *testing.T) {
 	}
 	for _, raw := range n.cmds {
 		cmd := strings.ReplaceAll(raw, "sudo ", "")
-		if !strings.Contains(cmd, "| base64 -d |") || strings.Contains(cmd, "kubectl apply -f -") {
+		if !strings.Contains(cmd, "| base64 -d |") ||
+			strings.Contains(cmd, "kubectl apply -f -") ||
+			strings.Contains(cmd, "kubectl create -f -") {
 			continue
 		}
 		target, _, _ := parseWrite(cmd)

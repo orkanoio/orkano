@@ -1,12 +1,13 @@
-// Package bootstrap seeds the platform's generate-once Secrets from inside the
-// cluster, for the Helm chart's one-shot bootstrap Job (ADR-0019 decision 6).
-// It is the in-cluster counterpart of `orkano init`'s ensureSecrets: same names,
-// same keys, same values, written through the API instead of over SSH.
+// Package bootstrap seeds the platform's generate-once Secrets and initial
+// repository allowlist from inside the cluster, for the Helm chart's one-shot
+// bootstrap Jobs (ADR-0019 decision 6). It is the in-cluster counterpart of
+// `orkano init`'s seed path, written through the API instead of over SSH.
 //
 // Every write is a bare Create. There is no Get, Update, Patch or Delete
-// anywhere in this package, so the Job's Role needs only `secrets: create` and
-// generate-once is enforced by the grant, not by a code path: a helm upgrade or
-// a GitOps re-sync cannot rotate a live credential even if this code were wrong.
+// anywhere in this package, so the Job's Role needs only create on Secrets and
+// ConfigMaps. Generate-once is enforced by the grant, not by a code path: a
+// Helm upgrade cannot rotate a live credential or reset Settings edits even if
+// this code were wrong.
 package bootstrap
 
 import (

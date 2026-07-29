@@ -54,6 +54,12 @@ func parsePage(r *http.Request) (limit, offset int32) {
 // destructive actions" (delete an app, rotate secrets), not for provisioning.
 func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.With(s.RequireSession).Get("/api/features", s.handleFeatures)
+	// GitHub's exact owner/repository allowlist is live platform policy, backed
+	// by one non-secret ConfigMap. Reading needs a session; changing what the
+	// internet-facing receiver may enqueue needs a fresh identity proof and an
+	// append-only audit entry.
+	r.With(s.RequireSession).Get("/api/repo-allowlist", s.handleGetRepoAllowlist)
+	r.With(s.RequireStepUp).Put("/api/repo-allowlist", s.handleUpdateRepoAllowlist)
 	// Cluster node inventory for the Settings page — a read view like the rest,
 	// through the impersonated viewer's cluster-scoped nodes grant.
 	r.With(s.RequireSession).Get("/api/nodes", s.handleListNodes)

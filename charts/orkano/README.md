@@ -29,10 +29,12 @@ you learn about a gap, not whether: the same probes resurface as
 ## After installing: mint the bootstrap token
 
 `helm install` seeds every generate-once platform Secret through the
-`orkano-bootstrap` Job, including `orkano-bootstrap-token`. That seeded token is
-deliberately unusable: the Job derives the stored sha256 from a token it
-immediately discards, so the dashboard starts but nobody can log in. Mint a real
-one after the install, from a machine with the cluster's kubeconfig:
+`orkano-bootstrap` Job and the initial repository allowlist through a separate,
+fingerprinted `orkano-repo-allowlist-bootstrap-*` Job. The
+`orkano-bootstrap-token` Secret created by the first Job is deliberately
+unusable: the Job derives the stored sha256 from a token it immediately
+discards, so the dashboard starts but nobody can log in. Mint a real one after
+the install, from a machine with the cluster's kubeconfig:
 
 ```
 orkano bootstrap-token --kubeconfig <kubeconfig>
@@ -61,7 +63,7 @@ GitOps users, a brief OutOfSync report. That is expected, not a bug.
 | `acme.email` | `""` | Registration email for the `orkano-platform` ACME ClusterIssuer. Optional. |
 | `acme.production` | `false` | `false` = Let's Encrypt staging (safe default), `true` = production certificates. |
 | `receiver.host` | `""` | Public hostname for the webhook receiver's Ingress. Empty = ClusterIP-only, no Ingress (INV-05); upgrade with a host to expose it later. |
-| `repoAllowlist` | `[]` | GitHub repos (`owner/name`) the receiver accepts webhooks from. Empty = deny-all. |
+| `repoAllowlist` | `[]` | Initial GitHub repos (`owner/name`) the receiver accepts webhooks from. Empty = deny-all. Seeded once; later Setup/Settings edits survive upgrades. |
 | `features.unsafe` | `[]` | Explicit unsafe-feature opt-ins: `source.git`, `source.zip`, and/or `build.nixpacks`. Disabled by default; the enabled set is passed to both the dashboard and operator and changing it rolls both pods. |
 | `ingress.className` | `traefik` | IngressClass for the receiver Ingress and the ACME HTTP-01 solver. |
 | `certManager.install` | `true` | Install the vendored cert-manager. Set `false` when the cluster already runs cert-manager (the preflight detects this). |
@@ -94,12 +96,17 @@ golden-render comparison (`internal/install/chart_golden_test.go`, run by
 that directory strictly the mirror set; chart-only extras (the bootstrap
 Job, node prep) live outside it.
 
-The bootstrap Job and its ServiceAccount, Role and RoleBinding live in
-`templates/bootstrap-job.yaml`, outside `templates/components/`, because they
-are chart-only: `orkano init` seeds the same Secrets over SSH and has no
-counterpart workload. Their content guard is
-`internal/install/chart_test.go`'s `TestChartBootstrapJobIsChartOnly`, which
-pins the Role to exactly `secrets: create`.
+The Secret bootstrap Job and its shared ServiceAccount, Role and RoleBinding
+live in `templates/bootstrap-job.yaml`; the repository allowlist seeder lives in
+`templates/repo-allowlist-bootstrap-job.yaml`. Both stay outside
+`templates/components/` because they are chart-only: `orkano init` seeds the
+same objects over SSH and has no counterpart workload. The second Job's name
+fingerprints its chart version, image, and initial repository list so an upgrade
+creates a new immutable Job instead of trying to patch the old pod template.
+Both seeders only create absent objects, so later Setup/Settings edits survive
+every rerun and upgrade. Their content guards in
+`internal/install/chart_test.go` pin the shared Role to exactly create-only
+access for Secrets and ConfigMaps.
 
 Two Helm-semantics notes: Orkano's own CRDs live in `crds/`, which Helm
 installs once and **never upgrades**. CRD schema migrations are owned by

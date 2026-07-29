@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -343,7 +345,11 @@ func TestAllowlistNormalization(t *testing.T) {
 		Allowlist: []string{"  Orkanoio/Orkano  ", "", "dup/repo", "dup/repo"},
 		Enqueuer:  &fakeEnqueuer{},
 	})
-	if got := h.AllowlistSize(); got != 2 {
+	got, err := h.AllowlistSize()
+	if err != nil {
+		t.Fatalf("AllowlistSize: %v", err)
+	}
+	if got != 2 {
 		t.Fatalf("AllowlistSize = %d, want 2 (trim/dedupe)", got)
 	}
 
@@ -368,4 +374,103 @@ func TestAllowlistNormalization(t *testing.T) {
 	if len(fake.calls) != 1 || fake.calls[0].Repo != "OrkanoIO/Orkano" {
 		t.Fatalf("expected enqueue preserving payload repo case, got %+v", fake.calls)
 	}
+}
+
+func TestFileAllowlistReloadsForEveryPush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repositories")
+	writePolicy := func(raw string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatalf("write policy: %v", err)
+		}
+	}
+	writePolicy("orkanoio/orkano\n")
+
+	fake := &fakeEnqueuer{rows: 1}
+	h := webhook.NewHandler(webhook.Config{
+		Secret:          testSecret,
+		AllowlistSource: webhook.FileAllowlist{Path: path},
+		Enqueuer:        fake,
+	})
+
+	if got := pushStatus(t, h, "OrkanoIO/Orkano", "file-1"); got != http.StatusAccepted {
+		t.Fatalf("initial policy status = %d, want %d", got, http.StatusAccepted)
+	}
+
+	writePolicy("acme/widgets\n")
+	if got := pushStatus(t, h, validRepo, "file-2"); got != http.StatusForbidden {
+		t.Fatalf("removed repository status = %d, want %d", got, http.StatusForbidden)
+	}
+	if got := pushStatus(t, h, "ACME/Widgets", "file-3"); got != http.StatusAccepted {
+		t.Fatalf("new repository status = %d, want %d", got, http.StatusAccepted)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("enqueue calls = %d, want only the two allowed pushes", len(fake.calls))
+	}
+}
+
+func TestFileAllowlistFailureIsUnavailableAndFailClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repositories")
+	fake := &fakeEnqueuer{rows: 1}
+	h := webhook.NewHandler(webhook.Config{
+		Secret:          testSecret,
+		AllowlistSource: webhook.FileAllowlist{Path: path},
+		Enqueuer:        fake,
+	})
+
+	if got := pushStatus(t, h, validRepo, "missing"); got != http.StatusServiceUnavailable {
+		t.Fatalf("missing policy status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+
+	if err := os.WriteFile(path, []byte("owner/*\n"), 0o600); err != nil {
+		t.Fatalf("write malformed policy: %v", err)
+	}
+	if got := pushStatus(t, h, validRepo, "malformed"); got != http.StatusServiceUnavailable {
+		t.Fatalf("malformed policy status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write empty policy: %v", err)
+	}
+	size, err := h.AllowlistSize()
+	if err != nil {
+		t.Fatalf("empty policy AllowlistSize: %v", err)
+	}
+	if size != 0 {
+		t.Fatalf("empty policy size = %d, want 0", size)
+	}
+	if got := pushStatus(t, h, validRepo, "empty"); got != http.StatusForbidden {
+		t.Fatalf("empty policy status = %d, want %d", got, http.StatusForbidden)
+	}
+
+	if len(fake.calls) != 0 {
+		t.Fatalf("enqueue calls = %d, want 0 while policy is unavailable or deny-all", len(fake.calls))
+	}
+}
+
+func TestInvalidStaticAllowlistIsUnavailableAndFailClosed(t *testing.T) {
+	fake := &fakeEnqueuer{rows: 1}
+	h := webhook.NewHandler(webhook.Config{
+		Secret:    testSecret,
+		Allowlist: []string{"owner/*", validRepo},
+		Enqueuer:  fake,
+	})
+	if got := pushStatus(t, h, validRepo, "invalid-static"); got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("enqueue calls = %d, want 0", len(fake.calls))
+	}
+}
+
+func pushStatus(t *testing.T, h *webhook.Handler, repository, delivery string) int {
+	t.Helper()
+	body := `{"repository":{"full_name":"` + repository + `"}}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set(headerEvent, "push")
+	req.Header.Set(headerDelivery, delivery)
+	req.Header.Set(headerSignature, sign(testSecret, []byte(body)))
+	rec := httptest.NewRecorder()
+	h.Webhook(rec, req)
+	return rec.Code
 }
