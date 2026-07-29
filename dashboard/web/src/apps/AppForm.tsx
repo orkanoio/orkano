@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 
 import { ApiErrorAlert } from "@/components/ApiErrorAlert";
 import { Field } from "@/components/Field";
+import { StepUpGate } from "@/components/StepUpGate";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,10 +12,14 @@ import {
   appKey,
   appsKey,
   createApp,
+  fetchRepoAllowlist,
   featuresKey,
   fetchFeatures,
   getApp,
+  repoAllowlistKey,
+  setupStatusKey,
   sourceKind,
+  updateRepoAllowlist,
   updateApp,
   type AppResponse,
   type AppSpec,
@@ -22,6 +27,7 @@ import {
   type FeatureStatus,
   type SourceKind,
 } from "@/lib/api";
+import { isStepUpRequired } from "@/lib/errors";
 import { Link, navigate } from "@/lib/router";
 
 import { UnsafeFeatureNotice } from "./SourceCard";
@@ -272,11 +278,17 @@ function AppFormInner({ base }: { base?: AppResponse }) {
   const queryClient = useQueryClient();
   const [fields, setFields] = useState<Fields>(() => fieldsFromApp(base));
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [allowAutomaticDeploys, setAllowAutomaticDeploys] = useState(true);
   const featureQuery = useQuery({
     queryKey: featuresKey,
     queryFn: fetchFeatures,
     enabled: base === undefined,
     staleTime: 60_000,
+  });
+  const repoQuery = useQuery({
+    queryKey: repoAllowlistKey,
+    queryFn: fetchRepoAllowlist,
+    enabled: base === undefined,
   });
   const featureEnabled = (id: FeatureStatus["id"]) =>
     featureQuery.data?.some((feature) => feature.id === id && feature.enabled) ??
@@ -287,8 +299,29 @@ function AppFormInner({ base }: { base?: AppResponse }) {
   };
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const spec = buildSpec(fields, base?.spec);
+      if (
+        base === undefined &&
+        fields.sourceKind === "github" &&
+        allowAutomaticDeploys
+      ) {
+        const repository = fields.repo.trim();
+        const current = await fetchRepoAllowlist();
+        queryClient.setQueryData(repoAllowlistKey, current);
+        const alreadyAllowed = current.repositories.some(
+          (allowed) => allowed.toLowerCase() === repository.toLowerCase(),
+        );
+        if (!alreadyAllowed) {
+          const updated = await updateRepoAllowlist(
+            [...current.repositories, repository],
+            current.resourceVersion,
+          );
+          queryClient.setQueryData(repoAllowlistKey, updated);
+          void queryClient.invalidateQueries({ queryKey: setupStatusKey });
+          void queryClient.invalidateQueries({ queryKey: appsKey });
+        }
+      }
       return base
         ? updateApp(base.name, spec)
         : createApp(fields.name.trim(), spec);
@@ -318,6 +351,25 @@ function AppFormInner({ base }: { base?: AppResponse }) {
     }
   };
 
+  if (isStepUpRequired(save.error)) {
+    return (
+      <section className="flex max-w-xl flex-col gap-6">
+        <h1 className="font-display text-2xl font-medium tracking-tight text-white">
+          New app
+        </h1>
+        <StepUpGate
+          error={save.error}
+          onConfirmed={() => {
+            save.mutate();
+          }}
+          onDismiss={() => {
+            save.reset();
+          }}
+        />
+      </section>
+    );
+  }
+
   return (
     <section className="flex max-w-xl flex-col gap-6">
       <h1 className="font-display text-2xl font-medium tracking-tight text-white">
@@ -325,6 +377,11 @@ function AppFormInner({ base }: { base?: AppResponse }) {
       </h1>
       <form className="flex flex-col gap-6" onSubmit={submit}>
         <ApiErrorAlert error={featureQuery.error} />
+        {!base &&
+        fields.sourceKind === "github" &&
+        allowAutomaticDeploys ? (
+          <ApiErrorAlert error={repoQuery.error} />
+        ) : null}
         <ApiErrorAlert error={save.error} />
         <Card>
           <CardContent className="flex flex-col gap-4">
@@ -388,22 +445,52 @@ function AppFormInner({ base }: { base?: AppResponse }) {
                   </Select>
                 </Field>
                 {fields.sourceKind === "github" ? (
-                  <Field
-                    id="app-repo"
-                    label="GitHub repository"
-                    error={errors.repo}
-                    hint="owner/repository"
-                  >
-                    <Input
+                  <>
+                    <Field
                       id="app-repo"
-                      value={fields.repo}
-                      onChange={(e) => {
-                        set({ repo: e.target.value });
-                      }}
-                      placeholder="orkanoio/example"
-                      required
-                    />
-                  </Field>
+                      label="GitHub repository"
+                      error={errors.repo}
+                      hint="owner/repository"
+                    >
+                      <Input
+                        id="app-repo"
+                        value={fields.repo}
+                        onChange={(e) => {
+                          set({ repo: e.target.value });
+                        }}
+                        placeholder="orkanoio/example"
+                        required
+                      />
+                    </Field>
+                    <div className="flex flex-col gap-1.5">
+                      <label
+                        htmlFor="app-automatic-deploys"
+                        className="flex items-center gap-2 text-sm text-foreground"
+                      >
+                        <input
+                          id="app-automatic-deploys"
+                          type="checkbox"
+                          className="size-4 accent-primary"
+                          checked={allowAutomaticDeploys}
+                          aria-describedby="app-automatic-deploys-hint"
+                          onChange={(event) => {
+                            setAllowAutomaticDeploys(event.target.checked);
+                            save.reset();
+                          }}
+                        />
+                        <span>
+                          Allow automatic push deploys for this repository
+                        </span>
+                      </label>
+                      <p
+                        id="app-automatic-deploys-hint"
+                        className="text-xs leading-relaxed text-muted-foreground"
+                      >
+                        Checked by default. Orkano adds this exact repository
+                        to the live receiver allowlist before creating the app.
+                      </p>
+                    </div>
+                  </>
                 ) : null}
                 {fields.sourceKind === "git" ? (
                   <Field
@@ -577,7 +664,16 @@ function AppFormInner({ base }: { base?: AppResponse }) {
           </CardContent>
         </Card>
         <div className="flex gap-3">
-          <Button type="submit" disabled={save.isPending}>
+          <Button
+            type="submit"
+            disabled={
+              save.isPending ||
+              (!base &&
+                fields.sourceKind === "github" &&
+                allowAutomaticDeploys &&
+                repoQuery.isPending)
+            }
+          >
             {save.isPending
               ? "Saving…"
               : base

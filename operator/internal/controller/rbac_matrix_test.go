@@ -759,6 +759,9 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 		{identity: dashboardIdentity, namespace: "", group: "", resource: "groups", resourceName: "orkano:viewers", verb: "impersonate"},
 		// The dashboard's orkano-system credential-write grant (orkano-dashboard-credentials).
 		{identity: dashboardIdentity, namespace: systemNamespace, resource: "secrets", resourceName: "orkano-github-app", verb: "update"},
+		// The dashboard's one live non-secret policy object in orkano-system.
+		{identity: dashboardIdentity, namespace: systemNamespace, resource: "configmaps", resourceName: "orkano-repo-allowlist", verb: "get"},
+		{identity: dashboardIdentity, namespace: systemNamespace, resource: "configmaps", resourceName: "orkano-repo-allowlist", verb: "update"},
 		// The dashboard doctor face's orkano-system viewer RoleBinding.
 		{identity: humanIdentityPrefix + "orkano-viewer", namespace: systemNamespace, group: "apps", resource: "statefulsets", resourceName: "orkano-postgres", verb: "get"},
 	}
@@ -802,6 +805,21 @@ func TestRBACMatrixSubjectAccessReviews(t *testing.T) {
 			if sarAllowed(t, ctx, dashboardIdentity, systemNamespace, "", "secrets", pinned, verb) {
 				t.Errorf("dashboard may %s secrets/%s in orkano-system, but only update is granted", verb, pinned)
 			}
+		}
+	}
+
+	// The repository allowlist is non-secret, so the dashboard may read it for
+	// resourceVersion-safe updates — but only this exact ConfigMap, and only
+	// get/update. The receiver still gets it through a kubelet projection and
+	// holds no Kubernetes token or permission.
+	for _, verb := range []string{"get", "update"} {
+		if sarAllowed(t, ctx, dashboardIdentity, systemNamespace, "", "configmaps", "some-other-config", verb) {
+			t.Errorf("dashboard may %s configmaps/some-other-config in orkano-system, but the resourceNames pin should deny it", verb)
+		}
+	}
+	for _, verb := range []string{"list", "watch", "create", "patch", "delete"} {
+		if sarAllowed(t, ctx, dashboardIdentity, systemNamespace, "", "configmaps", "orkano-repo-allowlist", verb) {
+			t.Errorf("dashboard may %s configmaps/orkano-repo-allowlist, but only get/update are granted", verb)
 		}
 	}
 

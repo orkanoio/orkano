@@ -63,13 +63,20 @@ describe("DeploysCard", () => {
           items: [failed, succeeded],
           repo: "orkanoio/web",
           automaticDeploys: true,
+          githubConfigured: true,
+          githubConnected: true,
         }),
       "GET /api/apps/web/builds/web-failed/logs": () =>
         logResponse("ERROR process failed"),
       "GET /api/apps/web/builds/web-succeeded/logs": () =>
         logResponse("exporting manifest"),
     });
-    renderWithSession(<DeploysCard appName="web" />);
+    renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ github: { repo: "orkanoio/web" } }}
+      />,
+    );
 
     expect(await screen.findByText("web-failed")).toBeInTheDocument();
     expect(screen.getByText("web-succeeded")).toBeInTheDocument();
@@ -91,19 +98,30 @@ describe("DeploysCard", () => {
           items: [],
           repo: "levatax/admin-dashboard",
           automaticDeploys: false,
+          githubConfigured: true,
+          githubConnected: true,
         }),
       "POST /api/apps/web/deploy": () => {
         requests++;
         return emptyResponse(202);
       },
     });
-    renderWithSession(<DeploysCard appName="web" />);
+    renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ github: { repo: "levatax/admin-dashboard" } }}
+      />,
+    );
 
     expect(
       await screen.findByText("No Build has started for this app."),
     ).toBeInTheDocument();
     expect(screen.getByText(/Automatic push deploys are off/)).toBeInTheDocument();
-    expect(screen.getByText(/--allow-repo levatax\/admin-dashboard/)).toBeInTheDocument();
+    expect(screen.getAllByText("levatax/admin-dashboard")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "#/settings",
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "Deploy now" }));
     expect(
@@ -113,5 +131,109 @@ describe("DeploysCard", () => {
     expect(
       await screen.findByText(/Deploy requested\. Orkano is resolving/),
     ).toBeInTheDocument();
+  });
+
+  it("blocks on a missing GitHub App before warning about the receiver URL", async () => {
+    let configured = false;
+    let connected = false;
+    stubFetchRoutes({
+      "GET /api/apps/web/builds": () =>
+        jsonResponse(200, {
+          items: [],
+          repo: "orkanoio/web",
+          automaticDeploys: false,
+          githubConfigured: configured,
+          githubConnected: connected,
+        }),
+    });
+    const view = renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ github: { repo: "orkanoio/web" } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText(/not connected to GitHub/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/public webhook URL is not configured/),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deploy now" })).toBeDisabled();
+    view.unmount();
+
+    connected = true;
+    renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ github: { repo: "orkanoio/web" } }}
+      />,
+    );
+    expect(
+      await screen.findByText(/public webhook URL is not configured/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Deploy now" }),
+    ).not.toBeDisabled();
+  });
+
+  it("keeps GitHub deploy disabled until connection state loads", async () => {
+    let resolveBuilds: (response: Response) => void = () => {};
+    stubFetchRoutes({
+      "GET /api/apps/web/builds": () =>
+        new Promise<Response>((resolve) => {
+          resolveBuilds = resolve;
+        }),
+    });
+    renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ github: { repo: "orkanoio/web" } }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Deploy now" })).toBeDisabled();
+    resolveBuilds(
+      jsonResponse(200, {
+        items: [],
+        repo: "orkanoio/web",
+        automaticDeploys: true,
+        githubConfigured: true,
+        githubConnected: true,
+      }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Deploy now" }),
+      ).not.toBeDisabled();
+    });
+  });
+
+  it("does not show GitHub warnings for a generic Git source", async () => {
+    stubFetchRoutes({
+      "GET /api/apps/web/builds": () =>
+        jsonResponse(200, {
+          items: [],
+          repo: "https://git.example.com/team/web.git",
+          automaticDeploys: false,
+          githubConfigured: false,
+          githubConnected: false,
+        }),
+    });
+    renderWithSession(
+      <DeploysCard
+        appName="web"
+        source={{ git: { url: "https://git.example.com/team/web.git" } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("No Build has started for this app."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Automatic GitHub deploys/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not connected to GitHub/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Automatic push deploys are off/),
+    ).not.toBeInTheDocument();
   });
 });

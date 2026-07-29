@@ -15,6 +15,7 @@ import (
 
 	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // The chart mirrors the embedded manifest set as verbatim copies (ADR-0019
@@ -143,8 +144,8 @@ func TestChartCoversEveryEmbeddedManifest(t *testing.T) {
 	}
 }
 
-// bootstrapIdentity is the shared name of the chart-only seeder's
-// ServiceAccount, Role, RoleBinding and Job.
+// bootstrapIdentity is the shared name of the chart-only seeders'
+// ServiceAccount, Role and RoleBinding, and of the Secret seeder Job.
 const bootstrapIdentity = "orkano-bootstrap"
 
 // chartTemplateComment matches a {{- /* ... */ -}} block so a header comment
@@ -183,6 +184,9 @@ func TestChartBootstrapJobIsChartOnly(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("%s should carry %s", rel, want)
 		}
+	}
+	if strings.Contains(string(raw), "ORKANO_REPO_ALLOWLIST") {
+		t.Errorf("%s must not carry repository seed state; changing it would make helm upgrade patch this fixed-name Job's immutable pod template", rel)
 	}
 
 	// The leading {{- /* ... */ -}} header would otherwise make the whole first
@@ -237,9 +241,12 @@ func TestChartBootstrapJobIsChartOnly(t *testing.T) {
 	if role.Name != bootstrapIdentity || role.Namespace != platformsecrets.Namespace {
 		t.Errorf("bootstrap Role is %s/%s, want %s/%s", role.Namespace, role.Name, platformsecrets.Namespace, bootstrapIdentity)
 	}
-	want := []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}}}
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"create"}},
+	}
 	if !reflect.DeepEqual(role.Rules, want) {
-		t.Errorf("bootstrap Role grants %+v, want exactly %+v — create-plus-AlreadyExists IS generate-once; any other verb lets a helm upgrade rotate a live credential", role.Rules, want)
+		t.Errorf("bootstrap Role grants %+v, want exactly %+v — create-plus-AlreadyExists IS generate-once; any other verb lets a helm upgrade rotate a live credential or reset the repository allowlist", role.Rules, want)
 	}
 
 	// The third link: without it the Role above binds to nobody and the Job runs
@@ -254,6 +261,43 @@ func TestChartBootstrapJobIsChartOnly(t *testing.T) {
 	wantSubjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: bootstrapIdentity, Namespace: platformsecrets.Namespace}}
 	if !reflect.DeepEqual(binding.Subjects, wantSubjects) {
 		t.Errorf("bootstrap RoleBinding binds %+v, want exactly %+v", binding.Subjects, wantSubjects)
+	}
+}
+
+// TestChartRepoAllowlistBootstrapJobIsUpgradeSafe pins the repository seeder's
+// independent subcommand and the inputs to its name fingerprint. A fixed name,
+// or a fingerprint that omits one mutable pod-template input, makes a Helm
+// upgrade fail while the previous Job still exists because Job templates are
+// immutable.
+func TestChartRepoAllowlistBootstrapJobIsUpgradeSafe(t *testing.T) {
+	const rel = "templates/repo-allowlist-bootstrap-job.yaml"
+	raw, err := os.ReadFile(filepath.Join(chartRoot, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	text := string(raw)
+	if strings.Contains(text, chartComponentSource) {
+		t.Errorf("%s carries the components/ Source header string; the golden compare would enroll this chart-only file", rel)
+	}
+	if _, err := os.Stat(filepath.Join(chartRoot, "templates/components/repo-allowlist-bootstrap-job.yaml")); err == nil {
+		t.Error("the repository allowlist bootstrap Job must stay outside templates/components/, which is strictly the renderComponents mirror set")
+	}
+
+	for _, want := range []string{
+		`args: ["` + repoallowlist.SeedSubcommand + `"]`,
+		"serviceAccountName: " + bootstrapIdentity,
+		"name: ORKANO_REPO_ALLOWLIST",
+		".Chart.Version",
+		".Values.images.repository",
+		`include "orkano.imageTag" .`,
+		".Values.repoAllowlist",
+		"sha256sum",
+		"trunc 12",
+		"name: orkano-repo-allowlist-bootstrap-{{ $fingerprint }}",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%s should carry %q", rel, want)
+		}
 	}
 }
 

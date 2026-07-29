@@ -12,22 +12,23 @@ metadata:
   name: orkano-bootstrap
   namespace: orkano-system
 ---
-# The Job's entire reach: create Secrets in orkano-system. Create-plus-tolerate-
-# AlreadyExists IS the generate-once primitive, so no other verb is needed and
-# none is granted: without update/patch/delete a helm upgrade or a GitOps
-# re-sync cannot rotate a live credential even if the seeder code were wrong,
-# and without get it can never read one back.
+# The Job's entire reach: create Secrets and ConfigMaps in orkano-system.
+# Create-plus-tolerate-AlreadyExists IS the generate-once primitive, so no other
+# verb is needed and none is granted: without update/patch/delete a helm upgrade
+# or a GitOps re-sync cannot rotate a live credential or reset the repository
+# allowlist after the dashboard edits it, and without get it can never read one
+# back.
 #
 # `create` cannot be resourceNames-pinned in Kubernetes RBAC (a create request
 # carries no object name at authorization time), so ADR-0019's "RBAC-pinned to
-# the orkano-system Secrets it seeds" holds at NAMESPACE granularity only. What
+# the orkano-system objects it seeds" holds at NAMESPACE granularity only. What
 # that leaves reachable, stated plainly: this ServiceAccount can create any
-# Secret name in orkano-system, including ones the Job never seeds and that do
-# not exist at first render, notably orkano-internal-ca and orkano-registry-tls.
-# Pre-creating a Secret cert-manager would otherwise issue is an adoption
-# vector, and a forged internal CA is a registry MITM. Exposure is bounded to a
-# principal who can already create pods in orkano-system (already game over),
-# and ttlSecondsAfterFinished below removes the completed pod's projected token.
+# Secret or ConfigMap name in orkano-system that does not exist. Pre-creating a
+# Secret cert-manager would otherwise issue is an adoption vector, and a forged
+# internal CA is a registry MITM; a forged ConfigMap can also configure a future
+# workload. Exposure is bounded to a principal who can already create pods in
+# orkano-system (already game over), and ttlSecondsAfterFinished below removes
+# the completed pod's projected token.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -36,6 +37,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -60,11 +64,10 @@ subjects:
 # needs four values (the superuser DSN plus three role passwords) that do not
 # exist when this pod starts on a first install; a pod cannot consume a Secret
 # it is about to create. Folding them together would instead force the seeder to
-# read those Secrets back, forfeiting the create-only Role above. So this pod
-# carries no `env:` at all, which is exactly what lets it start before any
-# platform Secret exists, and orkano-migrate keeps its own ordering mechanism:
-# a pod blocked on an unresolvable secretKeyRef stays Pending in
-# CreateContainerConfigError and burns no backoffLimit while it waits.
+# read those Secrets back, forfeiting the create-only Role above.
+# orkano-migrate keeps its own ordering mechanism: a pod blocked on an
+# unresolvable secretKeyRef stays Pending in CreateContainerConfigError and
+# burns no backoffLimit while it waits.
 #
 # It seeds orkano-bootstrap-token with the sha256 of a random token it discards
 # immediately, so the dashboard boots with a valid-shaped hash that nobody holds

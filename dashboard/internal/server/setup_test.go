@@ -23,6 +23,7 @@ import (
 	"github.com/orkanoio/orkano/dashboard/internal/auth"
 	"github.com/orkanoio/orkano/internal/db"
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // --- fakeStore settings methods (migration 00007) ---
@@ -78,6 +79,7 @@ func (f *fakeStore) setSetting(key, value string) {
 // assert on Secret writes.
 func setupServer(t *testing.T, store *fakeStore, mutate func(*Config), objs ...client.Object) (*Server, client.Client) {
 	t.Helper()
+	objs = withRepoAllowlistFixture(t, objs)
 	k8s := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
 		WithObjects(objs...).
@@ -219,6 +221,43 @@ func TestSetupStatusPinnedRedirectURL(t *testing.T) {
 	resp := decodeSetupStatus(t, rec.Body.Bytes())
 	if !resp.PublicURLConfigured || resp.OIDCRedirectURL != "https://dash.example.com"+oidcCallbackPath {
 		t.Fatalf("pinned redirect URL drifted: %+v", resp)
+	}
+}
+
+func TestSetupStatusReadsRepoAllowlistLive(t *testing.T) {
+	store := newFakeStore()
+	ck := authedSession(t, store)
+	s, k8s := setupServer(t, store, nil, readyNode("node-a", nil), repoAllowlistFixture(t, "old/repository"))
+
+	rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	resp := decodeSetupStatus(t, rec.Body.Bytes())
+	if len(resp.RepoAllowlist) != 1 || resp.RepoAllowlist[0] != "old/repository" {
+		t.Fatalf("initial allowlist = %v", resp.RepoAllowlist)
+	}
+	if resp.RepoAllowlistResourceVersion != "1" {
+		t.Fatalf("initial allowlist resourceVersion = %q, want 1", resp.RepoAllowlistResourceVersion)
+	}
+
+	var configMap corev1.ConfigMap
+	key := client.ObjectKey{Namespace: repoallowlist.Namespace, Name: repoallowlist.ConfigMapName}
+	if err := k8s.Get(context.Background(), key, &configMap); err != nil {
+		t.Fatalf("get ConfigMap: %v", err)
+	}
+	configMap.Data[repoallowlist.DataKey] = "new/repository\n"
+	if err := k8s.Update(context.Background(), &configMap); err != nil {
+		t.Fatalf("update ConfigMap: %v", err)
+	}
+
+	rec = apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)
+	resp = decodeSetupStatus(t, rec.Body.Bytes())
+	if len(resp.RepoAllowlist) != 1 || resp.RepoAllowlist[0] != "new/repository" {
+		t.Fatalf("allowlist after live update = %v", resp.RepoAllowlist)
+	}
+	if resp.RepoAllowlistResourceVersion != "2" {
+		t.Fatalf("updated allowlist resourceVersion = %q, want 2", resp.RepoAllowlistResourceVersion)
 	}
 }
 
@@ -746,7 +785,11 @@ func TestSetupStatusVaultCheck(t *testing.T) {
 				return cl.List(ctx, list, opts...)
 			},
 		}
-		k8s := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(noMatch).Build()
+		k8s := fake.NewClientBuilder().
+			WithScheme(testScheme(t)).
+			WithObjects(repoAllowlistFixture(t)).
+			WithInterceptorFuncs(noMatch).
+			Build()
 		s := serverWith(t, store, k8s)
 
 		rec := apiReq(t, s, http.MethodGet, "/api/setup/status", nil, ck)

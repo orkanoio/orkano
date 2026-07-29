@@ -67,10 +67,31 @@ func (s *Server) handleListBuilds(w http.ResponseWriter, r *http.Request) {
 			items = append(items, buildToResponse(&list.Items[i]))
 		}
 	}
+	automaticDeploys := false
+	githubConfigured := false
+	githubConnected := false
+	if app.Spec.Source.GitHub != nil {
+		repositories, err := s.loadRepoAllowlist(r.Context())
+		if err != nil {
+			s.writeRepoAllowlistReadError(w, "builds repo allowlist get", err)
+			return
+		}
+		settings, err := s.loadSettings(r.Context())
+		if err != nil {
+			s.log.Error("load GitHub settings for builds failed", "err", err)
+			writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		automaticDeploys = repoAllowed(repositories, app.Spec.Source.GitHub.Repo)
+		githubConfigured = s.cfg.WebhookURL != ""
+		githubConnected = settings[settingGitHubConnectedAt] != ""
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":            items,
 		"repo":             sourceDisplayName(app.Spec.Source),
-		"automaticDeploys": app.Spec.Source.GitHub != nil && s.repoAllowed(app.Spec.Source.GitHub.Repo),
+		"automaticDeploys": automaticDeploys,
+		"githubConfigured": githubConfigured,
+		"githubConnected":  githubConnected,
 	})
 }
 
@@ -163,9 +184,9 @@ func newManualDeliveryID() (string, error) {
 	return manualDeliveryPrefix + hex.EncodeToString(raw[:]), nil
 }
 
-func (s *Server) repoAllowed(repo string) bool {
+func repoAllowed(repositories []string, repo string) bool {
 	want := strings.TrimSpace(repo)
-	for _, allowed := range s.cfg.RepoAllowlist {
+	for _, allowed := range repositories {
 		if strings.EqualFold(strings.TrimSpace(allowed), want) {
 			return true
 		}

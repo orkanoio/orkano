@@ -1,14 +1,20 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orkanov1alpha1 "github.com/orkanoio/orkano/api/v1alpha1"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 func buildFixture(name, appName, phase string, created time.Time) *orkanov1alpha1.Build {
@@ -39,8 +45,9 @@ func TestListBuildsReturnsRealAttemptsNewestFirst(t *testing.T) {
 	newer := buildFixture("web-new", "web", "Running", fixedNow())
 	other := buildFixture("other-new", "other", "Succeeded", fixedNow().Add(time.Minute))
 	store := newFakeStore()
-	s := apiServer(t, store, app, older, newer, other)
-	s.cfg.RepoAllowlist = []string{"ORKANOIO/DEMO"}
+	store.setSetting(settingGitHubConnectedAt, fixedNow().Format(time.RFC3339))
+	s := apiServer(t, store, app, older, newer, other, repoAllowlistFixture(t, "ORKANOIO/DEMO"))
+	s.cfg.WebhookURL = "https://hooks.example.com/webhook"
 	ck := authedSession(t, store)
 
 	rec := apiReq(t, s, http.MethodGet, "/api/apps/web/builds", nil, ck)
@@ -51,6 +58,10 @@ func TestListBuildsReturnsRealAttemptsNewestFirst(t *testing.T) {
 	if body["automaticDeploys"] != true {
 		t.Fatalf("automaticDeploys = %v, want true for case-insensitive allowlist match", body["automaticDeploys"])
 	}
+	if body["githubConfigured"] != true || body["githubConnected"] != true {
+		t.Fatalf("GitHub setup state = configured:%v connected:%v, want both true",
+			body["githubConfigured"], body["githubConnected"])
+	}
 	items, _ := body["items"].([]any)
 	if len(items) != 2 {
 		t.Fatalf("items = %d, want only web's two Builds", len(items))
@@ -58,6 +69,109 @@ func TestListBuildsReturnsRealAttemptsNewestFirst(t *testing.T) {
 	first, _ := items[0].(map[string]any)
 	if first["name"] != "web-new" {
 		t.Fatalf("first Build = %v, want newest web-new", first["name"])
+	}
+}
+
+func TestListBuildsReadsAllowlistAndGitHubStateLive(t *testing.T) {
+	app := &orkanov1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+		Spec:       webAppSpec(),
+	}
+	store := newFakeStore()
+	configMap := repoAllowlistFixture(t)
+	s := apiServer(t, store, app, configMap)
+	ck := authedSession(t, store)
+
+	rec := apiReq(t, s, http.MethodGet, "/api/apps/web/builds", nil, ck)
+	body := decodeBody(t, rec)
+	if body["automaticDeploys"] != false || body["githubConfigured"] != false ||
+		body["githubConnected"] != false {
+		t.Fatalf("fresh GitHub state = %+v, want automatic/configured/connected false", body)
+	}
+
+	var live corev1.ConfigMap
+	key := client.ObjectKey{Namespace: repoallowlist.Namespace, Name: repoallowlist.ConfigMapName}
+	if err := s.cfg.K8s.Get(context.Background(), key, &live); err != nil {
+		t.Fatalf("get allowlist: %v", err)
+	}
+	live.Data[repoallowlist.DataKey] = "orkanoio/demo\n"
+	if err := s.cfg.K8s.Update(context.Background(), &live); err != nil {
+		t.Fatalf("update allowlist: %v", err)
+	}
+	store.setSetting(settingGitHubConnectedAt, fixedNow().Format(time.RFC3339))
+	s.cfg.WebhookURL = "https://hooks.example.com/webhook"
+
+	rec = apiReq(t, s, http.MethodGet, "/api/apps/web/builds", nil, ck)
+	body = decodeBody(t, rec)
+	if body["automaticDeploys"] != true || body["githubConfigured"] != true ||
+		body["githubConnected"] != true {
+		t.Fatalf("updated GitHub state = %+v, want automatic/configured/connected true", body)
+	}
+}
+
+func TestListBuildsNonGitHubSourcesIgnoreGitHubState(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		source      orkanov1alpha1.Source
+		displayName string
+		configMap   *corev1.ConfigMap
+	}{
+		{
+			name: "generic Git with missing allowlist",
+			source: orkanov1alpha1.Source{Git: &orkanov1alpha1.GitSource{
+				URL: "https://git.example.com/acme/widgets.git",
+			}},
+			displayName: "https://git.example.com/acme/widgets.git",
+		},
+		{
+			name: "ZIP with malformed allowlist",
+			source: orkanov1alpha1.Source{Upload: &orkanov1alpha1.UploadSource{
+				Digest:   "sha256:" + strings.Repeat("0", 64),
+				FileName: "widgets.zip",
+			}},
+			displayName: "widgets.zip",
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: repoallowlist.Namespace,
+					Name:      repoallowlist.ConfigMapName,
+				},
+				Data: map[string]string{repoallowlist.DataKey: "not-a-repository\n"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &orkanov1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: appsNamespace},
+				Spec: orkanov1alpha1.AppSpec{
+					Source: tc.source,
+				},
+			}
+			objects := []client.Object{app}
+			if tc.configMap != nil {
+				objects = append(objects, tc.configMap)
+			}
+			k8s := fake.NewClientBuilder().
+				WithScheme(testScheme(t)).
+				WithObjects(objects...).
+				Build()
+			store := newFakeStore()
+			store.settingsErr = errors.New("settings unavailable")
+			s := serverWith(t, store, k8s)
+			ck := authedSession(t, store)
+
+			rec := apiReq(t, s, http.MethodGet, "/api/apps/web/builds", nil, ck)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("list builds = %d (%s), want 200 without GitHub dependencies", rec.Code, rec.Body.String())
+			}
+			body := decodeBody(t, rec)
+			if body["repo"] != tc.displayName {
+				t.Fatalf("repo = %v, want %q", body["repo"], tc.displayName)
+			}
+			if body["automaticDeploys"] != false || body["githubConfigured"] != false ||
+				body["githubConnected"] != false {
+				t.Fatalf("non-GitHub state = %+v, want automatic/configured/connected false", body)
+			}
+		})
 	}
 }
 

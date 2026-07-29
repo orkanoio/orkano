@@ -129,7 +129,9 @@ export function AppDetail({ name }: { name: string }) {
         {section === "variables" ? <VarsCard app={app} /> : null}
         {section === "secrets" ? <SecretsCard app={app} /> : null}
         {section === "domains" ? <DomainsCard appName={app.name} /> : null}
-        {section === "deploys" ? <DeploysCard appName={app.name} /> : null}
+        {section === "deploys" ? (
+          <DeploysCard appName={app.name} source={app.spec.source} />
+        ) : null}
         {section === "settings" ? <SettingsCard appName={app.name} /> : null}
       </DetailWorkspace>
     </section>

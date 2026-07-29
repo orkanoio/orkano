@@ -19,8 +19,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { listNodes, nodesKey, type NodeInfo } from "@/lib/api";
+import { RepoAllowlistEditor } from "@/github/RepoAllowlistEditor";
+import {
+  fetchRepoAllowlist,
+  listNodes,
+  nodesKey,
+  repoAllowlistKey,
+  type NodeInfo,
+} from "@/lib/api";
 import { formatAge } from "@/lib/format";
+import { Link } from "@/lib/router";
 
 // The supported HA shape: one server, or three servers for etcd quorum. The
 // helper renders the exact re-run — orkano init converges, it never
@@ -36,6 +44,10 @@ export function SettingsPage() {
     queryFn: listNodes,
     refetchInterval: 10_000,
   });
+  const repoQuery = useQuery({
+    queryKey: repoAllowlistKey,
+    queryFn: fetchRepoAllowlist,
+  });
 
   return (
     <section className="flex flex-col gap-6">
@@ -50,6 +62,35 @@ export function SettingsPage() {
           </p>
         ) : null}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>GitHub deploys</CardTitle>
+          <CardDescription>
+            Only these exact repositories may trigger builds from push
+            webhooks. Changes take effect without re-running the installer.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {repoQuery.isPending ? (
+            <p className="font-mono text-xs text-muted-foreground">Loading…</p>
+          ) : null}
+          <ApiErrorAlert error={repoQuery.error} />
+          {repoQuery.data ? (
+            <RepoAllowlistEditor
+              repositories={repoQuery.data.repositories}
+              resourceVersion={repoQuery.data.resourceVersion}
+            />
+          ) : null}
+          <p className="text-xs text-muted-foreground">
+            GitHub App connection and webhook setup live in{" "}
+            <Link to="/setup" className="text-primary hover:underline">
+              Setup
+            </Link>
+            .
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

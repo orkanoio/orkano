@@ -49,7 +49,7 @@ An invariant is a "never" statement the architecture must keep true, not a guide
 
 **Rationale.** It is the only internet-facing component, so compromising it must yield nothing but the ability to ring the doorbell; the operator re-fetches all commit data from GitHub anyway and never trusts the payload.
 
-**Enforced by.** Deployment composition: `automountServiceAccountToken: false`, no GitHub credentials in its environment, a Postgres role granted `INSERT` only on the queue table, and a NetworkPolicy allowing egress to Postgres alone.
+**Enforced by.** Deployment composition: `automountServiceAccountToken: false`, no GitHub credentials in its environment, a Postgres role granted `INSERT` only on the queue table, and a NetworkPolicy allowing egress to Postgres alone. The exact-repository policy is a non-secret ConfigMap projected by kubelet rather than fetched through the Kubernetes API; the receiver reopens it for each push and refuses delivery when the file is missing or malformed, so runtime policy changes do not require a ServiceAccount token or receiver RBAC.
 
 **Verified by.** `webhook.receiver-blast-radius` (planned): using the receiver's actual database credentials, asserts `INSERT` into the queue succeeds while `SELECT`, `UPDATE`, and `DELETE` on every table fail; from the receiver's network identity, asserts connections to the Kubernetes API server and to the GitHub API both fail.
 

@@ -112,9 +112,10 @@ type setupStatusResponse struct {
 	// loaded it — either OIDC is off entirely (initial connect) or the write
 	// postdates process start (credential rotation). The UI shows the rollout
 	// command either way.
-	OIDCPendingRestart bool             `json:"oidcPendingRestart"`
-	GitHub             setupGitHubState `json:"github"`
-	RepoAllowlist      []string         `json:"repoAllowlist"`
+	OIDCPendingRestart           bool             `json:"oidcPendingRestart"`
+	GitHub                       setupGitHubState `json:"github"`
+	RepoAllowlist                []string         `json:"repoAllowlist"`
+	RepoAllowlistResourceVersion string           `json:"repoAllowlistResourceVersion"`
 }
 
 type setupGitHubState struct {
@@ -131,6 +132,11 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Error("load settings failed", "err", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	repoAllowlist, err := s.loadRepoAllowlistSnapshot(ctx)
+	if err != nil {
+		s.writeRepoAllowlistReadError(w, "setup repo allowlist get", err)
 		return
 	}
 
@@ -153,14 +159,15 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := setupStatusResponse{
-		Checks:               make([]setupCheckJSON, 0, len(run.Results)),
-		AccessMode:           settings[settingAccessMode],
-		WebhookURLConfigured: s.cfg.WebhookURL != "",
-		PublicURLConfigured:  s.cfg.PublicURL != "",
-		OIDCRedirectURL:      s.pinnedOIDCRedirectURL(),
-		OIDCEnabled:          s.cfg.OIDC != nil,
-		OIDCPendingRestart:   oidcPending,
-		RepoAllowlist:        append([]string{}, s.cfg.RepoAllowlist...),
+		Checks:                       make([]setupCheckJSON, 0, len(run.Results)),
+		AccessMode:                   settings[settingAccessMode],
+		WebhookURLConfigured:         s.cfg.WebhookURL != "",
+		PublicURLConfigured:          s.cfg.PublicURL != "",
+		OIDCRedirectURL:              s.pinnedOIDCRedirectURL(),
+		OIDCEnabled:                  s.cfg.OIDC != nil,
+		OIDCPendingRestart:           oidcPending,
+		RepoAllowlist:                append([]string{}, repoAllowlist.Repositories...),
+		RepoAllowlistResourceVersion: repoAllowlist.ResourceVersion,
 		GitHub: setupGitHubState{
 			Connected:   settings[settingGitHubConnectedAt] != "",
 			AppSlug:     settings[settingGitHubAppSlug],

@@ -6,6 +6,7 @@ import {
   createApp,
   deletePostgres,
   fetchAuthStatus,
+  fetchRepoAllowlist,
   listApps,
   loginTotp,
   logout,
@@ -14,6 +15,7 @@ import {
   setAppEnv,
   sourceLabel,
   updateMongoExpress,
+  updateRepoAllowlist,
   updateApp,
 } from "@/lib/api";
 import { emptyResponse, jsonResponse, requestBody, stubFetch } from "@/test/helpers";
@@ -107,6 +109,45 @@ describe("api client", () => {
     mock.mockResolvedValueOnce(emptyResponse(204));
 
     await expect(logout()).resolves.toBeUndefined();
+  });
+
+  it("reads and replaces the live repository allowlist", async () => {
+    const mock = stubFetch();
+    mock
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          repositories: ["orkanoio/orkano"],
+          resourceVersion: "7",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          repositories: ["acme/api"],
+          resourceVersion: "8",
+        }),
+      );
+
+    await expect(fetchRepoAllowlist()).resolves.toEqual({
+      repositories: ["orkanoio/orkano"],
+      resourceVersion: "7",
+    });
+    await expect(updateRepoAllowlist(["acme/api"], "7")).resolves.toEqual({
+      repositories: ["acme/api"],
+      resourceVersion: "8",
+    });
+
+    expect(mock).toHaveBeenNthCalledWith(1, "/api/repo-allowlist", {
+      headers: { Accept: "application/json" },
+    });
+    expect(mock).toHaveBeenNthCalledWith(
+      2,
+      "/api/repo-allowlist",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(await requestBody(mock, 1)).toEqual({
+      repositories: ["acme/api"],
+      resourceVersion: "7",
+    });
   });
 });
 

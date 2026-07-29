@@ -14,12 +14,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/orkanoio/orkano/internal/db"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // DefaultMaxBodyBytes bounds how much of a request body the receiver will read
@@ -54,6 +57,33 @@ type Enqueuer interface {
 	EnqueueDelivery(ctx context.Context, arg db.EnqueueDeliveryParams) (int64, error)
 }
 
+// AllowlistSource loads the complete repository policy. Implementations must
+// return an error rather than a partial policy when the source is unavailable
+// or malformed.
+type AllowlistSource interface {
+	Repositories() ([]string, error)
+}
+
+// FileAllowlist reloads a newline-delimited repository policy from Path every
+// time it is consulted. Reopening the projected ConfigMap path is load-bearing:
+// kubelet replaces the file through an atomic symlink swap, so retaining an
+// open descriptor would strand the receiver on the old policy.
+type FileAllowlist struct {
+	Path string
+}
+
+func (f FileAllowlist) Repositories() ([]string, error) {
+	raw, err := os.ReadFile(f.Path)
+	if err != nil {
+		return nil, fmt.Errorf("read repository allowlist file %s: %w", f.Path, err)
+	}
+	repositories, err := repoallowlist.Parse(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse repository allowlist file %s: %w", f.Path, err)
+	}
+	return repositories, nil
+}
+
 // Config is the complete configuration of the handler: the HMAC key, the repo
 // allowlist, and where to enqueue. There is deliberately nothing else.
 type Config struct {
@@ -61,8 +91,12 @@ type Config struct {
 	Secret []byte
 	// Allowlist holds raw "owner/repo" entries; they are trimmed, lowercased,
 	// and de-duplicated here so lookup is a single normalized comparison. An
-	// empty allowlist rejects every repository (fail closed).
+	// empty allowlist rejects every repository (fail closed). Used when
+	// AllowlistSource is nil, primarily for direct and legacy startup.
 	Allowlist []string
+	// AllowlistSource overrides Allowlist. Production uses a projected
+	// ConfigMap file, reopened for every push so policy changes need no rollout.
+	AllowlistSource AllowlistSource
 	// Enqueuer is the delivery-queue sink (an INSERT-only Postgres role in
 	// production).
 	Enqueuer Enqueuer
@@ -74,14 +108,23 @@ type Config struct {
 
 // Handler serves the webhook endpoint.
 type Handler struct {
-	secret    []byte
-	allowlist map[string]struct{}
-	enqueuer  Enqueuer
-	log       *slog.Logger
-	maxBody   int64
+	secret          []byte
+	allowlistSource AllowlistSource
+	enqueuer        Enqueuer
+	log             *slog.Logger
+	maxBody         int64
 }
 
-// NewHandler builds a Handler from cfg, normalizing the allowlist once.
+type staticAllowlist struct {
+	repositories []string
+	err          error
+}
+
+func (s staticAllowlist) Repositories() ([]string, error) {
+	return append([]string{}, s.repositories...), s.err
+}
+
+// NewHandler builds a Handler from cfg.
 func NewHandler(cfg Config) *Handler {
 	log := cfg.Logger
 	if log == nil {
@@ -91,24 +134,26 @@ func NewHandler(cfg Config) *Handler {
 	if maxBody <= 0 {
 		maxBody = DefaultMaxBodyBytes
 	}
-	allow := make(map[string]struct{}, len(cfg.Allowlist))
-	for _, e := range cfg.Allowlist {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
-			allow[e] = struct{}{}
-		}
+	source := cfg.AllowlistSource
+	if source == nil {
+		repositories, err := repoallowlist.Normalize(cfg.Allowlist)
+		source = staticAllowlist{repositories: repositories, err: err}
 	}
 	return &Handler{
-		secret:    cfg.Secret,
-		allowlist: allow,
-		enqueuer:  cfg.Enqueuer,
-		log:       log,
-		maxBody:   maxBody,
+		secret:          cfg.Secret,
+		allowlistSource: source,
+		enqueuer:        cfg.Enqueuer,
+		log:             log,
+		maxBody:         maxBody,
 	}
 }
 
 // AllowlistSize returns the number of normalized repositories in the allowlist.
 // An empty allowlist rejects everything, so the command warns on it at startup.
-func (h *Handler) AllowlistSize() int { return len(h.allowlist) }
+func (h *Handler) AllowlistSize() (int, error) {
+	repositories, err := h.repositories()
+	return len(repositories), err
+}
 
 // Webhook handles one GitHub webhook delivery. The order is load-bearing: the
 // signature is verified over the raw bytes before the payload is parsed or
@@ -183,7 +228,13 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.allowed(repo) {
+	allowed, err := h.allowed(repo)
+	if err != nil {
+		h.log.Error("repository allowlist unavailable", "repo", repo, "err", err)
+		h.reject(w, r, http.StatusServiceUnavailable, "repository policy unavailable")
+		return
+	}
+	if !allowed {
 		// Drop pre-enqueue: the allowlist is the noise filter (threat model).
 		h.reject(w, r, http.StatusForbidden, "repository not allowed")
 		return
@@ -224,9 +275,26 @@ func (h *Handler) validSignature(header string, body []byte) bool {
 	return hmac.Equal([]byte(expected), []byte(header))
 }
 
-func (h *Handler) allowed(repo string) bool {
-	_, ok := h.allowlist[strings.ToLower(repo)]
-	return ok
+func (h *Handler) repositories() ([]string, error) {
+	repositories, err := h.allowlistSource.Repositories()
+	if err != nil {
+		return nil, err
+	}
+	return repoallowlist.Normalize(repositories)
+}
+
+func (h *Handler) allowed(repo string) (bool, error) {
+	repositories, err := h.repositories()
+	if err != nil {
+		return false, err
+	}
+	want := strings.ToLower(repo)
+	for _, repository := range repositories {
+		if repository == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (h *Handler) ack(w http.ResponseWriter, msg, event string) {

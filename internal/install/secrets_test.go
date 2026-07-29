@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
@@ -64,6 +65,7 @@ func TestApplyEnsuresSecretsAndReturnsToken(t *testing.T) {
 
 func TestApplyPreservesExistingSecrets(t *testing.T) {
 	n := newFakeNode()
+	n.configMaps[repoallowlist.ConfigMapName] = "preexisting"
 	// Pre-existing secrets (a prior install): mark all present.
 	for _, name := range []string{platformsecrets.NameSuperuser, platformsecrets.NameOperatorDB, platformsecrets.NameReceiverDB, platformsecrets.NameDashboardDB, platformsecrets.NameDashboardEncKey, platformsecrets.NameWebhook, platformsecrets.NameBootstrapToken, platformsecrets.NameGitHubApp, platformsecrets.NameOIDC} {
 		n.secrets[name] = "preexisting"

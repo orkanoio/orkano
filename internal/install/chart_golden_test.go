@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 // The golden-render half of the ADR-0019 fork-b drift guard: for equivalent
@@ -155,12 +156,21 @@ func TestValuesSchemaMirrorsGoValidation(t *testing.T) {
 		{[]string{"images", "tag"}, optional(versionRe)},
 		{[]string{"acme", "email"}, optional(emailRe)},
 		{[]string{"receiver", "host"}, optional(hostRe)},
-		{[]string{"repoAllowlist"}, repoNameRe.String()},
+		{[]string{"repoAllowlist"}, repoallowlist.RepositoryPattern},
 	} {
 		if got := schemaPattern(t, schema, tc.path...); got != tc.want {
 			t.Errorf("values.schema.json %s pattern %q != components.go regex %q — keep the two validators in sync",
 				strings.Join(tc.path, "."), got, tc.want)
 		}
+	}
+	properties := schema["properties"].(map[string]any)
+	repositories := properties["repoAllowlist"].(map[string]any)
+	if got := int(repositories["maxItems"].(float64)); got != repoallowlist.MaxRepositories {
+		t.Errorf("values.schema.json repoAllowlist.maxItems = %d, want %d", got, repoallowlist.MaxRepositories)
+	}
+	repository := repositories["items"].(map[string]any)
+	if got := int(repository["maxLength"].(float64)); got != repoallowlist.MaxRepositoryLength {
+		t.Errorf("values.schema.json repoAllowlist.items.maxLength = %d, want %d", got, repoallowlist.MaxRepositoryLength)
 	}
 }
 

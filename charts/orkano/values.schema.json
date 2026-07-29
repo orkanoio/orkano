@@ -39,8 +39,10 @@
     },
     "repoAllowlist": {
       "type": "array",
+      "maxItems": 400,
       "items": {
         "type": "string",
+        "maxLength": 140,
         "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
       }
     },

@@ -23,6 +23,11 @@ function makeNode(overrides?: Partial<Record<string, unknown>>) {
 describe("SettingsPage", () => {
   it("lists nodes with status, roles, version, and address", async () => {
     stubFetchRoutes({
+      "GET /api/repo-allowlist": () =>
+        jsonResponse(200, {
+          repositories: ["orkanoio/orkano", "acme/api"],
+          resourceVersion: "7",
+        }),
       "GET /api/nodes": () =>
         jsonResponse(200, {
           items: [
@@ -45,12 +50,17 @@ describe("SettingsPage", () => {
     expect(screen.getByText("control-plane, etcd")).toBeInTheDocument();
     expect(screen.getAllByText("v1.35.5+k3s1")).toHaveLength(2);
     expect(screen.getByText("192.0.2.10")).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue("orkanoio/orkano"),
+    ).toBeInTheDocument();
     // The cordoned NotReady worker is called out, not hidden.
     expect(screen.getByText("NotReady · cordoned")).toBeInTheDocument();
   });
 
   it("shows the add-node recipe with its caveats", async () => {
     stubFetchRoutes({
+      "GET /api/repo-allowlist": () =>
+        jsonResponse(200, { repositories: [], resourceVersion: "7" }),
       "GET /api/nodes": () => jsonResponse(200, { items: [makeNode()] }),
     });
     renderWithSession(<SettingsPage />);
@@ -67,6 +77,8 @@ describe("SettingsPage", () => {
 
   it("surfaces a nodes list failure", async () => {
     stubFetchRoutes({
+      "GET /api/repo-allowlist": () =>
+        jsonResponse(200, { repositories: [], resourceVersion: "7" }),
       "GET /api/nodes": () => jsonResponse(503, { error: "unavailable" }),
     });
     renderWithSession(<SettingsPage />);

@@ -27,6 +27,7 @@ import {
   buildLogsPath,
   deployApp,
   listAppBuilds,
+  type AppSource,
   type BuildPhase,
   type BuildResponse,
 } from "@/lib/api";
@@ -35,7 +36,13 @@ import { Link } from "@/lib/router";
 
 import { ResourceStreamCard } from "./LogsCard";
 
-export function DeploysCard({ appName }: { appName: string }) {
+export function DeploysCard({
+  appName,
+  source,
+}: {
+  appName: string;
+  source: AppSource;
+}) {
   const client = useQueryClient();
   const [selectedName, setSelectedName] = useState("");
   const [queued, setQueued] = useState(false);
@@ -76,6 +83,16 @@ export function DeploysCard({ appName }: { appName: string }) {
     }
   }, [builds, selectedName]);
   const selected = builds.find((build) => build.name === selectedName);
+  const githubSource = "github" in source;
+  const githubDisconnected =
+    query.data !== undefined && githubSource && !query.data.githubConnected;
+  const githubDeployBlocked =
+    githubSource && query.data?.githubConnected !== true;
+  const deployTitle = githubDisconnected
+    ? "Connect the GitHub App in Setup before deploying"
+    : githubDeployBlocked
+      ? "Checking the GitHub App connection"
+      : undefined;
 
   return (
     <Card>
@@ -88,7 +105,11 @@ export function DeploysCard({ appName }: { appName: string }) {
         </div>
         <Button
           type="button"
-          disabled={deploy.isPending}
+          disabled={deploy.isPending || githubDeployBlocked}
+          aria-describedby={
+            githubDisconnected ? "github-deploy-blocked" : undefined
+          }
+          title={deployTitle}
           onClick={() => {
             setQueued(false);
             deploy.mutate();
@@ -109,7 +130,41 @@ export function DeploysCard({ appName }: { appName: string }) {
             </AlertDescription>
           </Alert>
         ) : null}
-        {query.data && !query.data.automaticDeploys ? (
+        {query.data &&
+          "github" in source &&
+          !query.data.githubConnected ? (
+          <Alert variant="destructive">
+            <TriangleAlert aria-hidden="true" />
+            <AlertDescription id="github-deploy-blocked">
+              Orkano is not connected to GitHub, so it cannot resolve this
+              repository for manual or automatic builds. Deploy now is disabled
+              until the GitHub App is connected.{" "}
+              <span className="whitespace-nowrap">
+                <Link to="/setup" className="text-primary hover:underline">
+                  Connect the GitHub App in Setup
+                </Link>
+                .
+              </span>
+            </AlertDescription>
+          </Alert>
+        ) : query.data &&
+          "github" in source &&
+          !query.data.githubConfigured ? (
+          <Alert>
+            <TriangleAlert className="text-warning" aria-hidden="true" />
+            <AlertDescription>
+              Automatic GitHub deploys are unavailable because the receiver's
+              public webhook URL is not configured. Manual Deploy now still
+              works.{" "}
+              <Link to="/setup" className="text-primary hover:underline">
+                Finish the GitHub step in Setup
+              </Link>
+              .
+            </AlertDescription>
+          </Alert>
+        ) : query.data &&
+          "github" in source &&
+          !query.data.automaticDeploys ? (
           <Alert>
             <TriangleAlert className="text-warning" aria-hidden="true" />
             <AlertDescription>
@@ -121,16 +176,18 @@ export function DeploysCard({ appName }: { appName: string }) {
                 . Manual deploys still work.
               </p>
               <p>
-                Add{" "}
+                Add the exact repository{" "}
                 <code className="font-mono text-xs text-foreground">
-                  --allow-repo {query.data.repo}
+                  {query.data.repo}
                 </code>{" "}
-                to your original <code className="font-mono text-xs">orkano init</code>{" "}
-                command, or add it to Helm&apos;s{" "}
-                <code className="font-mono text-xs text-foreground">
-                  repoAllowlist
-                </code>
-                . <Link to="/setup" className="text-primary hover:underline">See Setup</Link>.
+                in{" "}
+                <Link
+                  to="/settings"
+                  className="text-primary hover:underline"
+                >
+                  Settings
+                </Link>
+                .
               </p>
             </AlertDescription>
           </Alert>
@@ -142,8 +199,9 @@ export function DeploysCard({ appName }: { appName: string }) {
               No Build has started for this app.
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              New apps queue their first build automatically. If the request was
-              missed, use Deploy now to build the current tracked ref.
+              {githubDisconnected
+                ? "Connect the GitHub App above before requesting this app's first build."
+                : "New apps queue their first build automatically. If the request was missed, use Deploy now to build the current tracked ref."}
             </p>
           </div>
         ) : null}

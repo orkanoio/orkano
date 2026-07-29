@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AppForm } from "@/apps/AppForm";
 import { makeApp } from "@/test/fixtures";
 import {
+  emptyResponse,
   jsonResponse,
   renderWithSession,
   stubFetchRoutes,
@@ -50,10 +51,43 @@ function mutationBody(
   return JSON.parse(call[1].body);
 }
 
+type FetchRoutes = Parameters<typeof stubFetchRoutes>[0];
+
+function stubCreateRoutes(
+  routes: FetchRoutes,
+  initialRepositories: string[] = [],
+) {
+  let repositories = [...initialRepositories];
+  let resourceVersion = 7;
+  return stubFetchRoutes({
+    "GET /api/features": () => jsonResponse(200, allFeatures),
+    "GET /api/repo-allowlist": () =>
+      jsonResponse(200, {
+        repositories,
+        resourceVersion: resourceVersion.toString(),
+      }),
+    "PUT /api/repo-allowlist": (init) => {
+      const body = JSON.parse(init?.body as string) as {
+        repositories: string[];
+        resourceVersion: string;
+      };
+      expect(body.resourceVersion).toBe(resourceVersion.toString());
+      repositories = body.repositories
+        .map((repository) => repository.trim().toLowerCase())
+        .sort();
+      resourceVersion++;
+      return jsonResponse(200, {
+        repositories,
+        resourceVersion: resourceVersion.toString(),
+      });
+    },
+    ...routes,
+  });
+}
+
 describe("AppForm create", () => {
   it("creates a Dockerfile web app and navigates to it", async () => {
-    const mock = stubFetchRoutes({
-      "GET /api/features": () => jsonResponse(200, allFeatures),
+    const mock = stubCreateRoutes({
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "web" })),
     });
     renderWithSession(<AppForm />);
@@ -66,6 +100,11 @@ describe("AppForm create", () => {
     );
     await user.type(screen.getByLabelText("Port"), "3000");
     await user.type(screen.getByLabelText("Health check path"), "/healthz");
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Allow automatic push deploys for this repository",
+      }),
+    ).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Create app" }));
 
     expect(mutationBody(mock)).toEqual({
@@ -80,13 +119,112 @@ describe("AppForm create", () => {
       },
     });
     expect(window.location.hash).toBe("#/apps/web");
+
+    const calls = mock.mock.calls;
+    const allowlistGets = calls
+      .map(
+        ([url, init], index) =>
+          [String(url), init?.method ?? "GET", index] as const,
+      )
+      .filter(
+        ([url, method]) =>
+          url === "/api/repo-allowlist" && method === "GET",
+      );
+    const allowlistPut = calls.findIndex(
+      ([url, init]) =>
+        url === "/api/repo-allowlist" && init?.method === "PUT",
+    );
+    const appPost = calls.findIndex(
+      ([url, init]) => url === "/api/apps" && init?.method === "POST",
+    );
+    expect(allowlistGets).toHaveLength(2);
+    expect(allowlistGets[1]?.[2]).toBeLessThan(allowlistPut);
+    expect(allowlistPut).toBeLessThan(appPost);
+    expect(
+      JSON.parse(calls[allowlistPut]?.[1]?.body as string),
+    ).toEqual({
+      repositories: ["orkanoio/example"],
+      resourceVersion: "7",
+    });
+  });
+
+  it("can create a GitHub app without changing automatic deploy policy", async () => {
+    const mock = stubCreateRoutes({
+      "POST /api/apps": () => jsonResponse(201, makeApp({ name: "manual" })),
+    });
+    renderWithSession(<AppForm />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Name"), "manual");
+    await user.type(screen.getByLabelText("GitHub repository"), "acme/manual");
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Allow automatic push deploys for this repository",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Create app" }));
+
+    await waitFor(() => {
+      expect(
+        mock.mock.calls.some(
+          ([url, init]) => url === "/api/apps" && init?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+    expect(
+      mock.mock.calls.some(
+        ([url, init]) =>
+          url === "/api/repo-allowlist" && init?.method === "PUT",
+      ),
+    ).toBe(false);
+  });
+
+  it("retries the allowlist append after step-up, then creates the app", async () => {
+    let puts = 0;
+    let appPosts = 0;
+    stubCreateRoutes({
+      "PUT /api/repo-allowlist": () =>
+        ++puts === 1
+          ? jsonResponse(403, { error: "step_up_required" })
+          : jsonResponse(200, {
+              repositories: ["acme/api"],
+              resourceVersion: "8",
+            }),
+      "POST /api/auth/stepup": () => emptyResponse(204),
+      "POST /api/apps": () => {
+        appPosts++;
+        return jsonResponse(201, makeApp({ name: "api" }));
+      },
+    });
+    renderWithSession(<AppForm />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Name"), "api");
+    await user.type(screen.getByLabelText("GitHub repository"), "acme/api");
+    await user.click(screen.getByRole("button", { name: "Create app" }));
+
+    expect(
+      await screen.findByText("This action needs a fresh identity check."),
+    ).toBeInTheDocument();
+    expect(appPosts).toBe(0);
+    await user.type(screen.getByLabelText("Password"), "hunter2hunter2");
+    await user.type(screen.getByLabelText("Authenticator code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Confirm identity" }));
+
+    await waitFor(() => {
+      expect(appPosts).toBe(1);
+    });
+    expect(puts).toBe(2);
+    expect(window.location.hash).toBe("#/apps/api");
   });
 
   it("creates a Static app with only the static build member", async () => {
-    const mock = stubFetchRoutes({
-      "GET /api/features": () => jsonResponse(200, allFeatures),
-      "POST /api/apps": () => jsonResponse(201, makeApp({ name: "site" })),
-    });
+    const mock = stubCreateRoutes(
+      {
+        "POST /api/apps": () => jsonResponse(201, makeApp({ name: "site" })),
+      },
+      ["O/SITE"],
+    );
     renderWithSession(<AppForm />);
     const user = userEvent.setup();
 
@@ -107,8 +245,7 @@ describe("AppForm create", () => {
   });
 
   it("creates an enabled public Git app with Nixpacks", async () => {
-    const mock = stubFetchRoutes({
-      "GET /api/features": () => jsonResponse(200, allFeatures),
+    const mock = stubCreateRoutes({
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "auto" })),
     });
     renderWithSession(<AppForm />);
@@ -136,11 +273,16 @@ describe("AppForm create", () => {
       git: { url: "https://git.example.com/team/auto.git" },
     });
     expect(body.spec.build).toEqual({ strategy: "Nixpacks", nixpacks: {} });
+    expect(
+      mock.mock.calls.some(
+        ([url, init]) =>
+          url === "/api/repo-allowlist" && init?.method === "PUT",
+      ),
+    ).toBe(false);
   });
 
   it("omits port and healthCheck for a Worker", async () => {
-    const mock = stubFetchRoutes({
-      "GET /api/features": () => jsonResponse(200, allFeatures),
+    const mock = stubCreateRoutes({
       "POST /api/apps": () => jsonResponse(201, makeApp({ name: "job" })),
     });
     renderWithSession(<AppForm />);
@@ -162,7 +304,7 @@ describe("AppForm create", () => {
   });
 
   it("validates fields client-side before any request", async () => {
-    const mock = stubFetchRoutes({});
+    const mock = stubCreateRoutes({});
     renderWithSession(<AppForm />);
     const user = userEvent.setup();
 
@@ -184,8 +326,7 @@ describe("AppForm create", () => {
   });
 
   it("maps an already_exists conflict onto readable copy", async () => {
-    stubFetchRoutes({
-      "GET /api/features": () => jsonResponse(200, allFeatures),
+    stubCreateRoutes({
       "POST /api/apps": () => jsonResponse(409, { error: "already_exists" }),
     });
     renderWithSession(<AppForm />);

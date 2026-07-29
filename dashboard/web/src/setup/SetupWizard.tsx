@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { RepoAllowlistEditor } from "@/github/RepoAllowlistEditor";
 import {
   configureOIDC,
   fetchSetupStatus,
@@ -509,6 +510,7 @@ function OIDCConnectForm({ status }: { status: SetupStatus }) {
 function GitHubStep({ status }: { status: SetupStatus }) {
   const check = checkById(status, "github.app-connected");
   const allowlist = status.repoAllowlist ?? [];
+  const [allowlistDirty, setAllowlistDirty] = useState(false);
 
   return (
     <StepCard
@@ -516,39 +518,19 @@ function GitHubStep({ status }: { status: SetupStatus }) {
       description="One click creates a GitHub App via the manifest flow — exact permissions (repository contents + metadata, read-only), push webhooks pre-wired to this install."
       badge={<OutcomeBadge check={check} />}
     >
+      <RepoAllowlistEditor
+        repositories={allowlist}
+        resourceVersion={status.repoAllowlistResourceVersion}
+        onDirtyChange={setAllowlistDirty}
+      />
       {status.github.connected ? (
         <>
           <p className="text-muted-foreground text-sm">
             Connected{status.github.appSlug ? ` as ${status.github.appSlug}` : ""}
             {status.github.appId ? ` (App ID ${status.github.appId})` : ""}.
-            Install the App on the repositories you want to deploy, and add
-            them to the receiver allowlist.
+            Install the App on every repository listed above so Orkano can
+            resolve its commits.
           </p>
-          <div className="flex flex-col gap-2 rounded-lg border px-4 py-3">
-            <p className="overline-label">Receiver allowlist</p>
-            {allowlist.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {allowlist.map((repo) => (
-                  <Badge key={repo} variant="secondary">
-                    {repo}
-                  </Badge>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Empty — automatic deploys are deny-all until a repository is added.
-              </p>
-            )}
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              CLI: re-run your original install command with{" "}
-              <code className="font-mono text-foreground">
-                --allow-repo owner/repository
-              </code>
-              . Helm: add the repository under{" "}
-              <code className="font-mono text-foreground">repoAllowlist</code>{" "}
-              and upgrade the release.
-            </p>
-          </div>
           {isRecentConnect(status.github.connectedAt) ? (
             <>
               <p className="text-sm">
@@ -577,7 +559,7 @@ function GitHubStep({ status }: { status: SetupStatus }) {
           </AlertDescription>
         </Alert>
       ) : (
-        <GitHubConnectForm />
+        <GitHubConnectForm allowlistDirty={allowlistDirty} />
       )}
     </StepCard>
   );
@@ -594,7 +576,11 @@ function isRecentConnect(connectedAt: string | undefined): boolean {
   return Number.isFinite(ts) && Date.now() - ts < 60 * 60 * 1000;
 }
 
-function GitHubConnectForm() {
+function GitHubConnectForm({
+  allowlistDirty,
+}: {
+  allowlistDirty: boolean;
+}) {
   const [org, setOrg] = useState("");
   const start = useMutation({
     mutationFn: () => startGitHubManifest(org.trim() ? { org: org.trim() } : {}),
@@ -607,7 +593,7 @@ function GitHubConnectForm() {
       <Field
         id="github-org"
         label="Organization (optional)"
-        hint="Leave empty to create the App on your personal account."
+        hint="Create this private App under the account that owns the repositories you want to deploy. Leave empty only when that owner is your personal account."
       >
         <Input
           id="github-org"
@@ -620,7 +606,7 @@ function GitHubConnectForm() {
       <div>
         <Button
           type="button"
-          disabled={start.isPending}
+          disabled={start.isPending || allowlistDirty}
           onClick={() => {
             start.mutate();
           }}
@@ -628,9 +614,17 @@ function GitHubConnectForm() {
           {start.isPending ? "Preparing…" : "Create GitHub App"}
         </Button>
       </div>
-      <p className="text-muted-foreground text-xs">
-        You will be taken to GitHub to confirm, then brought straight back.
-      </p>
+      {allowlistDirty ? (
+        <p className="text-sm text-warning" role="status">
+          Save the repository list before creating the GitHub App so these
+          changes are not lost when you leave Orkano.
+        </p>
+      ) : (
+        <p className="text-muted-foreground text-xs">
+          You will be taken to GitHub to confirm, then brought straight back.
+          Afterward, install the App on each repository listed above.
+        </p>
+      )}
     </div>
   );
 }

@@ -25,11 +25,12 @@ var version = "dev"
 
 const (
 	//nolint:gosec // G101: this is the env var *name* the secret is read from, not a credential.
-	envSecret    = "ORKANO_WEBHOOK_SECRET"
-	envDSN       = "ORKANO_DB_DSN"
-	envAllowlist = "ORKANO_REPO_ALLOWLIST"
-	envAddr      = "ORKANO_ADDR"
-	defaultAddr  = ":8080"
+	envSecret        = "ORKANO_WEBHOOK_SECRET"
+	envDSN           = "ORKANO_DB_DSN"
+	envAllowlist     = "ORKANO_REPO_ALLOWLIST"
+	envAllowlistFile = "ORKANO_REPO_ALLOWLIST_FILE"
+	envAddr          = "ORKANO_ADDR"
+	defaultAddr      = ":8080"
 )
 
 func main() {
@@ -49,7 +50,6 @@ func run(log *slog.Logger) error {
 	if dsn == "" {
 		return fmt.Errorf("%s is required", envDSN)
 	}
-	allowlist := strings.Split(os.Getenv(envAllowlist), ",")
 	addr := os.Getenv(envAddr)
 	if addr == "" {
 		addr = defaultAddr
@@ -64,14 +64,22 @@ func run(log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	h := webhook.NewHandler(webhook.Config{
+	handlerConfig := webhook.Config{
 		Secret:    []byte(secret),
-		Allowlist: allowlist,
+		Allowlist: strings.Split(os.Getenv(envAllowlist), ","),
 		Enqueuer:  db.New(pool),
 		Logger:    log,
-	})
-	if h.AllowlistSize() == 0 {
-		log.Warn("repo allowlist is empty; every webhook will be rejected", "env", envAllowlist)
+	}
+	if path := os.Getenv(envAllowlistFile); path != "" {
+		handlerConfig.AllowlistSource = webhook.FileAllowlist{Path: path}
+	}
+	h := webhook.NewHandler(handlerConfig)
+	size, allowlistErr := h.AllowlistSize()
+	switch {
+	case allowlistErr != nil:
+		log.Warn("repo allowlist unavailable; every webhook will be rejected", "err", allowlistErr)
+	case size == 0:
+		log.Warn("repo allowlist is empty; every webhook will be rejected")
 	}
 
 	mux := http.NewServeMux()
@@ -80,19 +88,7 @@ func run(log *slog.Logger) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		// An empty-statement ping needs no table privilege, so it works under
-		// the INSERT-only receiver role while still proving the DB is reachable.
-		if err := pool.Ping(pingCtx); err != nil {
-			log.Warn("readiness ping failed", "err", err)
-			http.Error(w, "not ready", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	mux.HandleFunc("GET /readyz", readinessHandler(log, pool, h))
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -124,4 +120,30 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+type databasePinger interface {
+	Ping(context.Context) error
+}
+
+func readinessHandler(log *slog.Logger, db databasePinger, h *webhook.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := h.AllowlistSize(); err != nil {
+			log.Warn("readiness allowlist check failed", "err", err)
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		// An empty-statement ping needs no table privilege, so it works under
+		// the INSERT-only receiver role while still proving the DB is reachable.
+		if err := db.Ping(pingCtx); err != nil {
+			log.Warn("readiness ping failed", "err", err)
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	}
 }

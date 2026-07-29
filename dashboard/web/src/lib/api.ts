@@ -363,6 +363,8 @@ export interface BuildListResponse {
   items: BuildResponse[];
   repo: string;
   automaticDeploys: boolean;
+  githubConfigured: boolean;
+  githubConnected: boolean;
 }
 
 export interface FeatureStatus {
@@ -400,6 +402,7 @@ export const appBuildsKey = (name: string) =>
   ["apps", name, "builds"] as const;
 export const featuresKey = ["features"] as const;
 export const nodesKey = ["nodes"] as const;
+export const repoAllowlistKey = ["repo-allowlist"] as const;
 export const domainsKey = ["domains"] as const;
 export const postgresListKey = ["postgres"] as const;
 export const postgresKey = (name: string) => ["postgres", name] as const;
@@ -445,6 +448,22 @@ export function fetchFeatures(): Promise<FeatureStatus[]> {
 
 export function listNodes(): Promise<NodeInfo[]> {
   return listItems("/api/nodes");
+}
+
+export interface RepoAllowlistResponse {
+  repositories: string[];
+  resourceVersion: string;
+}
+
+export function fetchRepoAllowlist(): Promise<RepoAllowlistResponse> {
+  return getJSON("/api/repo-allowlist");
+}
+
+export function updateRepoAllowlist(
+  repositories: string[],
+  resourceVersion: string,
+): Promise<RepoAllowlistResponse> {
+  return putJSON("/api/repo-allowlist", { repositories, resourceVersion });
 }
 
 export async function uploadSourceArchive(
@@ -590,6 +609,7 @@ export interface SetupStatus {
   oidcPendingRestart: boolean;
   github: SetupGitHubState;
   repoAllowlist: string[];
+  repoAllowlistResourceVersion: string;
 }
 
 export function fetchSetupStatus(): Promise<SetupStatus> {

@@ -28,17 +28,19 @@ import (
 // real query semantics (case-insensitive username, single-use recovery codes,
 // session expiry) to exercise the handlers without a database.
 type fakeStore struct {
-	mu         sync.Mutex
-	users      map[int64]*db.User
-	sessions   map[string]*db.Session
-	recovery   map[int64]map[string]bool // userID -> codeHash -> used
-	audit      []db.AppendAuditEntryParams
-	deploys    []db.DeployHistory
-	settings   map[string]db.Setting
-	deliveries []db.EnqueueManualDeliveryParams
-	deployID   int64
-	nextUserID int64
-	failCreate bool
+	mu                 sync.Mutex
+	users              map[int64]*db.User
+	sessions           map[string]*db.Session
+	recovery           map[int64]map[string]bool // userID -> codeHash -> used
+	audit              []db.AppendAuditEntryParams
+	auditErrors        []error
+	auditContextErrors []error
+	deploys            []db.DeployHistory
+	settings           map[string]db.Setting
+	deliveries         []db.EnqueueManualDeliveryParams
+	deployID           int64
+	nextUserID         int64
+	failCreate         bool
 	// settingsErr, when set, is returned by every settings method — simulates the
 	// DB being away from the wizard's setup endpoints.
 	settingsErr error
@@ -270,9 +272,17 @@ func (f *fakeStore) CountUnusedRecoveryCodes(_ context.Context, userID int64) (i
 	return n, nil
 }
 
-func (f *fakeStore) AppendAuditEntry(_ context.Context, arg db.AppendAuditEntryParams) error {
+func (f *fakeStore) AppendAuditEntry(ctx context.Context, arg db.AppendAuditEntryParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.auditContextErrors = append(f.auditContextErrors, ctx.Err())
+	if len(f.auditErrors) > 0 {
+		err := f.auditErrors[0]
+		f.auditErrors = f.auditErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
 	f.audit = append(f.audit, arg)
 	return nil
 }

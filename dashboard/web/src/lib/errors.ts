@@ -34,6 +34,8 @@ export function apiErrorMessage(err: unknown): string {
     case "invalid_request":
     case "bad_request":
       return "The request was malformed — check the field values.";
+    case "invalid_repo_allowlist":
+      return "Use exact owner/repository names; up to 400 repositories are supported.";
     case "invalid_env":
       return "Variable names must start with a letter or underscore and use only letters, digits, and underscores.";
     case "env_limit_exceeded":

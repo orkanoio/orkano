@@ -24,6 +24,7 @@ import (
 	"github.com/orkanoio/orkano/internal/db"
 	"github.com/orkanoio/orkano/internal/features"
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 	"github.com/orkanoio/orkano/internal/sourcearchive"
 	"github.com/orkanoio/orkano/operator/internal/bootstrap"
 	"github.com/orkanoio/orkano/operator/internal/buildjob"
@@ -43,6 +44,7 @@ const envDBDSN = "ORKANO_DB_DSN"
 const (
 	envUnsafeFeatures     = "ORKANO_UNSAFE_FEATURES"
 	envSourceFetcherImage = "ORKANO_SOURCE_FETCHER_IMAGE"
+	envRepoAllowlist      = "ORKANO_REPO_ALLOWLIST"
 	defaultRegistryCAFile = "/orkano-registry-ca/ca.crt"
 )
 
@@ -81,7 +83,7 @@ func main() {
 	}
 	// `orkano-operator bootstrap-secrets` is the Helm chart's one-shot seeder
 	// (ADR-0019 decision 6): create the platform's generate-once Secrets, then
-	// exit. It is what `orkano init` does over SSH, done from inside the cluster.
+	// exit. It is what `orkano init` does over SSH, done inside the cluster.
 	if len(os.Args) > 1 && os.Args[1] == platformsecrets.SeedSubcommand {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -91,13 +93,22 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == repoallowlist.SeedSubcommand {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := runBootstrapRepoAllowlist(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, repoallowlist.SeedSubcommand+":", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	runOperator()
 }
 
 // runBootstrapSecrets seeds the platform Secrets from inside the cluster. It
-// prints Secret NAMES only: the seeder returns nothing else, so no credential
-// and no usable bootstrap token can ever reach this Job's logs (ADR-0019).
+// prints Secret names only, so no usable bootstrap token can reach the Job's
+// logs (ADR-0019).
 func runBootstrapSecrets(ctx context.Context) error {
 	// Deliberately not ctrl.GetConfig(), whose fallback chain ends at
 	// $HOME/.kube/config: this subcommand WRITES platform Secrets, so an
@@ -125,6 +136,34 @@ func runBootstrapSecrets(ctx context.Context) error {
 		return err
 	}
 	fmt.Printf("platform secrets ready: %d created, %d preserved\n", len(res.Created), len(res.Existed))
+	return nil
+}
+
+// runBootstrapRepoAllowlist is a separate, upgrade-safe Helm Job entrypoint.
+// It creates the non-secret initial policy once and never reads or updates it.
+func runBootstrapRepoAllowlist(ctx context.Context) error {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("%s runs as an in-cluster Job: %w", repoallowlist.SeedSubcommand, err)
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("build cluster client: %w", err)
+	}
+	rawAllowlist := strings.TrimSpace(os.Getenv(envRepoAllowlist))
+	var repos []string
+	if rawAllowlist != "" {
+		repos = strings.Split(rawAllowlist, ",")
+	}
+	created, err := bootstrap.SeedRepoAllowlist(ctx, cs.CoreV1().ConfigMaps(repoallowlist.Namespace), repos)
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Println("created configmap", repoallowlist.ConfigMapName)
+	} else {
+		fmt.Printf("configmap %s already exists, preserved\n", repoallowlist.ConfigMapName)
+	}
 	return nil
 }
 

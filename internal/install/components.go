@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/orkanoio/orkano/internal/features"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 )
 
 //go:embed templates/*.yaml.tmpl
@@ -32,7 +33,6 @@ const (
 var (
 	versionRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	emailRe     = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`)
-	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 	hostRe      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	templateExt = ".yaml.tmpl"
 )
@@ -54,7 +54,6 @@ type templateData struct {
 	DashboardImage   string
 	ACMEServer       string
 	ACMEEmail        string
-	RepoAllowlist    string // comma-joined owner/repo list
 	UnsafeFeatures   string // canonical, comma-joined explicit unsafe-feature IDs
 	SourceZipEnabled bool   // pod label that opens dashboard-to-registry ingress
 	ReceiverHost     string // public hostname for the receiver Ingress (may be empty)
@@ -76,9 +75,8 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 	if !versionRe.MatchString(cfg.Version) {
 		return nil, fmt.Errorf("install: invalid version %q for component image tags", cfg.Version)
 	}
-	allowlist, err := joinAllowlist(cfg.RepoAllowlist)
-	if err != nil {
-		return nil, err
+	if _, err := repoallowlist.Normalize(cfg.RepoAllowlist); err != nil {
+		return nil, fmt.Errorf("install: repository allowlist: %w", err)
 	}
 	if cfg.ACMEEmail != "" && !emailRe.MatchString(cfg.ACMEEmail) {
 		return nil, fmt.Errorf("install: invalid ACME email %q", cfg.ACMEEmail)
@@ -93,7 +91,6 @@ func renderComponents(cfg Config) ([]manifestFile, error) {
 		DashboardImage:   imageRepo + "/orkano-dashboard:" + cfg.Version,
 		ACMEServer:       acmeServer(cfg.ACMEProd),
 		ACMEEmail:        cfg.ACMEEmail,
-		RepoAllowlist:    allowlist,
 		UnsafeFeatures:   enabledUnsafe.CSV(),
 		SourceZipEnabled: enabledUnsafe.Enabled(features.SourceZip),
 		ReceiverHost:     cfg.ReceiverHost,
@@ -146,15 +143,4 @@ func acmeServer(prod bool) string {
 		return acmeProdServer
 	}
 	return acmeStagingServer
-}
-
-// joinAllowlist validates each owner/repo entry (it lands in a YAML scalar) and
-// joins them with commas for ORKANO_REPO_ALLOWLIST.
-func joinAllowlist(repos []string) (string, error) {
-	for _, r := range repos {
-		if !repoNameRe.MatchString(r) {
-			return "", fmt.Errorf("install: invalid repo %q (want owner/name)", r)
-		}
-	}
-	return strings.Join(repos, ","), nil
 }

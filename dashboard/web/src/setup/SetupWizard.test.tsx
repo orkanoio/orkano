@@ -78,6 +78,7 @@ function makeStatus(over: Partial<SetupStatus> = {}): SetupStatus {
     oidcPendingRestart: false,
     github: { connected: false },
     repoAllowlist: [],
+    repoAllowlistResourceVersion: "7",
     ...over,
   };
 }
@@ -533,12 +534,36 @@ describe("SetupWizard", () => {
           postUrl: "https://github.com/organizations/acme/settings/apps/new?state=s1",
           manifest: '{"name":"orkano"}',
         }),
+      "PUT /api/repo-allowlist": () =>
+        jsonResponse(200, {
+          repositories: ["acme/api"],
+          resourceVersion: "8",
+        }),
     });
     renderWithSession(<SetupWizard />);
     const user = userEvent.setup();
 
     await user.type(
-      await screen.findByLabelText("Organization (optional)"),
+      await screen.findByLabelText("Allowed repository 1"),
+      "acme/api",
+    );
+    expect(
+      screen.getByRole("button", { name: "Create GitHub App" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/Save the repository list before creating/),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Save repositories" }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Create GitHub App" }),
+      ).not.toBeDisabled();
+    });
+
+    await user.type(
+      screen.getByLabelText("Organization (optional)"),
       "acme",
     );
     await user.click(
@@ -564,6 +589,7 @@ describe("SetupWizard", () => {
       statusRoute(
         makeStatus({
           webhookUrlConfigured: true,
+          repoAllowlist: ["levatax/admin-dashboard"],
           github: {
             connected: true,
             appSlug: "orkano-acme",
@@ -579,6 +605,9 @@ describe("SetupWizard", () => {
 
     expect(
       await screen.findByText(/Connected as orkano-acme \(App ID 424242\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue("levatax/admin-dashboard"),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/rollout restart deployment\/orkano-receiver/),

@@ -44,10 +44,11 @@ subjects:
 ---
 # The onboarding wizard's credential writes into orkano-system: the GitHub App
 # manifest flow (M2.6) writes the App credential and the webhook secret, and the
-# wizard's OIDC connect step writes the IdP client configuration. This is the
-# dashboard's only reach into orkano-system, and it is the narrowest possible:
-# UPDATE only (no get/create/delete), pinned by resourceNames to exactly the
-# three platform Secrets. update (not create) because create cannot be
+# wizard's OIDC connect step writes the IdP client configuration. This Role is
+# the dashboard's only reach into orkano-system, and every rule is pinned to one
+# fixed platform object. The credentials rule is UPDATE only (no
+# get/create/delete), pinned by resourceNames to exactly the three platform
+# Secrets. update (not create) because create cannot be
 # resourceNames-pinned in Kubernetes RBAC — so the install pre-creates empty
 # orkano-github-app and orkano-oidc placeholders (orkano-webhook-secret already
 # exists), and the flows blind-overwrite them. A fully compromised dashboard can
@@ -57,7 +58,8 @@ subjects:
 # feeds the dashboard's OWN pod env — the write is gated on step-up re-auth,
 # and the Deployment mounts it via explicit per-key secretKeyRefs (never
 # envFrom), so a hostile write can only ever influence the named ORKANO_OIDC_*
-# variables: the blast radius stays the OIDC sign-in configuration itself.
+# variables: the blast radius stays the OIDC sign-in configuration itself. The
+# second rule reaches only the non-secret GitHub repository-policy ConfigMap.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -68,6 +70,14 @@ rules:
     resources: ["secrets"]
     verbs: ["update"]
     resourceNames: ["orkano-github-app", "orkano-webhook-secret", "orkano-oidc"]
+  # Runtime GitHub repository policy. Unlike the Secrets above this ConfigMap
+  # is non-secret, so GET enables optimistic-concurrency-safe updates while the
+  # resourceNames pin keeps the dashboard away from every other platform
+  # ConfigMap. The API handler requires step-up and audits every write.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "update"]
+    resourceNames: ["orkano-repo-allowlist"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
