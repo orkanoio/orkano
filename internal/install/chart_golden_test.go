@@ -105,6 +105,39 @@ func TestChartComponentGoldenRender(t *testing.T) {
 	}
 }
 
+// Helm deletes null keys while coalescing, before schema validation, so a bare
+// `repoAllowlist:` reaches the template as nil and no `type: array` constraint
+// can catch it — null is the one empty form the schema cannot reject (`{}` and
+// `""` both fail it). sprig's sortAlpha renders nil as the literal "<nil>",
+// which the seeder rejects as an invalid repository: the Job then fails
+// permanently and the ConfigMap is never created. Null must mean deny-all.
+func TestChartRepoAllowlistSeedToleratesNull(t *testing.T) {
+	helm := helmForGolden(t)
+
+	for name, args := range map[string][]string{
+		"unset":    nil,
+		"set null": {"--set", "repoAllowlist=null"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), helm,
+				append([]string{"template", "orkano", chartRoot}, args...)...)
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("helm template: %v\nstderr: %s", err, stderr.String())
+			}
+			if strings.Contains(string(out), "<nil>") {
+				t.Fatalf("rendered chart contains the sprig nil literal \"<nil>\"; "+
+					"guard the value with `| default list`\n%s", stderr.String())
+			}
+			if want := `value: ""`; !strings.Contains(string(out), want) {
+				t.Errorf("seed env not rendered as an empty deny-all policy (want a %s line)", want)
+			}
+		})
+	}
+}
+
 func TestValuesSchemaUnsafeFeatureEnum(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(chartRoot, "values.schema.json"))
 	if err != nil {

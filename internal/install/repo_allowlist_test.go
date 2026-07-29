@@ -142,6 +142,36 @@ func TestApplyExplicitRepoAllowlistOverridesLegacyReceiver(t *testing.T) {
 	}
 }
 
+// A blank --allow-repo value normalizes away to nothing, so it must count as
+// no seed rather than as an explicit deny-all: treating it as explicit would
+// skip legacy discovery and drop a live policy the operator never touched.
+func TestApplyBlankRepoAllowlistStillMigratesLegacyReceiver(t *testing.T) {
+	for name, allowlist := range map[string][]string{
+		"empty entry":      {""},
+		"whitespace entry": {"   "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := newFakeNode()
+			n.legacyReceiverDeployment = legacyReceiverJSON(t, "old/repository")
+
+			if _, err := Apply(context.Background(), n, Config{
+				Version:       "2.0.0",
+				RepoAllowlist: allowlist,
+			}); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			var got corev1.ConfigMap
+			if err := yaml.Unmarshal([]byte(n.configMaps[repoallowlist.ConfigMapName]), &got); err != nil {
+				t.Fatalf("parse ConfigMap: %v", err)
+			}
+			if want := "old/repository\n"; got.Data[repoallowlist.DataKey] != want {
+				t.Errorf("repositories = %q, want legacy policy %q preserved", got.Data[repoallowlist.DataKey], want)
+			}
+		})
+	}
+}
+
 func TestApplyLegacyReceiverRepoAllowlistFailuresAreFailClosed(t *testing.T) {
 	tests := map[string]struct {
 		deployment string

@@ -26,6 +26,7 @@ import (
 
 	"github.com/orkanoio/orkano/config"
 	"github.com/orkanoio/orkano/internal/platformsecrets"
+	"github.com/orkanoio/orkano/internal/repoallowlist"
 	"github.com/orkanoio/orkano/internal/ssh"
 )
 
@@ -224,7 +225,14 @@ func Apply(ctx context.Context, r Runner, cfg Config) (*Result, error) {
 		return nil, err
 	}
 
-	repoAllowlistSeed := cfg.RepoAllowlist
+	// Normalize before the gate, never after: Normalize drops blank entries, so
+	// a degenerate --allow-repo "" carries slice length 1 while meaning nothing
+	// at all. Gating on the raw length would read that as an explicit seed,
+	// skip the legacy migration, and replace a live policy with deny-all.
+	repoAllowlistSeed, err := repoallowlist.Normalize(cfg.RepoAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("install: repository allowlist: %w", err)
+	}
 	repoAllowlistReady := false
 	if cfg.Version != "" && len(repoAllowlistSeed) == 0 {
 		var legacyReceiverFound bool

@@ -143,7 +143,7 @@ $(BIN)/helm:
 # helm and already runs under make test (chart_test.go).
 verify-chart: $(BIN)/helm
 	$(BIN)/helm lint charts/orkano
-	ORKANO_HELM_BIN=$(BIN)/helm go test ./internal/install/ -run TestChartComponentGoldenRender -count=1 -v
+	ORKANO_HELM_BIN=$(BIN)/helm go test ./internal/install/ -run 'TestChartComponentGoldenRender|TestChartRepoAllowlistSeedToleratesNull' -count=1 -v
 
 .PHONY: verify-image-pins
 
